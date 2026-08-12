@@ -1,0 +1,150 @@
+name: Validate Klove
+
+on:
+  pull_request:
+    branches: [main, develop, preview]
+  push:
+    branches: [preview, "hotfix/**"]
+
+concurrency:
+  group: klove-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    name: Static, tests, and 100% safety coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install hash-pinned dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements-dev.lock
+          python -m pip install --no-build-isolation --no-deps -e .
+      - name: Run deterministic fast checks
+        run: sh scripts/test-fast.sh
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: klove-coverage
+          path: coverage.json
+          retention-days: 14
+
+  exact-container:
+    name: Exact container contract
+    if: github.event_name == 'push'
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - name: Build and load exact image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            SOURCE_BRANCH=${{ github.ref_name }}
+          context: .
+          load: true
+          push: false
+          tags: klove:preview-test
+      - name: Verify immutable runtime contract
+        run: |
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint python klove:preview-test -c \
+            'from klove.domain.translation import decode_grove_request; assert decode_grove_request({"print":{"command":"gcode_line","param":"M112","sequence_id":"1"}}).accepted is False'
+      - name: Reject high-severity image vulnerabilities and produce SBOM
+        env:
+          TRIVY_IMAGE: aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+        run: |
+          mkdir -p .klove-supply-chain
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "${TRIVY_IMAGE}" image --exit-code 1 --severity HIGH,CRITICAL klove:preview-test
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "${PWD}/.klove-supply-chain:/evidence" \
+            "${TRIVY_IMAGE}" image --format spdx-json \
+            --output /evidence/image.spdx.json klove:preview-test
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish exact tested preview
+        id: publish
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          image="${IMAGE,,}"
+          docker tag klove:preview-test "${image}:preview"
+          docker push "${image}:preview"
+          digest="$(docker buildx imagetools inspect "${image}:preview" | awk '$1 == "Digest:" {print $2; exit}')"
+          test -n "${digest}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest software bill of materials
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: .klove-supply-chain/image.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+  verify-preview:
+    name: Verify tested preview for stable merge
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify preview source and attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          EXPECTED_REVISION: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          test "${PR_HEAD_BRANCH}" = preview
+          image="${IMAGE,,}"
+          digest="$(docker buildx imagetools inspect "${image}:preview" | awk '$1 == "Digest:" {print $2; exit}')"
+          test -n "${digest}"
+          gh attestation verify "oci://${image}@${digest}" --repo "${GITHUB_REPOSITORY}"
+          docker pull "${image}@${digest}"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}@${digest}")"
+          source_branch="$(docker image inspect --format '{{ index .Config.Labels "io.github.tomlawesome.klove.source-branch" }}' "${image}@${digest}")"
+          test "${source_branch}" = preview
+          test "${revision}" = "${EXPECTED_REVISION}"

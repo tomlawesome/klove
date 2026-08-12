@@ -30,17 +30,19 @@ semantic completeness.
 
 ## Active slice: read-only foundation
 
-- [ ] Package, configuration, secret-file, logging, and container foundation.
-- [ ] Canonical printer state and capability schemas.
-- [ ] Strict Grove MQTT command decoder that produces typed requests or a
+- [x] Package, configuration, secret-file, logging, and container foundation.
+- [x] Canonical printer state and capability schemas.
+- [x] Strict Grove MQTT command decoder that produces typed requests or a
   structured denial; no actuator transport exists.
-- [ ] Authenticated read-only HTTP API with content-free liveness/readiness.
-- [ ] Moonraker WebSocket identification, discovery, subscription, diff
+- [x] Authenticated read-only HTTP API with content-free liveness/readiness.
+- [x] Moonraker WebSocket identification, discovery, subscription, diff
   reduction, disconnect handling, and bounded reconnect.
-- [ ] Deterministic fake Moonraker contract tests.
-- [ ] Critical-boundary 100% coverage gate and project-wide coverage evidence.
-- [ ] Three-lane GitHub Actions and protected branch rules.
-- [ ] Non-root, read-only-root compatible OCI image.
+- [x] Deterministic fake Moonraker contract tests.
+- [x] Critical-boundary 100% coverage gate and project-wide coverage evidence.
+- [ ] Three-lane GitHub Actions and protected branch rules. Workflows are
+  implemented; remote rules and clean CI validation remain.
+- [x] Non-root, read-only-root compatible OCI image definition. A local build
+  is unavailable on the current host and remains to be proven in clean CI.
 
 Exit criterion: Klove can monitor one or more simulated Moonraker printers
 through restarts and malformed messages, while every Grove command remains
@@ -53,4 +55,3 @@ denied or classified without reaching an actuator.
 3. Hostile-3MF validation and idempotent target-bound dispatch.
 4. Current-Grove MQTT/FTPS compatibility facade.
 5. Native Grove provider integration.
-

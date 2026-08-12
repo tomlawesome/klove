@@ -1,0 +1,1 @@
+"""Replaceable southbound printer adapters."""
