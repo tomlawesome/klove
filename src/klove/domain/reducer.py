@@ -34,6 +34,7 @@ def establish_snapshot(
     phase = _phase_from_status(status)
     return PrinterSnapshot(
         printer_id=previous.printer_id,
+        epoch=previous.epoch,
         revision=previous.revision + 1,
         connected=True,
         phase=phase,
@@ -164,10 +165,14 @@ def _phase_from_status(status: Mapping[str, Mapping[str, Any]]) -> PrinterPhase:
         raise StateEvidenceError("required printer status evidence is missing")
     print_stats = status["print_stats"]
     pause_resume = status["pause_resume"]
+    virtual_sdcard = status["virtual_sdcard"]
     raw_state = print_stats.get("state")
     if not isinstance(raw_state, str) or raw_state not in _PRINT_PHASES:
         raise StateEvidenceError("print_stats state is missing or unknown")
     is_paused = pause_resume.get("is_paused")
     if not isinstance(is_paused, bool) or is_paused is not (raw_state == "paused"):
         raise StateEvidenceError("pause state evidence is missing or contradictory")
+    is_active = virtual_sdcard.get("is_active")
+    if not isinstance(is_active, bool) or is_active is not (raw_state == "printing"):
+        raise StateEvidenceError("virtual SD activity evidence is missing or contradictory")
     return _PRINT_PHASES[raw_state]

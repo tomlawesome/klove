@@ -29,7 +29,9 @@ the package.
 
 The native API binds to loopback by default. `/health/live` and
 `/health/ready` contain no printer data. `/v1/printers` and
-`/v1/printers/{id}` require the configured bearer token.
+`/v1/printers/{id}` require the configured bearer token. Each printer document
+includes an opaque, boot-scoped `state_token`; future commands will have to bind
+to exact observed state rather than a reusable integer revision.
 
 For containers, copy `compose.example.yml`, replace its image placeholder with
 an accepted immutable digest, and mount configuration and secrets read-only.

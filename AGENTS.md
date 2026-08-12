@@ -12,7 +12,9 @@ The read-only foundation must contain no Moonraker actuator RPC, generic G-code
 execution path, or mutating HTTP route. Introducing actuation requires an
 accepted architecture decision, a narrow typed interface, negative tests, and
 100% statement and branch coverage across authentication, authorization,
-decoding, translation, and policy code.
+decoding, translation, and policy code. Stock Moonraker print-control endpoints
+are not an accepted safety boundary because they are non-atomic and may invoke
+operator-defined Klipper macros.
 
 ## Delivery lanes
 

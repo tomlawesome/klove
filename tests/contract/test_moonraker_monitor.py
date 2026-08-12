@@ -88,7 +88,7 @@ async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_discon
                 "status": {
                     "pause_resume": {"is_paused": False},
                     "print_stats": {"state": "standby"},
-                    "virtual_sdcard": {"progress": 0},
+                    "virtual_sdcard": {"is_active": False, "progress": 0},
                 },
             },
         }
@@ -104,7 +104,13 @@ async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_discon
                     {
                         "jsonrpc": "2.0",
                         "method": "notify_status_update",
-                        "params": [{"print_stats": {"state": "printing"}}, 11],
+                        "params": [
+                            {
+                                "print_stats": {"state": "printing"},
+                                "virtual_sdcard": {"is_active": True},
+                            },
+                            11,
+                        ],
                     }
                 )
                 await connection.send_json(
@@ -178,7 +184,7 @@ async def test_monitor_waits_for_ready_then_rebuilds_all_evidence() -> None:
                         "status": {
                             "pause_resume": {"is_paused": True},
                             "print_stats": {"state": "paused"},
-                            "virtual_sdcard": {},
+                            "virtual_sdcard": {"is_active": False},
                         },
                     },
                 )
@@ -271,7 +277,7 @@ async def test_unsolicited_response_after_bootstrap_is_rejected() -> None:
                 "status": {
                     "pause_resume": {"is_paused": False},
                     "print_stats": {"state": "standby"},
-                    "virtual_sdcard": {},
+                    "virtual_sdcard": {"is_active": False},
                 },
             },
         }

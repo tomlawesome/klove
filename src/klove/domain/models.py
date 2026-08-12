@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+_BOOT_EPOCH = str(uuid.uuid4())
 
 
 class PrinterPhase(StrEnum):
@@ -45,6 +50,10 @@ class PrinterSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     printer_id: str
+    epoch: str = Field(
+        default=_BOOT_EPOCH,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
     revision: int = Field(ge=0)
     connected: bool
     phase: PrinterPhase
@@ -52,6 +61,24 @@ class PrinterSnapshot(BaseModel):
     eventtime: float | None
     capabilities: CapabilitySnapshot | None
     status: dict[str, dict[str, Any]]
+
+    @property
+    def state_token(self) -> str:
+        """Return a boot-scoped opaque token binding exact observed job state."""
+        evidence = json.dumps(
+            {
+                "printer_id": self.printer_id,
+                "epoch": self.epoch,
+                "revision": self.revision,
+                "eventtime": self.eventtime,
+                "phase": self.phase,
+                "filename": self.status.get("print_stats", {}).get("filename"),
+                "file_position": self.status.get("virtual_sdcard", {}).get("file_position"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(evidence.encode()).hexdigest()
 
 
 def initial_snapshot(printer_id: str) -> PrinterSnapshot:

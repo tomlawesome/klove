@@ -26,6 +26,7 @@ def subscription(state: str = "standby") -> dict[str, Any]:
     result = cast(dict[str, Any], json.loads(FIXTURE.read_text(encoding="utf-8")))
     result["status"]["print_stats"]["state"] = state
     result["status"]["pause_resume"]["is_paused"] = state == "paused"
+    result["status"]["virtual_sdcard"]["is_active"] = state == "printing"
     return result
 
 
@@ -68,6 +69,7 @@ def test_status_diff_is_shallow_merged_only_for_known_objects() -> None:
         status_diff={
             "pause_resume": {"is_paused": False},
             "print_stats": {"state": "printing", "filename": "safe.gcode"},
+            "virtual_sdcard": {"is_active": True},
         },
         eventtime=101,
     )
@@ -117,6 +119,14 @@ def test_not_ready_or_contradictory_bootstrap_is_rejected(
                 "pause_resume": {"is_paused": False},
                 "print_stats": {"state": 1},
                 "virtual_sdcard": {},
+            },
+        },
+        {
+            "eventtime": 1,
+            "status": {
+                "pause_resume": {"is_paused": False},
+                "print_stats": {"state": "printing"},
+                "virtual_sdcard": {"is_active": False},
             },
         },
         {

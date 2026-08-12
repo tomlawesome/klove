@@ -48,5 +48,22 @@ async def test_printer_routes_fail_closed_and_return_only_snapshots(
 
     assert listing.status == 200
     assert (await listing.json())["printers"][0]["printer_id"] == "voron"
-    assert detail.status == 200 and (await detail.json())["phase"] == "offline"
+    detail_document = await detail.json()
+    assert detail.status == 200 and detail_document["phase"] == "offline"
+    assert len(detail_document["state_token"]) == 64
+    assert "epoch" not in detail_document
     assert missing.status == 404 and await missing.json() == {"error": "not_found"}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_authorization_headers_are_rejected(client: TestClient[Any, Any]) -> None:
+    response = await client.get(
+        "/v1/printers",
+        headers=[
+            ("Authorization", f"Bearer {TOKEN}"),
+            ("Authorization", f"Bearer {TOKEN}"),
+        ],
+    )
+
+    assert response.status == 401
+    assert await response.json() == {"error": "unauthorized"}

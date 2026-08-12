@@ -28,7 +28,7 @@ must retain 100% statement and branch coverage. Coverage is supplemented by
 property tests and negative protocol fixtures; it is not treated as proof of
 semantic completeness.
 
-## Active slice: read-only foundation
+## Completed local slice: read-only foundation
 
 - [x] Package, configuration, secret-file, logging, and container foundation.
 - [x] Canonical printer state and capability schemas.
@@ -48,10 +48,31 @@ Exit criterion: Klove can monitor one or more simulated Moonraker printers
 through restarts and malformed messages, while every Grove command remains
 denied or classified without reaching an actuator.
 
+## Active slice: control safety prerequisites
+
+- [x] Boot-scoped opaque state tokens bind a revision to its observed job data.
+- [x] Local monotonic receipt times make evidence freshness measurable.
+- [x] Condition-based revision waits provide race-safe future reconciliation.
+- [x] Duplicate authentication headers are rejected.
+- [x] Threat analysis covers job substitution, lost acknowledgements, custom
+  macros, remote identity, and preflight/control races.
+- [ ] Define an atomic conditional-control contract at the Moonraker/Klipper
+  boundary; stock Moonraker endpoints are insufficient.
+- [ ] Decide whether the atomic gate is a small Moonraker component, Klipper
+  extra, or another host-local mechanism.
+- [ ] Bind the gate to verified remote identity and an operator-approved
+  control-profile fingerprint.
+
+Exit criterion: Klove has a host-side primitive that atomically verifies target,
+job identity, state, and approved control implementation before applying one
+typed transition. Until that exists, every command remains denied and Klove
+contains no actuator transport.
+
 ## Next slices
 
-1. Typed pause, resume, and cancel using Moonraker's dedicated RPC methods.
-2. Explicitly bounded heater and live-control operations.
-3. Hostile-3MF validation and idempotent target-bound dispatch.
-4. Current-Grove MQTT/FTPS compatibility facade.
-5. Native Grove provider integration.
+1. Atomic, fingerprint-bound host control gate.
+2. Typed pause, resume, and cancel through that gate.
+3. Explicitly bounded heater and live-control operations.
+4. Hostile-3MF validation and idempotent target-bound dispatch.
+5. Current-Grove MQTT/FTPS compatibility facade.
+6. Native Grove provider integration.

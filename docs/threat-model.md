@@ -34,6 +34,18 @@ not prove that live state is current.
   contradictory evidence invalidate the affected printer state.
 - Disconnect discards volatile capabilities and status. Reconnect never assumes
   continuity.
+- Exposed state tokens are opaque and boot-scoped. They bind a revision to its
+  Moonraker event time, canonical phase, filename, and file position so a stale
+  caller cannot reuse a revision number after Klove restarts.
+- Duplicate authentication header instances are denied rather than combined.
+
+## Deferred stock Moonraker control
+
+Moonraker's dedicated pause, resume, and cancel requests are not accepted as a
+sufficient actuator boundary. Query and control are not atomic, another client
+can change the job between them, and Klipper may resolve the request through an
+operator-defined G-code macro. Klove therefore contains no such transport or
+mutating route. See `docs/decisions/0001-typed-job-control.md`.
 
 ## Required future controls before actuation
 
