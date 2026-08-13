@@ -62,7 +62,7 @@ def test_accepted_contract_fixtures_are_strict_and_versioned(
 ) -> None:
     result = load_fixture(model, name)
 
-    assert result.model_dump(mode="json")["contract_version"] == "1"
+    assert result.model_dump(mode="json")["contract_version"] == "2"
 
 
 @pytest.mark.parametrize(
@@ -87,7 +87,7 @@ def test_rejected_contract_fixtures_cover_each_boundary(model: type[BaseModel], 
 def test_contract_schema_is_closed_and_json_aliases_are_rejected() -> None:
     schema = ArtifactIntent.model_json_schema()
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["contract_version"]["const"] == "1"
+    assert schema["properties"]["contract_version"]["const"] == "2"
     assert all(
         schema["$defs"][name]["additionalProperties"] is False
         for name in ("ArtifactIntake", "ArtifactTarget", "PlateSelection")
@@ -131,6 +131,7 @@ def test_contract_models_reject_aliases_and_internal_contradictions() -> None:
     for path in (
         "/Metadata/plate.gcode",
         "Metadata\\plate.gcode",
+        "C:/Metadata/plate.gcode",
         "Metadata//plate.gcode",
         "Metadata/./plate.gcode",
         "Metadata/../plate.gcode",
@@ -159,7 +160,7 @@ def test_contract_models_reject_aliases_and_internal_contradictions() -> None:
 def test_operation_result_requires_failure_only_for_denial() -> None:
     operation_id = intent().operation_id
     received = ArtifactOperationResult(
-        contract_version="1",
+        contract_version="2",
         operation_id=operation_id,
         state=ArtifactOperationState.RECEIVED,
     )
@@ -167,13 +168,13 @@ def test_operation_result_requires_failure_only_for_denial() -> None:
 
     with pytest.raises(ValidationError, match="require a failure"):
         ArtifactOperationResult(
-            contract_version="1",
+            contract_version="2",
             operation_id=operation_id,
             state=ArtifactOperationState.DENIED,
         )
     with pytest.raises(ValidationError, match="must not contain"):
         ArtifactOperationResult(
-            contract_version="1",
+            contract_version="2",
             operation_id=operation_id,
             state=ArtifactOperationState.VALIDATED,
             failure=ArtifactFailure(
@@ -193,7 +194,7 @@ def test_exact_current_single_candidate_is_validated() -> None:
         current_target=request.target,
         limits=ArtifactLimits(),
     ) == ArtifactOperationResult(
-        contract_version="1",
+        contract_version="2",
         operation_id=request.operation_id,
         state=ArtifactOperationState.VALIDATED,
     )
@@ -265,10 +266,18 @@ def test_contradictory_printer_artifact_plate_and_target_are_denied() -> None:
             "selected_plate": candidate.selected_plate.model_copy(update={"plate_id": "plate-2"})
         }
     )
+    changed_path = candidate.model_copy(
+        update={
+            "selected_plate": candidate.selected_plate.model_copy(
+                update={"archive_path": "Metadata/plate_2.gcode"}
+            )
+        }
+    )
     changed_target = candidate.model_copy(update={"target": other_printer})
     for changed, boundary in (
         (changed_artifact, ArtifactBoundary.INTAKE),
         (changed_plate, ArtifactBoundary.SELECTED_PLATE),
+        (changed_path, ArtifactBoundary.SELECTED_PLATE),
         (changed_target, ArtifactBoundary.TARGET),
     ):
         assert_denied(

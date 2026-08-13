@@ -34,10 +34,13 @@ token_file = "api.token"
 
 [artifacts]
 max_zip_entries = 64
+max_zip_metadata_bytes = 131072
 max_archive_compressed_bytes = 1048576
 max_archive_expanded_bytes = 4194304
 max_compression_ratio = 10
 max_gcode_bytes = 2097152
+max_gcode_header_bytes = 32768
+max_gcode_line_bytes = 4096
 metadata_wait_seconds = 20.0
 
 [[printers]]
@@ -52,7 +55,10 @@ api_key_file = "moonraker.key"
     assert result.api.listen_host == "127.0.0.1"
     assert result.api.listen_port == 8080
     assert result.artifacts.max_zip_entries == 64
+    assert result.artifacts.max_zip_metadata_bytes == 131072
     assert result.artifacts.max_compression_ratio == 10
+    assert result.artifacts.max_gcode_header_bytes == 32768
+    assert result.artifacts.max_gcode_line_bytes == 4096
     assert result.artifacts.metadata_wait_seconds == 20.0
     assert result.printers[0].id == "voron-24"
 
@@ -119,6 +125,7 @@ def test_control_timing_is_finite_positive_and_consistent(values: dict[str, floa
     "values",
     [
         {"max_zip_entries": 0},
+        {"max_zip_metadata_bytes": 21},
         {"max_archive_compressed_bytes": 0},
         {"max_archive_expanded_bytes": 0},
         {"max_compression_ratio": 0},
@@ -126,9 +133,17 @@ def test_control_timing_is_finite_positive_and_consistent(values: dict[str, floa
         {"max_compression_ratio": 1.0},
         {"max_compression_ratio": float("nan")},
         {"max_gcode_bytes": 0},
+        {"max_gcode_header_bytes": 63},
+        {"max_gcode_line_bytes": 0},
         {"metadata_wait_seconds": float("nan")},
         {"metadata_wait_seconds": 301.0},
         {"max_archive_expanded_bytes": 1024, "max_gcode_bytes": 1025},
+        {"max_gcode_bytes": 64, "max_gcode_header_bytes": 65},
+        {
+            "max_gcode_bytes": 64,
+            "max_gcode_header_bytes": 64,
+            "max_gcode_line_bytes": 65,
+        },
     ],
 )
 def test_artifact_limits_are_finite_positive_and_consistent(values: dict[str, object]) -> None:

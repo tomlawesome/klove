@@ -18,6 +18,12 @@ that the protocol model is complete. The suite therefore also includes:
   canonical identities, exact target/profile binding, unknown, missing, stale,
   contradictory and ambiguous evidence, internally inconsistent metrics, and
   every configured intake limit;
+- hostile ZIP/ZIP64 tests for traversal and aliases, duplicates, links,
+  encryption, unsupported features, malformed local/central records, count,
+  metadata, expanded-byte and exact ratio limits, missing exact selection, and
+  selected-member CRC; bounded G-code tests cover controls, line endings,
+  header/line limits, slicer structure, motion, comment handling, and known
+  Bambu-only signatures, with property tests over arbitrary ZIP-like bytes;
 - repository policy tests that reject the enumerated prohibited RPC literals,
   confine the three accepted job-control RPC literals to one adapter, constrain
   the native mutating route count, and reject unpinned CI actions;

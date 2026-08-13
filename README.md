@@ -15,12 +15,15 @@ opt-in control slice exposes only typed pause, resume, and cancel operations.
 This is pre-release software. It cannot start a print, execute arbitrary G-code,
 or provide any other motion, heating, fan, light, or macro control.
 
-Klove defines a strict v1 contract for future `.gcode.3mf` intake, one selected
-plate, exact printer/profile binding, validation evidence, and structured
-denials. The `[artifacts]` configuration bounds archive and G-code sizes, ZIP
-entry count, compression ratio, and future metadata waits. No archive reader,
-file-upload route, or print-start transport exists yet; these models are safety
-groundwork, not dispatch authorization.
+Klove defines a strict v2 contract and non-actuating validator for
+`.gcode.3mf` intake, one exact selected plate path, printer/profile binding,
+validation evidence, and structured denials. The `[artifacts]` configuration
+bounds the central directory, entry and byte counts, compression ratio, selected
+G-code, header, line length, and future metadata waits. Validation operates on
+one immutable byte snapshot, rejects unsafe ZIP structure and known Bambu-only
+G-code signatures, and streams only the selected member through integrity and
+syntax checks. It does not establish target compatibility, upload a file, or
+authorize print start.
 
 ## Run the service
 

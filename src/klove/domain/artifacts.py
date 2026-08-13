@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-CONTRACT_VERSION: Literal["1"] = "1"
+CONTRACT_VERSION: Literal["2"] = "2"
 
 CanonicalUuid4 = Annotated[
     str,
@@ -61,6 +61,12 @@ class ArtifactFailureCode(StrEnum):
     EVIDENCE_STALE = "evidence_stale"
     EVIDENCE_CONTRADICTORY = "evidence_contradictory"
     EVIDENCE_AMBIGUOUS = "evidence_ambiguous"
+    MALFORMED = "malformed"
+    UNSAFE_ARCHIVE = "unsafe_archive"
+    UNSUPPORTED_ARCHIVE = "unsupported_archive"
+    INTEGRITY_FAILED = "integrity_failed"
+    INVALID_GCODE = "invalid_gcode"
+    INCOMPATIBLE_GCODE = "incompatible_gcode"
 
 
 class ArtifactOperationState(StrEnum):
@@ -77,6 +83,7 @@ class ArtifactLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     max_zip_entries: int = Field(default=512, ge=1, le=100_000)
+    max_zip_metadata_bytes: int = Field(default=16 * 1024 * 1024, ge=22, le=128 * 1024 * 1024)
     max_archive_compressed_bytes: int = Field(
         default=512 * 1024 * 1024,
         ge=1,
@@ -93,6 +100,8 @@ class ArtifactLimits(BaseModel):
         ge=1,
         le=4 * 1024 * 1024 * 1024,
     )
+    max_gcode_header_bytes: int = Field(default=64 * 1024, ge=64, le=16 * 1024 * 1024)
+    max_gcode_line_bytes: int = Field(default=8 * 1024, ge=1, le=1024 * 1024)
     metadata_wait_seconds: float = Field(default=30.0, gt=0, le=300, allow_inf_nan=False)
 
     @model_validator(mode="after")
@@ -100,6 +109,10 @@ class ArtifactLimits(BaseModel):
         """Reject a selected-file limit larger than the whole expanded archive."""
         if self.max_gcode_bytes > self.max_archive_expanded_bytes:
             raise ValueError("max_gcode_bytes must not exceed max_archive_expanded_bytes")
+        if self.max_gcode_header_bytes > self.max_gcode_bytes:
+            raise ValueError("max_gcode_header_bytes must not exceed max_gcode_bytes")
+        if self.max_gcode_line_bytes > self.max_gcode_bytes:
+            raise ValueError("max_gcode_line_bytes must not exceed max_gcode_bytes")
         return self
 
 
@@ -120,12 +133,19 @@ class PlateSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     plate_id: PlateIdentifier
+    archive_path: ArchivePath
 
     @field_validator("plate_id")
     @classmethod
     def plate_id_is_bounded_text(cls, value: str) -> str:
         """Reject surrounding whitespace and control characters."""
         return _validate_bounded_text(value)
+
+    @field_validator("archive_path")
+    @classmethod
+    def archive_path_is_canonical(cls, value: str) -> str:
+        """Require the exact canonical G-code member selected by the caller."""
+        return _validate_archive_path(value)
 
 
 class SelectedPlate(BaseModel):
@@ -148,14 +168,7 @@ class SelectedPlate(BaseModel):
     @classmethod
     def archive_path_is_canonical(cls, value: str) -> str:
         """Require one relative POSIX path without traversal or aliases."""
-        value = _validate_bounded_text(value)
-        if value.startswith("/") or "\\" in value or " " in value:
-            raise ValueError("archive_path must be a relative POSIX path")
-        if any(part in {"", ".", ".."} or part != part.strip() for part in value.split("/")):
-            raise ValueError("archive_path must not contain empty or relative segments")
-        if not value.endswith(".gcode"):
-            raise ValueError("archive_path must identify one G-code file")
-        return value
+        return _validate_archive_path(value)
 
 
 class ArtifactTarget(BaseModel):
@@ -179,7 +192,7 @@ class ArtifactIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    contract_version: Literal["1"]
+    contract_version: Literal["2"]
     operation_id: CanonicalUuid4
     idempotency_key: CanonicalUuid4
     artifact: ArtifactIntake
@@ -196,21 +209,20 @@ class CompressionRatioEvidence(BaseModel):
     expanded_bytes: int = Field(gt=0)
 
 
-class ArtifactValidationEvidence(BaseModel):
-    """One complete candidate emitted by a future hostile-input validator."""
+class ArtifactInspectionEvidence(BaseModel):
+    """Byte-exact archive evidence produced before target/profile binding."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    contract_version: Literal["1"]
+    contract_version: Literal["2"]
     artifact: ArtifactIntake
     selected_plate: SelectedPlate
-    target: ArtifactTarget
     zip_entry_count: int = Field(gt=0)
     archive_expanded_bytes: int = Field(gt=0)
     highest_ratio_entry: CompressionRatioEvidence
 
     @model_validator(mode="after")
-    def selected_gcode_fits_archive(self) -> ArtifactValidationEvidence:
+    def selected_gcode_fits_archive(self) -> ArtifactInspectionEvidence:
         """Reject internally contradictory archive metrics."""
         if self.selected_plate.gcode_size_bytes > self.archive_expanded_bytes:
             raise ValueError("selected G-code exceeds expanded archive size")
@@ -228,6 +240,12 @@ class ArtifactValidationEvidence(BaseModel):
         return self
 
 
+class ArtifactValidationEvidence(ArtifactInspectionEvidence):
+    """Complete inspection evidence with independently bound target/profile evidence."""
+
+    target: ArtifactTarget
+
+
 class ArtifactFailure(BaseModel):
     """A structured denial that cannot echo hostile input."""
 
@@ -242,7 +260,7 @@ class ArtifactOperationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    contract_version: Literal["1"]
+    contract_version: Literal["2"]
     operation_id: CanonicalUuid4
     state: ArtifactOperationState
     failure: ArtifactFailure | None = None
@@ -292,7 +310,10 @@ def assess_artifact_intent(  # noqa: PLR0911 -- each denial is deliberately expl
             ArtifactBoundary.INTAKE,
             ArtifactFailureCode.EVIDENCE_CONTRADICTORY,
         )
-    if candidate.selected_plate.plate_id != intent.selected_plate.plate_id:
+    if (
+        candidate.selected_plate.plate_id != intent.selected_plate.plate_id
+        or candidate.selected_plate.archive_path != intent.selected_plate.archive_path
+    ):
         return _denied(
             intent,
             ArtifactBoundary.SELECTED_PLATE,
@@ -343,4 +364,16 @@ def _validate_bounded_text(value: str) -> str:
     has_non_visible_ascii = any(not 32 <= ord(character) <= 126 for character in value)
     if value != value.strip() or has_non_visible_ascii:
         raise ValueError("value must contain bounded visible ASCII text")
+    return value
+
+
+def _validate_archive_path(value: str) -> str:
+    """Require one exact relative POSIX G-code path without aliases."""
+    value = _validate_bounded_text(value)
+    if value.startswith("/") or "\\" in value or ":" in value or " " in value:
+        raise ValueError("archive_path must be a relative POSIX path")
+    if any(part in {"", ".", ".."} or part != part.strip() for part in value.split("/")):
+        raise ValueError("archive_path must not contain empty or relative segments")
+    if not value.endswith(".gcode"):
+        raise ValueError("archive_path must identify one G-code file")
     return value

@@ -297,15 +297,16 @@ file sliced for a Bambu machine is not made safe for a Klipper printer by
 renaming it or extracting it from a 3MF. Klove must not rewrite a foreign start
 G-code dialect or silently ignore commands.
 
-Proposed future artifact policy (not yet authorized):
+Artifact policy is staged; validation is implemented but transport and print
+start remain unauthorized:
 
 1. Accept Grove's `.gcode.3mf` container only when its selected plate contains
    G-code sliced for the target Klipper profile. Never support unsliced geometry
    in the first dispatch path.
-2. Require a target identity in a manifest/comment or an exact operator-approved
+2. Require a target identity in a manifest/comment or an exact registered
    slicer-profile identifier. Bind it to a Klove printer UUID and safety-profile
-   fingerprint. Legacy files without proof require an explicit per-file override
-   and must never auto-dispatch.
+   fingerprint. Legacy files without proof are denied; the automatic path does
+   not replace missing controller evidence with a human override.
 3. Reject known Bambu-only G-code signatures and mismatched printer/nozzle/build
    metadata.
 4. Treat the 3MF as a hostile ZIP: cap upload/compressed/uncompressed sizes and
@@ -319,12 +320,14 @@ Proposed future artifact policy (not yet authorized):
    successful start to Grove. If the response is lost, reconcile current state
    and history instead of retrying blindly.
 
-The first implementation step is deliberately non-actuating: a strict v1
-contract represents archive identity, one plate selection, exact
-printer/profile binding, validation metrics, operation state, and structured
-denials. It rejects unknown, missing, stale, contradictory, or ambiguous
-evidence and applies finite configured limits, but it does not open archives,
-upload files, or expose print start.
+The implemented boundary is deliberately non-actuating. Its strict v2 contract
+represents archive identity, one exact plate path, target/profile binding,
+validation metrics, operation state, and structured denials. The validator
+accepts one immutable byte snapshot, bounds and validates hostile ZIP/ZIP64
+metadata before parsing, and streams only the exact selected G-code through
+integrity and conservative syntax/vendor checks. It writes nothing, uploads
+nothing, and exposes no print start. Candidate status does not prove target
+compatibility; that is the next policy slice.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
@@ -517,16 +520,15 @@ fail closed.
 
 ## Immediate next slice
 
-The versioned artifact-contract prerequisite is complete in
-[issue #7](https://github.com/tomlawesome/klove/issues/7). It freezes strict
-intake, selected-plate, exact-target, validation-evidence, operation-state, and
-structured-error models without reading an archive or adding transport. The
-immediate next slice is hostile 3MF/G-code validation in
-[issue #6](https://github.com/tomlawesome/klove/issues/6), followed by target
-binding, bounded upload and metadata checks, one idempotent print start, and
-durable restart reconciliation. MQTT/FTPS compatibility work follows that
-safety boundary. Print start remains blocked until a dedicated ADR is accepted;
-this sequencing statement authorizes no new actuator. Track the programme in
+The artifact-contract prerequisite in
+[issue #7](https://github.com/tomlawesome/klove/issues/7) and hostile
+3MF/G-code validator in [issue #6](https://github.com/tomlawesome/klove/issues/6)
+are complete without transport. The immediate next slice is exact target and
+safety-profile binding in [issue #5](https://github.com/tomlawesome/klove/issues/5),
+followed by separately decided bounded upload/metadata checks, one idempotent
+print start, and durable restart reconciliation. MQTT/FTPS compatibility work
+follows that safety boundary. Print start remains blocked until a dedicated ADR
+is accepted; this sequencing statement authorizes no new actuator. Track the programme in
 [GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38) and artifact
 dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 
@@ -543,3 +545,6 @@ dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 - [Klipper status reference](https://www.klipper3d.org/Status_Reference.html)
 - [Mainsail overview](https://docs.mainsail.xyz/)
 - [Grove Control repository](https://github.com/EdwardChamberlain/grove-control)
+- [3MF Core Specification 1.3.0](https://3mf.io/wp-content/uploads/sites/106/2025/02/3MF_Core_Specification_v1.3.0.pdf)
+- [Python `zipfile` documentation](https://docs.python.org/3/library/zipfile.html)
+- [Bambu Studio 3MF implementation](https://github.com/bambulab/BambuStudio/blob/master/src/libslic3r/Format/bbs_3mf.cpp)

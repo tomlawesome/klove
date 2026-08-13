@@ -1,5 +1,5 @@
 {
-  "contract_version": "1",
+  "contract_version": "2",
   "operation_id": "22222222-2222-4222-8222-222222222222",
   "idempotency_key": "33333333-3333-4333-8333-333333333333",
   "artifact": {
@@ -9,7 +9,8 @@
     "compressed_size_bytes": 1048576
   },
   "selected_plate": {
-    "plate_id": " plate-1"
+    "plate_id": " plate-1",
+    "archive_path": "Metadata/plate_1.gcode"
   },
   "target": {
     "printer_id": "voron-24",

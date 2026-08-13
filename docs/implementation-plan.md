@@ -32,6 +32,8 @@ Last updated: 2026-08-13
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
+- [Hostile artifact issue #6](https://github.com/tomlawesome/klove/issues/6)
+  is the active non-actuating validation slice.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -134,12 +136,40 @@ Exit criterion: untrusted artifact metadata can be represented and evaluated
 without aliases or inference, while no archive extraction, Moonraker upload, or
 print-start transport exists.
 
+## Completed implementation: hostile `.gcode.3mf` validation
+
+- [x] Supersede the unexposed v1 intent with a strict v2 contract carrying the
+  exact canonical selected member path; no plate filename is inferred.
+- [x] Require one immutable byte snapshot whose physical size and SHA-256 match
+  intake, and retain that exact object in the successful candidate.
+- [x] Bound EOCD/ZIP64 central-directory metadata before ZIP parsing and reject
+  multi-disk archives, comments, unsupported versions/compression/encryption,
+  traversal and cross-platform aliases, duplicates/case collisions, links and
+  special files, malformed local headers, excess entries/bytes/ratios, and
+  selected-member CRC failure.
+- [x] Stream only the exact selected regular member through SHA-256, byte and
+  line bounds, canonical ASCII checks, recognized supported-slicer structure,
+  actual motion, and conservative known Bambu-only signature denial. Do not
+  retain a second expanded G-code body or rewrite any command.
+- [x] Return only byte-exact evidence or a bounded non-reflective denial. Treat
+  success as a candidate for later target/profile policy, never dispatch
+  authority.
+- [x] Add deterministic adversarial fixtures, ZIP64/local-header/CRC cases, and
+  bounded property fuzzing while retaining package-wide 100% statement and
+  branch coverage.
+- [x] Preserve the repository prohibition on extraction, artifact transport,
+  generic G-code, and print start.
+
+Exit criterion: hostile input becomes either one byte-exact, bounded selected
+G-code candidate tied to its immutable source or a structured denial, without
+filesystem, network, printer, or actuation effects.
+
 ## Next slices
 
-1. Hostile-3MF/G-code validation, followed by exact target/profile binding,
-   safe upload, metadata verification, idempotent print start, and durable
-   reconciliation. Print-start implementation and transport are blocked until
-   a dedicated ADR is accepted; roadmap placement is not authorization.
+1. Exact target/safety-profile binding, then separately decided safe upload,
+   metadata verification, idempotent print start, and durable reconciliation.
+   Print-start implementation and transport are blocked until a dedicated ADR
+   is accepted; roadmap placement is not authorization.
 2. Current-Grove MQTT/TLS and FTPS compatibility facade with conservative state
    projection and specific-printer queueing.
 3. Separately decided and tested bounded temperature/speed plus explicitly

@@ -12,10 +12,13 @@ idempotency_capacity = 1024
 
 [artifacts]
 max_zip_entries = 512
+max_zip_metadata_bytes = 16777216
 max_archive_compressed_bytes = 536870912
 max_archive_expanded_bytes = 2147483648
 max_compression_ratio = 100
 max_gcode_bytes = 1073741824
+max_gcode_header_bytes = 65536
+max_gcode_line_bytes = 8192
 metadata_wait_seconds = 30.0
 
 [[printers]]
