@@ -39,8 +39,11 @@ def test_control_slice_contains_only_dedicated_job_actuators() -> None:
     assert actuator_files == {"src/klove/adapters/moonraker/control.py"}
 
 
-def test_artifact_contract_slice_contains_no_io_or_transport() -> None:
+def test_artifact_contract_and_validation_slices_contain_no_transport_or_extraction() -> None:
     contract_text = (ROOT / "src" / "klove" / "domain" / "artifacts.py").read_text(encoding="utf-8")
+    validator_text = (ROOT / "src" / "klove" / "domain" / "artifact_validation.py").read_text(
+        encoding="utf-8"
+    )
 
     assert not any(
         token in contract_text
@@ -51,6 +54,20 @@ def test_artifact_contract_slice_contains_no_io_or_transport() -> None:
             "server/files/upload",
             "tarfile",
             "zipfile",
+        )
+    )
+    assert not any(
+        token in validator_text
+        for token in (
+            ".extract(",
+            ".extractall(",
+            "aiohttp",
+            "httpx",
+            "requests",
+            "server/files/upload",
+            "socket",
+            "tempfile",
+            "urllib",
         )
     )
 

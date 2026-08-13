@@ -34,6 +34,12 @@ actuator requires its own accepted architecture decision, narrow typed
 interface, negative tests, and 100% statement and branch coverage across
 authentication, authorization, control, decoding, translation, and policy.
 
+Hostile artifact validation accepts only one bounded immutable archive snapshot
+with an exact selected member path. It never extracts the archive, infers a
+plate, rewrites G-code, or treats validation as target compatibility or dispatch
+authority. Upload and print start remain prohibited until their own accepted
+decision and later safety slices are complete.
+
 ## Delivery lanes
 
 - Ordinary work branches from and targets protected `develop`.

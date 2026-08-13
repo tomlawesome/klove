@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through the artifact-contract slice
+Status: active through the hostile-artifact validation slice
 
 ## Protected assets
 
@@ -72,25 +72,40 @@ coordinating other clients. Klove limits the interval, binds any claimed success
 to later evidence for the same job, and reports ambiguity without retrying. See
 `docs/decisions/0001-typed-job-control.md`.
 
-## Artifact-contract controls
+## Artifact validation controls
 
-- The v1 artifact contract accepts only one known archive format, canonical
+- The v2 artifact contract accepts only one known archive format, canonical
   UUIDv4 operation/artifact/idempotency identities, lowercase SHA-256 digests,
-  one selected plate, one exact printer id, one slicer-profile id, and one
-  safety-profile fingerprint. Unknown members and non-canonical aliases are
+  one selected plate with its exact canonical archive path, one exact printer
+  id, one slicer-profile id, and one safety-profile fingerprint. V2 supersedes
+  the unexposed v1 request because exact selection cannot be inferred safely
+  from a plate id. Unknown contract members and non-canonical aliases are
   rejected.
 - Archive compressed and expanded bytes, ZIP entry count, compression ratio,
-  selected G-code bytes, and future metadata waits have finite operator limits
-  whose own configuration is bounded. Ratio evidence carries exact compressed
-  and expanded byte counts for the highest-ratio entry; aggregate consistency
-  and the policy threshold are checked by integer cross-multiplication.
+  central-directory bytes, selected G-code bytes, header bytes, line bytes, and
+  future metadata waits have finite operator limits whose own configuration is
+  bounded. Ratio evidence carries exact compressed and expanded byte counts for
+  the highest-ratio entry; aggregate consistency and the policy threshold are
+  checked by integer cross-multiplication.
+- Validation accepts only an immutable `bytes` snapshot, verifies its exact
+  physical size and SHA-256, and retains that same object in the candidate. It
+  rejects traversal and platform aliases, duplicate and case-colliding paths,
+  links and special files, encryption, multi-disk archives, unsupported ZIP
+  versions/compression, comments, malformed local or central records, excessive
+  counts/bytes/ratios, and selected-member CRC failure. The central directory is
+  capped from EOCD/ZIP64 records before Python's ZIP parser reads it.
+- Only the exact selected regular member is decompressed. Its body is scanned in
+  bounded chunks without retaining the expanded body, with exact digest/length,
+  canonical ASCII line endings and controls, finite header/line limits, a known
+  supported slicer marker, actual motion, and a conservative set of known
+  Bambu-only generator and executable signatures.
 - Validation requires exactly one complete candidate matching the intent and
   the currently configured target. Unknown, missing, multiple, stale, or
   contradictory evidence produces a bounded denial without echoing source
   text.
-- The current slice parses only the contract fixtures. It reads no archive or
-  G-code body, creates no file, contacts no printer, and introduces no upload or
-  print-start transport.
+- Validation success is not proof of target/profile compatibility and grants no
+  transport or actuation authority. The current slice creates no file, contacts
+  no printer, and introduces no upload or print-start transport.
 
 ## Required controls before print start and later actuators
 
