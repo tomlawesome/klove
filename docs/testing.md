@@ -10,10 +10,14 @@ that the protocol model is complete. The suite therefore also includes:
 - negative and property tests for hostile or ambiguous Grove payloads;
 - reducer tests for stale, malformed, contradictory, and incomplete state;
 - deterministic WebSocket contract tests against a fake Moonraker peer;
+- a confined real-process lane using pinned native Klipper with its
+  Linux-process MCU, pinned Moonraker, and the production Klove image;
 - API tests for missing, malformed, and insufficient credentials;
 - control tests for exact token/job/state matching, per-printer serialization,
-  single dispatch, cross-key uncertainty fencing, idempotency conflicts and
-  exhaustion, postcondition binding, and every post-dispatch ambiguity;
+  history job-id/start-time bracketing, telemetry-stable control tokens, final
+  exact-token rechecks, single dispatch, cross-key uncertainty fencing,
+  idempotency conflicts and exhaustion, postcondition binding, and every
+  post-dispatch ambiguity;
 - accepted and rejected artifact-contract fixtures plus negative tests for
   canonical identities, exact target/profile binding, unknown, missing, stale,
   contradictory and ambiguous evidence, internally inconsistent metrics, and
@@ -30,11 +34,37 @@ that the protocol model is complete. The suite therefore also includes:
 - a preview-container contract assertion, vulnerability scan, SBOM, and
   provenance attestation.
 
+The native integration lane verifies real Moonraker API-key rejection,
+WebSocket discovery, the exact observed job, typed pause/resume/cancel, stale
+token denial, unique Moonraker history identity, duplicate single dispatch, and
+a dropped post-dispatch response that becomes a cross-key `outcome_unknown`
+fence. It then restarts the printer
+host while Klove remains live to prove the fence survives remote reconnect, and
+restarts Klove to prove its new boot epoch rejects the prior token without a
+dispatch.
+
 Run the fast gate with `scripts/test-fast.ps1` or `scripts/test-fast.sh` after
 installing `requirements-dev.lock` using pip's `--require-hashes` option. GitHub
 Actions is the authoritative clean environment. The expensive exact-container
-job runs only on protected `preview` and `hotfix/**` pushes, never on arbitrary
-pull-request code.
+publication job runs only on protected `preview` pushes, never on hotfix or
+arbitrary pull-request code. It first publishes a unique human-readable
+`preview-<run>-<attempt>` candidate tag, records its digest, and moves the
+mutable `preview` pointer to that exact digest without rebuilding.
+
+Run the separate Docker integration gate with
+`scripts/test-moonraker-sim.sh`. It is not part of the coverage process, but its
+dedicated CI job gates Moonraker-affecting delivery and all preview publication.
+Local runs require rootless Docker; hosted CI's rootful exception is explicit
+and confined to that least-privilege job. The fixture uses an internal-only
+network, generated ephemeral credentials, unique project identity, exact
+context/daemon-bound cleanup, and finite Docker timeouts.
+
+Only the private fixture prepares its harmless virtual-SD dwell job. That
+preparation does not authorize an upload, print-start, or generic G-code path in
+`src/klove`. The native amd64 stack also does not claim RatOS coverage. RatOS
+v2.1.0 acceptance separately records the exact ARM release asset checksum,
+supported board, running software identities, controlled configuration and
+macro hashes, and attended physical results under `docs/ratos-acceptance.md`.
 
 Pytest prepends `src` to its import path, and a repository-policy assertion
 verifies that the suite imported Klove from the working tree. This prevents a

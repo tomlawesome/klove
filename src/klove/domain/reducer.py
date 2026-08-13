@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
-from klove.domain.models import CapabilitySnapshot, PrinterPhase, PrinterSnapshot
+from klove.domain.models import (
+    CapabilitySnapshot,
+    JobIdentitySnapshot,
+    PrinterPhase,
+    PrinterSnapshot,
+)
 from klove.errors import StateEvidenceError
 
 _PRINT_PHASES = {
@@ -20,13 +25,14 @@ _PRINT_PHASES = {
 _REQUIRED_STATUS_OBJECTS = frozenset({"pause_resume", "print_stats", "virtual_sdcard"})
 
 
-def establish_snapshot(
+def establish_snapshot(  # noqa: PLR0913 -- complete bootstrap transaction.
     previous: PrinterSnapshot,
     *,
     server_info: Mapping[str, Any],
     printer_info: Mapping[str, Any],
     capabilities: CapabilitySnapshot,
     subscription: Mapping[str, Any],
+    job: JobIdentitySnapshot | None = None,
 ) -> PrinterSnapshot:
     """Replace all prior evidence after a complete discovery transaction."""
     _require_ready(server_info, printer_info)
@@ -36,11 +42,13 @@ def establish_snapshot(
         printer_id=previous.printer_id,
         epoch=previous.epoch,
         revision=previous.revision + 1,
+        control_revision=previous.control_revision + 1,
         connected=True,
         phase=phase,
         reason="observed",
         eventtime=eventtime,
         capabilities=capabilities,
+        job=job,
         status=status,
     )
 
@@ -61,10 +69,15 @@ def apply_status_update(
     merged = {name: dict(values) for name, values in previous.status.items()}
     for name, values in checked_diff.items():
         merged.setdefault(name, {}).update(values)
+    phase = _phase_from_status(merged)
+    control_revision = previous.control_revision
+    if _control_state_changed(previous, phase, merged):
+        control_revision += 1
     return previous.model_copy(
         update={
             "revision": previous.revision + 1,
-            "phase": _phase_from_status(merged),
+            "control_revision": control_revision,
+            "phase": phase,
             "reason": "observed",
             "eventtime": checked_eventtime,
             "status": merged,
@@ -77,10 +90,12 @@ def mark_not_ready(previous: PrinterSnapshot, reason: str) -> PrinterSnapshot:
     return previous.model_copy(
         update={
             "revision": previous.revision + 1,
+            "control_revision": previous.control_revision + 1,
             "connected": True,
             "phase": PrinterPhase.NOT_READY,
             "reason": reason,
             "eventtime": None,
+            "job": None,
             "status": {},
         }
     )
@@ -93,11 +108,13 @@ def mark_capability_limited(
     return previous.model_copy(
         update={
             "revision": previous.revision + 1,
+            "control_revision": previous.control_revision + 1,
             "connected": True,
             "phase": PrinterPhase.NOT_READY,
             "reason": "missing_required_objects",
             "eventtime": None,
             "capabilities": capabilities,
+            "job": None,
             "status": {},
         }
     )
@@ -110,12 +127,29 @@ def mark_disconnected(
     return previous.model_copy(
         update={
             "revision": previous.revision + 1,
+            "control_revision": previous.control_revision + 1,
             "connected": False,
             "phase": PrinterPhase.OFFLINE,
             "reason": reason,
             "eventtime": None,
             "capabilities": None,
+            "job": None,
             "status": {},
+        }
+    )
+
+
+def apply_history_job(
+    previous: PrinterSnapshot, job: JobIdentitySnapshot | None
+) -> PrinterSnapshot:
+    """Apply one validated Moonraker history identity observation."""
+    if not previous.connected or previous.capabilities is None:
+        raise StateEvidenceError("history update arrived without a complete baseline")
+    return previous.model_copy(
+        update={
+            "revision": previous.revision + 1,
+            "control_revision": previous.control_revision + (job != previous.job),
+            "job": job,
         }
     )
 
@@ -176,3 +210,30 @@ def _phase_from_status(status: Mapping[str, Mapping[str, Any]]) -> PrinterPhase:
     if not isinstance(is_active, bool) or is_active is not (raw_state == "printing"):
         raise StateEvidenceError("virtual SD activity evidence is missing or contradictory")
     return _PRINT_PHASES[raw_state]
+
+
+def _control_state_changed(
+    previous: PrinterSnapshot,
+    phase: PrinterPhase,
+    status: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    """Identify a control transition or evidence of a new job generation."""
+    if phase is not previous.phase:
+        return True
+    if status["print_stats"].get("filename") != previous.status["print_stats"].get("filename"):
+        return True
+    previous_position = previous.status["virtual_sdcard"].get("file_position")
+    current_position = status["virtual_sdcard"].get("file_position")
+    previous_valid = _valid_file_position(previous_position)
+    current_valid = _valid_file_position(current_position)
+    if previous_valid != current_valid:
+        return True
+    if not previous_valid:
+        return type(previous_position) is not type(current_position) or (
+            previous_position != current_position
+        )
+    return cast(int, current_position) < cast(int, previous_position)
+
+
+def _valid_file_position(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

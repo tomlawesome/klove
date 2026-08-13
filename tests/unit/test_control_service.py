@@ -13,7 +13,12 @@ from klove.domain.control import (
     LiveControlState,
 )
 from klove.domain.discovery import discover_capabilities
-from klove.domain.models import PrinterPhase, initial_snapshot
+from klove.domain.models import (
+    JobHistoryStatus,
+    JobIdentitySnapshot,
+    PrinterPhase,
+    initial_snapshot,
+)
 from klove.errors import ControlTransportError
 from klove.orchestration.control import ControlService
 from klove.registry import PrinterRegistry
@@ -62,6 +67,12 @@ async def setup(
             "capabilities": discover_capabilities(
                 {"pause_resume", "print_stats", "virtual_sdcard"}
             ),
+            "job": JobIdentitySnapshot(
+                job_id="000001",
+                filename="job.gcode",
+                start_time=1_700_000_000.0,
+                status=JobHistoryStatus.IN_PROGRESS,
+            ),
             "status": {
                 "print_stats": {"state": "printing", "filename": "job.gcode"},
                 "virtual_sdcard": {"file_position": 100},
@@ -93,8 +104,9 @@ def live(
     phase: PrinterPhase = PrinterPhase.PRINTING,
     filename: str = "job.gcode",
     position: int = 100,
+    job_id: str = "000001",
 ) -> LiveControlState:
-    return LiveControlState(eventtime, phase, filename, position)
+    return LiveControlState(eventtime, phase, job_id, 1_700_000_000.0, filename, position)
 
 
 @pytest.mark.asyncio
@@ -219,7 +231,36 @@ async def test_preflight_transport_failure_and_mismatch_are_denied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_change_between_poll_and_dispatch_is_denied() -> None:
+async def test_registry_advance_bounded_by_preflight_can_dispatch() -> None:
+    transport = FakeTransport(
+        [live(11.0, position=110), live(12.0, PrinterPhase.PAUSED, position=110)]
+    )
+    service, intent, registry = await setup(transport)
+    original_query = transport.query
+
+    async def query_then_change() -> LiveControlState:
+        result = await original_query()
+        if transport.query_count == 1:
+            current = await registry.get("voron")
+            assert current is not None
+            status = {name: dict(values) for name, values in current.status.items()}
+            status["virtual_sdcard"]["file_position"] = 110
+            await registry.replace(
+                current.model_copy(update={"revision": 2, "eventtime": 11.0, "status": status})
+            )
+            advanced = await registry.get("voron")
+            assert advanced is not None and advanced.state_token == intent.state_token
+        return result
+
+    transport.query = query_then_change  # type: ignore[method-assign]
+    result = await service.execute(intent)
+
+    assert result.status is ControlStatus.CONFIRMED
+    assert transport.dispatched == [ControlOperation.PAUSE]
+
+
+@pytest.mark.asyncio
+async def test_registry_change_newer_than_preflight_is_denied() -> None:
     transport = FakeTransport([live()])
     service, intent, registry = await setup(transport)
     original_query = transport.query
@@ -228,7 +269,9 @@ async def test_registry_change_between_poll_and_dispatch_is_denied() -> None:
         result = await original_query()
         current = await registry.get("voron")
         assert current is not None
-        await registry.replace(current.model_copy(update={"revision": 2}))
+        await registry.replace(
+            current.model_copy(update={"revision": 2, "control_revision": 2, "eventtime": 11.0})
+        )
         return result
 
     transport.query = query_then_change  # type: ignore[method-assign]
@@ -294,7 +337,7 @@ async def test_newly_observed_state_token_can_cross_an_uncertainty_fence() -> No
 
     current = await registry.get(intent.printer_id)
     assert current is not None
-    observed = current.model_copy(update={"revision": 2, "eventtime": 12.0})
+    observed = current.model_copy(update={"revision": 2, "control_revision": 2, "eventtime": 12.0})
     await registry.replace(observed)
     transport.dispatch_error = False
     result = await service.execute(
@@ -308,6 +351,35 @@ async def test_newly_observed_state_token_can_cross_an_uncertainty_fence() -> No
 
     assert result.status is ControlStatus.CONFIRMED
     assert transport.dispatched == [ControlOperation.PAUSE, ControlOperation.PAUSE]
+
+
+@pytest.mark.asyncio
+async def test_forward_progress_does_not_cross_an_uncertainty_fence() -> None:
+    transport = FakeTransport([live()])
+    transport.dispatch_error = True
+    service, intent, registry = await setup(transport)
+    assert (await service.execute(intent)).status is ControlStatus.OUTCOME_UNKNOWN
+
+    current = await registry.get(intent.printer_id)
+    assert current is not None
+    status = {name: dict(values) for name, values in current.status.items()}
+    status["virtual_sdcard"]["file_position"] = 110
+    progressed = current.model_copy(update={"revision": 2, "eventtime": 11.0, "status": status})
+    assert progressed.state_token == intent.state_token
+    await registry.replace(progressed)
+
+    result = await service.execute(
+        ControlIntent(
+            intent.printer_id,
+            intent.operation,
+            progressed.state_token,
+            "10000000-0000-4000-8000-000000000000",
+        )
+    )
+
+    assert result.status is ControlStatus.OUTCOME_UNKNOWN
+    assert transport.query_count == 1
+    assert transport.dispatched == [ControlOperation.PAUSE]
 
 
 @pytest.mark.asyncio

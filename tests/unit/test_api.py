@@ -63,6 +63,8 @@ async def test_printer_routes_fail_closed_and_return_only_snapshots(
     assert detail.status == 200 and detail_document["phase"] == "offline"
     assert len(detail_document["state_token"]) == 64
     assert "epoch" not in detail_document
+    assert "control_revision" not in detail_document
+    assert "job" not in detail_document
     assert missing.status == 404 and await missing.json() == {"error": "not_found"}
 
 

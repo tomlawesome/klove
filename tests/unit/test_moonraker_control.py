@@ -19,7 +19,7 @@ from klove.adapters.moonraker.control import (
 )
 from klove.config import PrinterConfig
 from klove.domain.control import ControlOperation, LiveControlState
-from klove.domain.models import PrinterPhase
+from klove.domain.models import JobHistoryStatus, JobIdentitySnapshot, PrinterPhase
 from klove.errors import ControlTransportError
 
 API_KEY = "m" * 32
@@ -40,6 +40,27 @@ def live_result(state: str = "printing") -> dict[str, Any]:
     }
 
 
+def history_job(state: str = "printing", job_id: str = "000001") -> JobIdentitySnapshot:
+    statuses = {
+        "standby": JobHistoryStatus.COMPLETED,
+        "printing": JobHistoryStatus.IN_PROGRESS,
+        "paused": JobHistoryStatus.IN_PROGRESS,
+        "complete": JobHistoryStatus.COMPLETED,
+        "cancelled": JobHistoryStatus.CANCELLED,
+        "error": JobHistoryStatus.ERROR,
+    }
+    return JobIdentitySnapshot(
+        job_id=job_id,
+        filename="job.gcode",
+        start_time=1_700_000_000.0,
+        status=statuses[state],
+    )
+
+
+def history_result(state: str = "printing", job_id: str = "000001") -> dict[str, Any]:
+    return {"count": 1, "jobs": [history_job(state, job_id).model_dump(mode="json")]}
+
+
 def config(endpoint: str) -> PrinterConfig:
     return PrinterConfig(
         id="voron",
@@ -56,7 +77,12 @@ async def test_transport_queries_and_dispatches_only_dedicated_methods() -> None
     async def jsonrpc(request: web.Request) -> web.Response:
         document = await request.json()
         requests.append((document, request.headers.get("X-Api-Key")))
-        result: object = live_result() if document["method"] == "printer.objects.query" else "ok"
+        if document["method"] == "printer.objects.query":
+            result: object = live_result()
+        elif document["method"] == "server.history.list":
+            result = history_result()
+        else:
+            result = "ok"
         return web.json_response({"jsonrpc": "2.0", "id": document["id"], "result": result})
 
     application = web.Application()
@@ -69,24 +95,32 @@ async def test_transport_queries_and_dispatches_only_dedicated_methods() -> None
             request_timeout_seconds=1,
         )
         assert await transport.query() == LiveControlState(
-            10.0, PrinterPhase.PRINTING, "job.gcode", 100
+            10.0,
+            PrinterPhase.PRINTING,
+            "000001",
+            1_700_000_000.0,
+            "job.gcode",
+            100,
         )
         for operation in ControlOperation:
             await transport.dispatch(operation)
 
     assert [request[0]["method"] for request in requests] == [
+        "server.history.list",
         "printer.objects.query",
+        "server.history.list",
         "printer.print.pause",
         "printer.print.resume",
         "printer.print.cancel",
     ]
-    assert set(requests[0][0]["params"]["objects"]) == {
+    assert requests[0][0]["params"] == {"limit": 1, "start": 0, "order": "desc"}
+    assert set(requests[1][0]["params"]["objects"]) == {
         "pause_resume",
         "print_stats",
         "virtual_sdcard",
         "webhooks",
     }
-    assert all("params" not in request for request, _key in requests[1:])
+    assert all("params" not in request for request, _key in requests[3:])
     assert all(key == API_KEY for _request, key in requests)
 
 
@@ -219,7 +253,26 @@ async def test_response_body_is_bounded_exact_utf8_json() -> None:
     ],
 )
 def test_live_state_maps_exact_consistent_evidence(state: str, phase: PrinterPhase) -> None:
-    assert _live_state(live_result(state)).phase is phase
+    live = _live_state(live_result(state), history_job(state))
+    assert live.phase is phase
+    assert live.job_status is history_job(state).status
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        JobHistoryStatus.ERROR,
+        JobHistoryStatus.KLIPPY_SHUTDOWN,
+        JobHistoryStatus.KLIPPY_DISCONNECT,
+        JobHistoryStatus.INTERRUPTED,
+        JobHistoryStatus.SERVER_EXIT,
+    ],
+)
+def test_error_phase_accepts_documented_and_pinned_terminal_history_states(
+    status: JobHistoryStatus,
+) -> None:
+    identity = history_job("error").model_copy(update={"status": status})
+    assert _live_state(live_result("error"), identity).phase is PrinterPhase.ERROR
 
 
 def mutate(path: tuple[str, ...], value: object) -> dict[str, Any]:
@@ -259,4 +312,85 @@ def mutate(path: tuple[str, ...], value: object) -> dict[str, Any]:
 )
 def test_live_state_rejects_every_malformed_or_contradictory_field(value: object) -> None:
     with pytest.raises(ControlTransportError):
-        _live_state(value)
+        _live_state(value, history_job())
+
+
+@pytest.mark.parametrize(
+    "job",
+    [
+        None,
+        history_job().model_copy(update={"filename": "other.gcode"}),
+    ],
+)
+def test_live_state_requires_matching_history_identity(
+    job: JobIdentitySnapshot | None,
+) -> None:
+    with pytest.raises(ControlTransportError):
+        _live_state(live_result(), job)
+
+
+@pytest.mark.asyncio
+async def test_query_denies_when_history_identity_changes_around_object_poll() -> None:
+    history_calls = 0
+
+    async def jsonrpc(request: web.Request) -> web.Response:
+        nonlocal history_calls
+        document = await request.json()
+        if document["method"] == "printer.objects.query":
+            result: object = live_result()
+        else:
+            history_calls += 1
+            result = history_result(job_id=f"{history_calls:06X}")
+        return web.json_response({"jsonrpc": "2.0", "id": document["id"], "result": result})
+
+    application = web.Application()
+    application.router.add_post("/server/jsonrpc", jsonrpc)
+    async with TestServer(application) as server, aiohttp.ClientSession() as session:
+        transport = MoonrakerControlTransport(
+            config(str(server.make_url(""))), API_KEY, session, request_timeout_seconds=1
+        )
+        with pytest.raises(ControlTransportError):
+            await transport.query()
+
+
+@pytest.mark.asyncio
+async def test_query_retries_a_changing_history_bracket_until_coherent() -> None:
+    history_calls = 0
+
+    async def jsonrpc(request: web.Request) -> web.Response:
+        nonlocal history_calls
+        document = await request.json()
+        if document["method"] == "printer.objects.query":
+            result: object = live_result()
+        else:
+            history_calls += 1
+            job_id = "000001" if history_calls == 1 else "000002"
+            result = history_result(job_id=job_id)
+        return web.json_response({"jsonrpc": "2.0", "id": document["id"], "result": result})
+
+    application = web.Application()
+    application.router.add_post("/server/jsonrpc", jsonrpc)
+    async with TestServer(application) as server, aiohttp.ClientSession() as session:
+        transport = MoonrakerControlTransport(
+            config(str(server.make_url(""))), API_KEY, session, request_timeout_seconds=1
+        )
+        live = await transport.query()
+
+    assert history_calls == 4
+    assert live.job_id == "000002"
+
+
+@pytest.mark.asyncio
+async def test_query_maps_malformed_history_to_a_bounded_transport_error() -> None:
+    async def jsonrpc(request: web.Request) -> web.Response:
+        document = await request.json()
+        return web.json_response({"jsonrpc": "2.0", "id": document["id"], "result": {"jobs": []}})
+
+    application = web.Application()
+    application.router.add_post("/server/jsonrpc", jsonrpc)
+    async with TestServer(application) as server, aiohttp.ClientSession() as session:
+        transport = MoonrakerControlTransport(
+            config(str(server.make_url(""))), API_KEY, session, request_timeout_seconds=1
+        )
+        with pytest.raises(ControlTransportError):
+            await transport.query()

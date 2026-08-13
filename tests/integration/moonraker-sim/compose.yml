@@ -1,0 +1,183 @@
+services:
+  printer-host:
+    platform: linux/amd64
+    image: klove-moonraker-sim-host:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 2
+    tmpfs:
+      - /run:size=16m,mode=0700,uid=10001,gid=10001
+      - /data:size=64m,mode=0700,uid=10001,gid=10001
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - runtime-secrets:/run/klove-secrets
+      - runtime-state:/run/printer-state
+    networks:
+      - simulation
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          data=json.load(urllib.request.urlopen('http://127.0.0.1:7125/server/info', timeout=2))['result'];
+          assert data['klippy_connected'] is True and data['klippy_state'] == 'ready';
+          assert __import__('pathlib').Path('/run/printer-state/bootstrap-ready').is_file()
+      interval: 1s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  moonraker-proxy:
+    platform: linux/amd64
+    image: klove-moonraker-sim-host:local
+    pull_policy: never
+    entrypoint:
+      - python
+      - /fixture/proxy.py
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 96m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    networks:
+      - simulation
+    depends_on:
+      printer-host:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          assert json.load(urllib.request.urlopen('http://127.0.0.1:9126/health', timeout=2)) == {'status': 'ok'}
+      interval: 1s
+      timeout: 3s
+      retries: 10
+
+  klove:
+    platform: linux/amd64
+    image: klove-moonraker-sim-klove:local
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      args:
+        VCS_REF: ${KLOVE_SIM_REVISION:-unknown}
+        SOURCE_BRANCH: integration
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    command:
+      - --config
+      - /run/klove-secrets/config.toml
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+    networks:
+      - simulation
+    depends_on:
+      printer-host:
+        condition: service_healthy
+      moonraker-proxy:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          assert json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=2)) == {'status': 'ready'}
+      interval: 1s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  contract:
+    profiles:
+      - contract
+    platform: linux/amd64
+    image: klove-moonraker-sim-host:local
+    pull_policy: never
+    entrypoint:
+      - python
+      - /fixture/exercise_contract.py
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 24
+    mem_limit: 96m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+      - test-state:/run/test-state
+    networks:
+      - simulation
+    depends_on:
+      klove:
+        condition: service_healthy
+    restart: "no"
+
+  reconnect-contract:
+    profiles:
+      - contract
+    platform: linux/amd64
+    image: klove-moonraker-sim-host:local
+    pull_policy: never
+    entrypoint:
+      - python
+      - /fixture/reconnect_contract.py
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 24
+    mem_limit: 96m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+      - test-state:/run/test-state
+    networks:
+      - simulation
+    depends_on:
+      klove:
+        condition: service_healthy
+    restart: "no"
+
+networks:
+  simulation:
+    internal: true
+
+volumes:
+  runtime-secrets:
+  runtime-state:
+  test-state:

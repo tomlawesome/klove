@@ -147,7 +147,7 @@ async def control_printer(request: web.Request) -> web.Response:
 
 
 def _snapshot_document(snapshot: PrinterSnapshot) -> dict[str, object]:
-    document = snapshot.model_dump(mode="json", exclude={"epoch"})
+    document = snapshot.model_dump(mode="json", exclude={"control_revision", "epoch", "job"})
     document["state_token"] = snapshot.state_token
     return document
 

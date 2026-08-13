@@ -33,9 +33,12 @@ not prove that live state is current.
   contradictory evidence invalidate the affected printer state.
 - Disconnect discards volatile capabilities and status. Reconnect never assumes
   continuity.
-- Exposed state tokens are opaque and boot-scoped. They bind a revision to its
-  Moonraker event time, canonical phase, filename, and file position so a stale
-  caller cannot reuse a revision number after Klove restarts.
+- Exposed state tokens are opaque and boot-scoped. They bind a dedicated
+  control-evidence revision to connection state, capability fingerprint,
+  canonical phase, filename, and Moonraker history job id and start time so a
+  stale caller cannot reuse generic monitor progress or a revision number after
+  Klove restarts. Event time and forward file position remain separately
+  checked ordering evidence rather than token inputs.
 - Duplicate authentication header instances are denied rather than combined.
 
 ## Typed job-control controls
@@ -48,13 +51,21 @@ not prove that live state is current.
 - A per-printer lock serializes cached validation, immediate direct preflight,
   one dispatch, and post-action polling.
 - Cached and live evidence must agree on the configured target, allowed phase,
-  capability, filename, state token, event ordering, and non-regressing file
-  position. The token is rechecked after the direct poll.
+  capability, filename, unique history job id and start time, event ordering,
+  and non-regressing file position. Every accepted direct object sample is
+  bracketed by two equal newest-history reads. Klove may resample that read-only
+  bracket at most three times; it never retries an action. The caller's state
+  token must match exactly both at admission and at the final cached recheck. A
+  generic monitor revision arriving during the direct poll is accepted only if
+  the exact token remains unchanged and its evidence is fully bounded by the
+  direct preflight; changed, later, regressing, or contradictory evidence denies
+  dispatch.
 - Once dispatch may have occurred, every lost response, transport failure,
   mismatched job, contradictory observation, timeout, or internal failure is
   retained as `outcome_unknown`. The affected printer and state token remain
-  fenced even if a caller changes its idempotency key; only a newly observed
-  state token can authorize another attempt.
+  fenced even if a caller changes its idempotency key. Ordinary telemetry and
+  forward progress do not rotate the token; only changed control evidence can
+  authorize another action.
 - Dispatched and uncertain idempotency entries are never evicted. Capacity
   exhaustion denies new keys, and process restart invalidates all old state
   tokens.

@@ -23,9 +23,13 @@ Moonraker's dedicated pause, resume, and cancel RPCs behind explicit global and
 per-printer opt-in. Every request requires exact authenticated scope, printer
 route, state token, job identity, phase, capability, a direct pre-action poll,
 per-printer serialization, single-dispatch idempotency, and post-action
-reconciliation. Once dispatch may have occurred, uncertainty is
+reconciliation. The exact token is required both before and after the direct
+poll; every live poll is bound to Moonraker's immutable history job id and
+start time. Once dispatch may have occurred, uncertainty is
 `outcome_unknown`; the exact printer and state token remain fenced across all
-idempotency keys until a newly observed token is supplied. Printer owners are
+idempotency keys until changed control evidence supplies a new token. Ordinary
+telemetry and forward print progress do not rotate the token or cross that
+fence. Printer owners are
 responsible for the semantics and safety of their configured `PAUSE`, `RESUME`,
 and `CANCEL_PRINT` macros.
 
@@ -60,6 +64,16 @@ administrators may bypass protection when consciously handling an emergency.
 Install `requirements-dev.lock` with `--require-hashes`, then run
 `scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere. Keep CI
 actions, base images, and scanner images pinned to reviewed immutable digests.
+
+Run `scripts/test-moonraker-sim.sh` after changing Moonraker
+protocol/control, preflight or reconciliation behavior, the integration
+fixture, its container pins, or restart/fault handling. Local execution requires
+rootless Docker. Use only the unique run-id lifecycle scripts so cleanup stays
+bound to the recorded Docker context, daemon, and exact Compose project. The
+fixture may prepare its private harmless virtual-SD job, but that test mechanism
+must never become a production Klove upload, print-start, or generic G-code
+path. The native stack is not RatOS; RatOS acceptance uses the separate pinned
+ARM hardware procedure in `docs/ratos-acceptance.md`.
 
 Never commit credentials. Configuration names secret files; secret values live
 only in untracked, narrowly mounted files.

@@ -11,10 +11,20 @@ from aiohttp.test_utils import TestServer
 from klove.adapters.moonraker.client import MoonrakerMonitor
 from klove.config import PrinterConfig
 from klove.domain.models import PrinterPhase, PrinterSnapshot
-from klove.errors import ProtocolError
+from klove.errors import ProtocolError, StateEvidenceError
 from klove.registry import PrinterRegistry
 
 API_KEY = "m" * 32
+
+
+def history_job(status: str = "in_progress") -> dict[str, object]:
+    return {
+        "job_id": "000001",
+        "filename": "job.gcode",
+        "start_time": 1_700_000_000.0,
+        "status": status,
+        "metadata": {},
+    }
 
 
 class RecordingRegistry(PrinterRegistry):
@@ -63,6 +73,7 @@ async def reply(connection: web.WebSocketResponse, request: dict[str, Any], resu
 @pytest.mark.asyncio
 async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_disconnect() -> None:
     async def handler(connection: web.WebSocketResponse, requests: list[dict[str, Any]]) -> None:
+        history_calls = 0
         results = {
             "server.connection.identify": {"connection_id": 7},
             "server.info": {"klippy_connected": True, "klippy_state": "ready"},
@@ -83,6 +94,7 @@ async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_discon
                     "filament_motion_sensor encoder",
                 ]
             },
+            "server.history.list": {"count": 0, "jobs": []},
             "printer.objects.subscribe": {
                 "eventtime": 10,
                 "status": {
@@ -96,7 +108,9 @@ async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_discon
             request = message.json()
             requests.append(request)
             await reply(connection, request, results[request["method"]])
-            if request["method"] == "printer.objects.subscribe":
+            if request["method"] == "server.history.list":
+                history_calls += 1
+            if history_calls == 2:
                 await connection.send_json(
                     {"jsonrpc": "2.0", "method": "notify_proc_stat_update", "params": [{}]}
                 )
@@ -146,9 +160,10 @@ async def test_monitor_identifies_discovers_subscribes_and_invalidates_on_discon
 @pytest.mark.asyncio
 async def test_monitor_waits_for_ready_then_rebuilds_all_evidence() -> None:
     server_info_calls = 0
+    history_calls = 0
 
     async def handler(connection: web.WebSocketResponse, requests: list[dict[str, Any]]) -> None:
-        nonlocal server_info_calls
+        nonlocal history_calls, server_info_calls
         async for message in connection:
             request = message.json()
             requests.append(request)
@@ -188,7 +203,11 @@ async def test_monitor_waits_for_ready_then_rebuilds_all_evidence() -> None:
                         },
                     },
                 )
-                await connection.close()
+            elif method == "server.history.list":
+                history_calls += 1
+                await reply(connection, request, {"count": 0, "jobs": []})
+                if history_calls == 2:
+                    await connection.close()
 
     registry, _requests = await run_against(handler)
     assert [snapshot.phase for snapshot in registry.history] == [
@@ -196,6 +215,109 @@ async def test_monitor_waits_for_ready_then_rebuilds_all_evidence() -> None:
         PrinterPhase.PAUSED,
         PrinterPhase.OFFLINE,
     ]
+
+
+@pytest.mark.asyncio
+async def test_monitor_bootstraps_and_rotates_exact_history_job_identity() -> None:
+    async def handler(connection: web.WebSocketResponse, requests: list[dict[str, Any]]) -> None:
+        history_calls = 0
+        active = history_job()
+        results = {
+            "server.connection.identify": {"connection_id": 12},
+            "server.info": {"klippy_connected": True, "klippy_state": "ready"},
+            "printer.info": {"state": "ready"},
+            "printer.objects.list": {"objects": ["pause_resume", "print_stats", "virtual_sdcard"]},
+            "server.history.list": {"count": 1, "jobs": [active]},
+            "printer.objects.subscribe": {
+                "eventtime": 10,
+                "status": {
+                    "pause_resume": {"is_paused": False},
+                    "print_stats": {"state": "printing", "filename": "job.gcode"},
+                    "virtual_sdcard": {"is_active": True, "file_position": 100},
+                },
+            },
+        }
+        async for message in connection:
+            request = message.json()
+            requests.append(request)
+            await reply(connection, request, results[request["method"]])
+            if request["method"] == "server.connection.identify":
+                await connection.send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notify_history_changed",
+                        "params": [{"action": "added", "job": active}],
+                    }
+                )
+            elif request["method"] == "server.history.list":
+                history_calls += 1
+                if history_calls == 2:
+                    await connection.send_json(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notify_history_changed",
+                            "params": [{"action": "finished", "job": history_job("completed")}],
+                        }
+                    )
+                    await connection.close()
+
+    registry, _requests = await run_against(handler)
+
+    printing, terminal, offline = registry.history
+    assert printing.phase is PrinterPhase.PRINTING
+    assert printing.job is not None and printing.job.status.value == "in_progress"
+    assert terminal.phase is PrinterPhase.PRINTING
+    assert terminal.job is not None and terminal.job.status.value == "completed"
+    assert len({printing.state_token, terminal.state_token, offline.state_token}) == 3
+
+
+@pytest.mark.asyncio
+async def test_monitor_rejects_a_job_change_during_bootstrap() -> None:
+    history_calls = 0
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        nonlocal history_calls
+        connection = web.WebSocketResponse()
+        await connection.prepare(request)
+        async for message in connection:
+            rpc = message.json()
+            method = rpc["method"]
+            if method == "server.connection.identify":
+                result: object = {"connection_id": 13}
+            elif method == "server.info":
+                result = {"klippy_connected": True, "klippy_state": "ready"}
+            elif method == "printer.info":
+                result = {"state": "ready"}
+            elif method == "printer.objects.list":
+                result = {"objects": ["pause_resume", "print_stats", "virtual_sdcard"]}
+            elif method == "server.history.list":
+                history_calls += 1
+                changed = history_job()
+                changed["job_id"] = f"{history_calls:06X}"
+                result = {"count": 1, "jobs": [changed]}
+            else:
+                result = {
+                    "eventtime": 10,
+                    "status": {
+                        "pause_resume": {"is_paused": False},
+                        "print_stats": {"state": "printing", "filename": "job.gcode"},
+                        "virtual_sdcard": {"is_active": True, "file_position": 100},
+                    },
+                }
+            await reply(connection, rpc, result)
+        return connection
+
+    server = TestServer(web.Application())
+    server.app.router.add_get("/websocket", websocket)
+    async with server:
+        registry = RecordingRegistry()
+        async with aiohttp.ClientSession() as session:
+            monitor = MoonrakerMonitor(config(str(server.make_url(""))), API_KEY, registry, session)
+            with pytest.raises(StateEvidenceError, match="history changed"):
+                await monitor.run_once()
+
+    assert history_calls == 2
+    assert registry.history[-1].phase is PrinterPhase.OFFLINE
 
 
 @pytest.mark.asyncio
@@ -267,11 +389,13 @@ async def test_invalid_object_discovery_shape_fails_closed(object_result: dict[s
 @pytest.mark.asyncio
 async def test_unsolicited_response_after_bootstrap_is_rejected() -> None:
     async def handler(connection: web.WebSocketResponse, requests: list[dict[str, Any]]) -> None:
+        history_calls = 0
         results = {
             "server.connection.identify": {"connection_id": 11},
             "server.info": {"klippy_connected": True, "klippy_state": "ready"},
             "printer.info": {"state": "ready"},
             "printer.objects.list": {"objects": ["pause_resume", "print_stats", "virtual_sdcard"]},
+            "server.history.list": {"count": 0, "jobs": []},
             "printer.objects.subscribe": {
                 "eventtime": 1,
                 "status": {
@@ -285,7 +409,9 @@ async def test_unsolicited_response_after_bootstrap_is_rejected() -> None:
             request = message.json()
             requests.append(request)
             await reply(connection, request, results[request["method"]])
-            if request["method"] == "printer.objects.subscribe":
+            if request["method"] == "server.history.list":
+                history_calls += 1
+            if history_calls == 2:
                 await connection.send_json({"jsonrpc": "2.0", "id": 999, "result": {}})
 
     requests: list[dict[str, Any]] = []

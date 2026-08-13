@@ -15,6 +15,7 @@ from klove.domain.control import (
     ReconciliationDecision,
     authorize_cached_intent,
     reconcile_postcondition,
+    validate_cached_recheck,
     validate_live_preflight,
 )
 from klove.errors import ControlTransportError
@@ -106,9 +107,14 @@ class ControlService:
             if mismatch is not None:
                 return _denied(intent.operation, mismatch)
 
-            latest = authorize_cached_intent(intent, await self._registry.get(intent.printer_id))
-            if isinstance(latest, str):
-                return _denied(intent.operation, latest)
+            latest_mismatch = validate_cached_recheck(
+                intent,
+                cached,
+                await self._registry.get(intent.printer_id),
+                preflight=preflight,
+            )
+            if latest_mismatch is not None:
+                return _denied(intent.operation, latest_mismatch)
 
             self._uncertain_tokens.add(uncertainty_key)
             try:
