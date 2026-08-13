@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.12-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS build
+FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1b079b7e48dd435e458d AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -10,7 +10,7 @@ RUN python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip install --require-hashes --prefix=/install -r requirements.lock \
     && python -m pip install --no-build-isolation --no-deps --prefix=/install .
 
-FROM python:3.12-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
+FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1b079b7e48dd435e458d
 
 ARG VCS_REF=unknown
 ARG SOURCE_BRANCH=unknown
@@ -20,8 +20,9 @@ LABEL org.opencontainers.image.source="https://github.com/tomlawesome/klove" \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN groupadd --system --gid 10001 klove \
-    && useradd --system --uid 10001 --gid klove --home-dir /nonexistent --shell /usr/sbin/nologin klove
+RUN addgroup --system --gid 10001 klove \
+    && adduser --system --disabled-password --no-create-home --uid 10001 \
+        --ingroup klove --shell /sbin/nologin klove
 COPY --from=build /install /usr/local
 USER 10001:10001
 EXPOSE 8080
