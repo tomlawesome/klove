@@ -3,6 +3,11 @@
 Klove is a fail-closed interface between Grove Control and Klipper printers
 managed through Moonraker.
 
+Klove is intentionally headless: Grove owns normal user interaction, while
+Klove exchanges structured evidence between controllers and exposes the
+smallest practical machine-facing surface. Human input—and therefore any local
+Web UI—is a last resort for a separately justified, irreducible interaction.
+
 Klove discovers Moonraker capabilities, maintains a canonical printer state,
 authenticates native API clients, and classifies Grove commands. Its first
 opt-in control slice exposes only typed pause, resume, and cancel operations.

@@ -22,6 +22,13 @@ container in the same Docker deployment by default. Klove connects outward to
 each printer's Moonraker HTTP and WebSocket APIs; it does not scrape Mainsail,
 modify Klipper, or require an installation on every printer host.
 
+Klove is a headless, automation-first translation layer. Grove owns the normal
+operator experience. Prefer direct, structured controller-to-controller
+evidence over human input; reconcile automatically when a bounded proof exists
+and otherwise fail closed. A Klove-local Web UI is permitted only as a last
+resort for a demonstrated irreducible human choice or recovery action and
+requires its own accepted decision. See ADR 0002.
+
 Use two northbound interfaces in stages:
 
 1. A deliberately small Bambu-compatible MQTT/FTPS facade gets a useful MVP
@@ -329,6 +336,11 @@ The first usable bridge can work without a Grove fork:
 - external camera URLs configured in Grove
 - no AMS/MMU, calibration, firmware, or Bambu HMS emulation
 
+Klove must publish enough conservative state and operation lifecycle detail for
+Grove to remain the sole normal user interface, including stale/unavailable
+reasons, structured denials, and `outcome_unknown`. It must not move a workflow
+into human input merely because a compatibility mapping is inconvenient.
+
 A single Klove endpoint can serve many printers: MQTT routing includes the
 serial, and FTPS routing can use the unique access code. The access code must be
 unique and secret because FTPS itself does not carry the printer serial.
@@ -360,7 +372,8 @@ then introduce a `PrinterBackend` protocol for connection, state, artifact
 transfer, dispatch, and typed controls. The existing Bambu backend wraps current
 MQTT/FTPS code; a Klove backend calls the native API. Feature visibility and
 model matching should use capabilities and a target profile, not a fake Bambu
-model. This is the sustainable multi-vendor seam for future printer stacks.
+model. This is the sustainable multi-vendor seam for future printer stacks and
+the long-term user-experience boundary; Klove does not grow a parallel frontend.
 
 ## Persistence, reconciliation, and operations
 

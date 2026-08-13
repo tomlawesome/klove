@@ -1,5 +1,15 @@
 # Klove engineering rules
 
+## Product boundary
+
+Klove is a headless, automation-first security and translation layer. Grove
+owns normal user interaction. Prefer direct structured evidence and automatic
+reconciliation between Grove, Klove, and Moonraker over human input. Expose the
+smallest practical machine-facing surface. A Klove-local Web UI is a last resort
+for a demonstrated irreducible human choice or recovery action and requires its
+own accepted architecture decision; never add a dashboard, configuration UI, or
+duplicate workflow for convenience.
+
 ## Safety invariant
 
 Klove fails closed. A command is permitted only when every required piece of
