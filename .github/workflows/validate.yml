@@ -73,14 +73,18 @@ jobs:
         env:
           TRIVY_IMAGE: aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
         run: |
-          mkdir -p .klove-supply-chain
+          mkdir -p .klove-supply-chain .klove-trivy-cache
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
-            "${TRIVY_IMAGE}" image --exit-code 1 --severity HIGH,CRITICAL klove:preview-test
+            --volume "${PWD}/.klove-trivy-cache:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" image \
+            --db-repository ghcr.io/aquasecurity/trivy-db:2 \
+            --exit-code 1 --severity HIGH,CRITICAL klove:preview-test
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "${PWD}/.klove-trivy-cache:/root/.cache/trivy" \
             --volume "${PWD}/.klove-supply-chain:/evidence" \
-            "${TRIVY_IMAGE}" image --format spdx-json \
+            "${TRIVY_IMAGE}" image --skip-db-update --format spdx-json \
             --output /evidence/image.spdx.json klove:preview-test
       - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1 # v3
         with:
