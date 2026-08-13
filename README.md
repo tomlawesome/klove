@@ -51,13 +51,13 @@ an accepted immutable digest, and mount configuration and secrets read-only.
 
 ## Development
 
-Create `.venv`, install `requirements-dev.lock` with `--require-hashes`, and
-install Klove editable with `--no-build-isolation --no-deps`. Then run
-`scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere. The gate
-includes formatting, linting, strict typing, and 100% statement and branch
-coverage. Pytest is configured to import Klove from `src`, so the gate exercises
-the working tree even when the environment also contains a non-editable or
-older package installation.
+Create `.venv`, install `requirements-dev.lock` and `requirements-build.lock`
+with `--require-hashes`, and install Klove with `--no-build-isolation --no-deps`.
+Then run `scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere.
+The gate includes formatting, linting, strict typing, and 100% statement and
+branch coverage. Pytest is configured to import Klove from `src`, so the gate
+exercises the working tree even when the environment also contains a
+non-editable or older package installation.
 
 See the [architecture and delivery plan](docs/architecture-plan.md),
 [active implementation plan](docs/implementation-plan.md),

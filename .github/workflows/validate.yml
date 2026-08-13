@@ -24,11 +24,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.lock
+          cache-dependency-path: |
+            requirements-dev.lock
+            requirements-build.lock
       - name: Install hash-pinned dependencies
         run: |
           python -m pip install --require-hashes -r requirements-dev.lock
-          python -m pip install --no-build-isolation --no-deps -e .
+          python -m pip install --require-hashes -r requirements-build.lock
+          python -m pip install --no-build-isolation --no-deps .
       - name: Run deterministic fast checks
         run: sh scripts/test-fast.sh
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
