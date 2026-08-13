@@ -21,8 +21,17 @@ Last updated: 2026-08-13
   top-level GitHub execution register.
 - [Typed job-control issue #4](https://github.com/tomlawesome/klove/issues/4)
   and its epic are complete on protected `develop`.
+- [Delivery-lane issue #2](https://github.com/tomlawesome/klove/issues/2) is
+  complete. Protected preview run `31741422470` published the attested candidate
+  `ghcr.io/tomlawesome/klove@sha256:7be3122ef7427fe9d49a27980de16363f4be2ed8f28ec1ab73b2e18dab690fc8`.
+- [Stable-promotion issue #3](https://github.com/tomlawesome/klove/issues/3)
+  remains blocked on documented production-like printer acceptance; the
+  candidate has not been promoted to `main`, a version tag, or `latest`.
 - [Headless-boundary decision #40](https://github.com/tomlawesome/klove/issues/40)
   records that Grove owns normal interaction and a Klove UI is a last resort.
+- [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
+  and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
+  safe-dispatch contract prerequisite.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -58,8 +67,9 @@ semantic completeness.
   reviewed `main` deployments.
 - [x] Land the implemented workflows, obtain clean CI, confirm the exact check
   contexts, and make those contexts required on each protected lane.
-- [x] Non-root, read-only-root compatible OCI image definition. A local build
-  is unavailable on the current host and remains to be proven in clean CI.
+- [x] Non-root, read-only-root compatible OCI image definition, proven by the
+  protected preview runtime contract, vulnerability scan, SBOM, and provenance
+  attestation for the immutable candidate recorded above.
 
 Exit criterion: Klove can monitor one or more simulated Moonraker printers
 through restarts and malformed messages, while every Grove command remains
@@ -100,12 +110,36 @@ dispatched at most once and reported confirmed only from later evidence for the
 same job. Every missing, stale, contradictory, or post-dispatch ambiguous state
 fails closed.
 
+## Completed slice: versioned artifact contracts
+
+- [x] Define strict v1 models for archive intake, one selected plate, exact
+  printer/profile binding, operation identity/state, validation evidence, and
+  bounded structured denials.
+- [x] Require canonical UUIDv4 identities, lowercase SHA-256 digests, one known
+  artifact format, bounded visible-ASCII identifiers, and canonical relative
+  archive paths.
+- [x] Add finite configuration limits for ZIP entry count, archive compressed
+  and expanded bytes, compression ratio, selected G-code bytes, and metadata
+  wait time. Compression evidence uses exact entry byte counts and integer
+  cross-products rather than a trusted or rounded ratio claim.
+- [x] Require exactly one complete validation candidate matching both the
+  intent and the current target. Unknown, absent, multiple, stale, or
+  contradictory evidence is denied.
+- [x] Add accepted and rejected JSON fixtures for every contract boundary plus
+  positive, negative, and configuration tests.
+- [x] Complete independent review and the full local gate.
+- [x] Obtain clean GitHub PR CI and merge through protected `develop`.
+
+Exit criterion: untrusted artifact metadata can be represented and evaluated
+without aliases or inference, while no archive extraction, Moonraker upload, or
+print-start transport exists.
+
 ## Next slices
 
-1. Hostile-3MF/G-code validation, exact target/profile binding, safe upload,
-   metadata verification, idempotent print start, and durable reconciliation.
-   Print-start implementation and transport are blocked until a dedicated ADR
-   is accepted; roadmap placement is not authorization.
+1. Hostile-3MF/G-code validation, followed by exact target/profile binding,
+   safe upload, metadata verification, idempotent print start, and durable
+   reconciliation. Print-start implementation and transport are blocked until
+   a dedicated ADR is accepted; roadmap placement is not authorization.
 2. Current-Grove MQTT/TLS and FTPS compatibility facade with conservative state
    projection and specific-printer queueing.
 3. Separately decided and tested bounded temperature/speed plus explicitly

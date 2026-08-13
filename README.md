@@ -15,6 +15,13 @@ opt-in control slice exposes only typed pause, resume, and cancel operations.
 This is pre-release software. It cannot start a print, execute arbitrary G-code,
 or provide any other motion, heating, fan, light, or macro control.
 
+Klove defines a strict v1 contract for future `.gcode.3mf` intake, one selected
+plate, exact printer/profile binding, validation evidence, and structured
+denials. The `[artifacts]` configuration bounds archive and G-code sizes, ZIP
+entry count, compression ratio, and future metadata waits. No archive reader,
+file-upload route, or print-start transport exists yet; these models are safety
+groundwork, not dispatch authorization.
+
 ## Run the service
 
 1. Copy `config.example.toml` to `config.toml` and use an explicit Moonraker URL

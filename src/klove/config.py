@@ -17,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from klove.domain.artifacts import ArtifactLimits
 from klove.errors import ConfigurationError
 
 Identifier = Annotated[
@@ -92,6 +93,7 @@ class AppConfig(BaseModel):
 
     api: ApiConfig
     control: ControlConfig = ControlConfig()
+    artifacts: ArtifactLimits = ArtifactLimits()
     printers: tuple[PrinterConfig, ...] = ()
 
     @model_validator(mode="after")

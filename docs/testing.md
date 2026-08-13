@@ -14,6 +14,10 @@ that the protocol model is complete. The suite therefore also includes:
 - control tests for exact token/job/state matching, per-printer serialization,
   single dispatch, cross-key uncertainty fencing, idempotency conflicts and
   exhaustion, postcondition binding, and every post-dispatch ambiguity;
+- accepted and rejected artifact-contract fixtures plus negative tests for
+  canonical identities, exact target/profile binding, unknown, missing, stale,
+  contradictory and ambiguous evidence, internally inconsistent metrics, and
+  every configured intake limit;
 - repository policy tests that reject the enumerated prohibited RPC literals,
   confine the three accepted job-control RPC literals to one adapter, constrain
   the native mutating route count, and reject unpinned CI actions;
