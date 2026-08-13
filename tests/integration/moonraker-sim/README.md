@@ -50,9 +50,10 @@ rootful daemon only when both `CI=true` and
 Every service runs non-root with a read-only root filesystem, all capabilities
 dropped, `no-new-privileges`, finite CPU/memory/PID limits, and an internal-only
 Compose network with no published port, host network, device, or Docker socket.
-Runtime credentials are generated inside the stack, mounted only where needed,
-and removed with the exact project. Moonraker trusts only its own loopback;
-Klove must authenticate with the generated API key.
+Runtime credentials are generated inside the stack, created owner-only before
+any bytes are written, mounted read-only where needed, and removed with the
+exact project. Moonraker trusts only its own loopback; Klove must authenticate
+with the generated API key.
 
 ## Contract boundary
 

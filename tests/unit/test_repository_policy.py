@@ -168,6 +168,8 @@ def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
 
     assert 'MOONRAKER = "http://127.0.0.1:7125"' in host
     assert 'STATE_DIR = Path("/run/printer-state")' in host
+    assert "os.O_WRONLY | os.O_CREAT | os.O_EXCL" in host
+    assert "0o600" in host
     assert "printer/print/start" not in host
     assert "printer/print/start" in contract
     assert "  127.0.0.1" in moonraker

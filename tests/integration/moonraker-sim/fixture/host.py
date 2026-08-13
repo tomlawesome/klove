@@ -84,10 +84,23 @@ def _wait_ready(processes: list[subprocess.Popen[bytes]], timeout: float) -> Non
 
 
 def _write_private(destination: Path, value: str) -> None:
-    temporary = destination.with_name(f".{destination.name}.new")
-    temporary.write_text(value, encoding="utf-8")
-    temporary.chmod(0o600)
-    os.replace(temporary, destination)
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.new")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = -1
+        with stream:
+            stream.write(value)
+        os.replace(temporary, destination)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _write_secret(name: str, value: str) -> None:
