@@ -10,6 +10,14 @@ confirmation_timeout_seconds = 5
 poll_interval_seconds = 0.1
 idempotency_capacity = 1024
 
+[artifacts]
+max_zip_entries = 512
+max_archive_compressed_bytes = 536870912
+max_archive_expanded_bytes = 2147483648
+max_compression_ratio = 100
+max_gcode_bytes = 1073741824
+metadata_wait_seconds = 30.0
+
 [[printers]]
 id = "voron-24"
 endpoint = "http://voron-24.local:7125"

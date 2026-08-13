@@ -11,6 +11,7 @@ from klove.config import (
     load_config,
     read_secret,
 )
+from klove.domain.artifacts import ArtifactLimits
 from klove.errors import ConfigurationError
 
 
@@ -31,6 +32,14 @@ def test_valid_configuration_loads_and_forbids_unknown_fields(tmp_path: Path) ->
 [api]
 token_file = "api.token"
 
+[artifacts]
+max_zip_entries = 64
+max_archive_compressed_bytes = 1048576
+max_archive_expanded_bytes = 4194304
+max_compression_ratio = 10
+max_gcode_bytes = 2097152
+metadata_wait_seconds = 20.0
+
 [[printers]]
 id = "voron-24"
 endpoint = "http://127.0.0.1:7125"
@@ -42,6 +51,9 @@ api_key_file = "moonraker.key"
 
     assert result.api.listen_host == "127.0.0.1"
     assert result.api.listen_port == 8080
+    assert result.artifacts.max_zip_entries == 64
+    assert result.artifacts.max_compression_ratio == 10
+    assert result.artifacts.metadata_wait_seconds == 20.0
     assert result.printers[0].id == "voron-24"
 
     with pytest.raises(ValidationError):
@@ -101,6 +113,27 @@ def test_control_is_explicit_per_installation_and_printer() -> None:
 def test_control_timing_is_finite_positive_and_consistent(values: dict[str, float]) -> None:
     with pytest.raises(ValidationError):
         ControlConfig(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"max_zip_entries": 0},
+        {"max_archive_compressed_bytes": 0},
+        {"max_archive_expanded_bytes": 0},
+        {"max_compression_ratio": 0},
+        {"max_compression_ratio": 10_001},
+        {"max_compression_ratio": 1.0},
+        {"max_compression_ratio": float("nan")},
+        {"max_gcode_bytes": 0},
+        {"metadata_wait_seconds": float("nan")},
+        {"metadata_wait_seconds": 301.0},
+        {"max_archive_expanded_bytes": 1024, "max_gcode_bytes": 1025},
+    ],
+)
+def test_artifact_limits_are_finite_positive_and_consistent(values: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        ArtifactLimits(**values)  # type: ignore[arg-type]
 
 
 def test_bad_configuration_files_have_one_bounded_error(tmp_path: Path) -> None:

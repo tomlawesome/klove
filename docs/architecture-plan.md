@@ -319,6 +319,13 @@ Proposed future artifact policy (not yet authorized):
    successful start to Grove. If the response is lost, reconcile current state
    and history instead of retrying blindly.
 
+The first implementation step is deliberately non-actuating: a strict v1
+contract represents archive identity, one plate selection, exact
+printer/profile binding, validation metrics, operation state, and structured
+denials. It rejects unknown, missing, stale, contradictory, or ambiguous
+evidence and applies finite configured limits, but it does not open archives,
+upload files, or expose print start.
+
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
 must remain a separate optional service.
@@ -510,15 +517,17 @@ fail closed.
 
 ## Immediate next slice
 
-After the typed pause/resume/cancel PR is cleanly merged through `develop`, the
-next slice is the artifact acceptance and dispatch boundary: hostile 3MF/G-code
-validation, exact target/profile binding, bounded upload and metadata checks,
-single idempotent print start, and durable restart reconciliation. MQTT/FTPS
-compatibility work follows that safety boundary. Print start remains blocked
-until a dedicated ADR is accepted; this sequencing statement authorizes no new
-actuator. Track the programme in
+The active prerequisite is the versioned artifact contract in
+[issue #7](https://github.com/tomlawesome/klove/issues/7). It freezes strict
+intake, selected-plate, exact-target, validation-evidence, operation-state, and
+structured-error models without reading an archive or adding transport. Hostile
+3MF/G-code validation follows, then target binding, bounded upload and metadata
+checks, one idempotent print start, and durable restart reconciliation.
+MQTT/FTPS compatibility work follows that safety boundary. Print start remains
+blocked until a dedicated ADR is accepted; this sequencing statement authorizes
+no new actuator. Track the programme in
 [GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38), the active
-control slice in [issue #4](https://github.com/tomlawesome/klove/issues/4), and
+contract slice in [issue #7](https://github.com/tomlawesome/klove/issues/7), and
 artifact dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 
 ## Primary references

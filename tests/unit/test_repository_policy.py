@@ -23,7 +23,7 @@ def test_control_slice_contains_only_dedicated_job_actuators() -> None:
     }
     production_files = sorted((ROOT / "src" / "klove").rglob("*.py"))
     package_text = "\n".join(path.read_text(encoding="utf-8") for path in production_files)
-    assert not forbidden_methods.intersection(package_text.split('"'))
+    assert not any(method in package_text for method in forbidden_methods)
     actuator_files = {
         path.relative_to(ROOT).as_posix()
         for path in production_files
@@ -37,6 +37,22 @@ def test_control_slice_contains_only_dedicated_job_actuators() -> None:
         )
     }
     assert actuator_files == {"src/klove/adapters/moonraker/control.py"}
+
+
+def test_artifact_contract_slice_contains_no_io_or_transport() -> None:
+    contract_text = (ROOT / "src" / "klove" / "domain" / "artifacts.py").read_text(encoding="utf-8")
+
+    assert not any(
+        token in contract_text
+        for token in (
+            "aiohttp",
+            "httpx",
+            "requests",
+            "server/files/upload",
+            "tarfile",
+            "zipfile",
+        )
+    )
 
 
 def test_native_api_exposes_only_get_and_one_typed_post_route() -> None:

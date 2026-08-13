@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through the first typed-control slice
+Status: active through the artifact-contract slice
 
 ## Protected assets
 
@@ -71,6 +71,26 @@ macros. Printer owners accept responsibility for those macros and for
 coordinating other clients. Klove limits the interval, binds any claimed success
 to later evidence for the same job, and reports ambiguity without retrying. See
 `docs/decisions/0001-typed-job-control.md`.
+
+## Artifact-contract controls
+
+- The v1 artifact contract accepts only one known archive format, canonical
+  UUIDv4 operation/artifact/idempotency identities, lowercase SHA-256 digests,
+  one selected plate, one exact printer id, one slicer-profile id, and one
+  safety-profile fingerprint. Unknown members and non-canonical aliases are
+  rejected.
+- Archive compressed and expanded bytes, ZIP entry count, compression ratio,
+  selected G-code bytes, and future metadata waits have finite operator limits
+  whose own configuration is bounded. Ratio evidence carries exact compressed
+  and expanded byte counts for the highest-ratio entry; aggregate consistency
+  and the policy threshold are checked by integer cross-multiplication.
+- Validation requires exactly one complete candidate matching the intent and
+  the currently configured target. Unknown, missing, multiple, stale, or
+  contradictory evidence produces a bounded denial without echoing source
+  text.
+- The current slice parses only the contract fixtures. It reads no archive or
+  G-code body, creates no file, contacts no printer, and introduces no upload or
+  print-start transport.
 
 ## Required controls before print start and later actuators
 
