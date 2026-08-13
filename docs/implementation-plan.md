@@ -20,7 +20,9 @@ Last updated: 2026-08-13
 - [Programme roadmap #38](https://github.com/tomlawesome/klove/issues/38) is the
   top-level GitHub execution register.
 - [Typed job-control issue #4](https://github.com/tomlawesome/klove/issues/4)
-  tracks the active slice.
+  and its epic are complete on protected `develop`.
+- [Headless-boundary decision #40](https://github.com/tomlawesome/klove/issues/40)
+  records that Grove owns normal interaction and a Klove UI is a last resort.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -39,7 +41,7 @@ must retain 100% statement and branch coverage. Coverage is supplemented by
 property tests and negative protocol fixtures; it is not treated as proof of
 semantic completeness.
 
-## Completed local slice: read-only foundation
+## Completed slice: read-only foundation
 
 - [x] Package, configuration, secret-file, logging, and container foundation.
 - [x] Canonical printer state and capability schemas.
@@ -54,8 +56,8 @@ semantic completeness.
   requests and resolved conversations and reject force-pushes and deletion.
   Default Actions permissions are read-only and `production` is restricted to
   reviewed `main` deployments.
-- [ ] Land the implemented workflows, obtain clean CI, confirm the exact check
-  contexts, and then make those contexts required on each protected lane.
+- [x] Land the implemented workflows, obtain clean CI, confirm the exact check
+  contexts, and make those contexts required on each protected lane.
 - [x] Non-root, read-only-root compatible OCI image definition. A local build
   is unavailable on the current host and remains to be proven in clean CI.
 
@@ -63,7 +65,7 @@ Exit criterion: Klove can monitor one or more simulated Moonraker printers
 through restarts and malformed messages, while every Grove command remains
 denied or classified without reaching an actuator.
 
-## Active slice: typed pause, resume, and cancel
+## Completed slice: typed pause, resume, and cancel
 
 - [x] Boot-scoped opaque state tokens bind a revision to its observed job data.
 - [x] Local monotonic receipt times make evidence freshness measurable.
@@ -90,7 +92,7 @@ denied or classified without reaching an actuator.
 - [x] Repository policy permits only the three dedicated actuator RPCs in one
   adapter and rejects generic G-code, print start, and other actuators.
 - [x] Complete documentation review and the full local gate.
-- [ ] Obtain clean GitHub PR CI and merge through the protected workflow into
+- [x] Obtain clean GitHub PR CI and merge through the protected workflow into
   `develop`.
 
 Exit criterion: one authenticated, current, exact pause/resume/cancel request is
