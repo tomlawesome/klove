@@ -1,0 +1,21 @@
+name: Bug report
+description: Report incorrect, unsafe, or surprising Klove behaviour
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: Observed behaviour
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected fail-closed behaviour
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Sanitized evidence
+      description: Never include credentials, URLs containing credentials, or uploaded G-code.
+    validations:
+      required: true
