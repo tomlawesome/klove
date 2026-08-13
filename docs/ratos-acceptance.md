@@ -1,6 +1,8 @@
 # RatOS v2.1.0 acceptance lane
 
-Status: procedure defined; execution requires supported ARM hardware
+Status: procedure defined; exact-image emulation is tracked in
+[issue #50](https://github.com/tomlawesome/klove/issues/50), while conclusive
+execution still requires supported ARM hardware
 
 RatOS acceptance is deliberately separate from Klove's native
 Klipper/Moonraker container test. The automated fixture proves the current
@@ -31,7 +33,9 @@ bootloader, board kernel and device tree, systemd service graph, udev, and
 hardware integration that make the release RatOS; it does not count as a RatOS
 test.
 
-A later full-system emulation experiment is acceptable if it:
+The rootless full-system experiment is tracked in
+[issue #50](https://github.com/tomlawesome/klove/issues/50) and is acceptable
+only if it:
 
 - verifies and boots the exact release image without modifying its contents;
 - uses a sufficiently faithful emulated target board and needs no privileged

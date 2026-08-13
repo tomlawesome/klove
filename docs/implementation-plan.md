@@ -152,7 +152,8 @@ fails closed.
   sizes/checksums, macro ownership, attended safety checks, and an evidence
   template. Do not call the native stack RatOS; full-system emulation is
   supplemental only when it faithfully boots the exact image.
-- [ ] Obtain clean GitHub PR CI and merge through protected `develop`.
+- [x] Obtain clean GitHub PR CI and merge through protected `develop` in
+  [PR #49](https://github.com/tomlawesome/klove/pull/49).
 
 Exit criterion: a reproducible confined run passes against the pinned real
 Klipper/Moonraker processes and retains negative, fault, and restart evidence;
@@ -217,6 +218,8 @@ filesystem, network, printer, or actuation effects.
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
    promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
    and [stable promotion #3](https://github.com/tomlawesome/klove/issues/3).
+   First evaluate faithful rootless full-system virtualisation of the exact
+   RatOS image under [spike #50](https://github.com/tomlawesome/klove/issues/50).
    This validation work authorizes no new actuator.
 2. Exact target/safety-profile binding, then separately decided safe upload,
    metadata verification, idempotent print start, and durable reconciliation.
