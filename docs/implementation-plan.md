@@ -30,7 +30,8 @@ Last updated: 2026-08-13
 - [Headless-boundary decision #40](https://github.com/tomlawesome/klove/issues/40)
   records that Grove owns normal interaction and a Klove UI is a last resort.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
-  is the active safe-dispatch prerequisite.
+  and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
+  safe-dispatch contract prerequisite.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -109,7 +110,7 @@ dispatched at most once and reported confirmed only from later evidence for the
 same job. Every missing, stale, contradictory, or post-dispatch ambiguous state
 fails closed.
 
-## Active slice: versioned artifact contracts
+## Completed slice: versioned artifact contracts
 
 - [x] Define strict v1 models for archive intake, one selected plate, exact
   printer/profile binding, operation identity/state, validation evidence, and
@@ -127,7 +128,7 @@ fails closed.
 - [x] Add accepted and rejected JSON fixtures for every contract boundary plus
   positive, negative, and configuration tests.
 - [x] Complete independent review and the full local gate.
-- [ ] Obtain clean GitHub PR CI and merge through protected `develop`.
+- [x] Obtain clean GitHub PR CI and merge through protected `develop`.
 
 Exit criterion: untrusted artifact metadata can be represented and evaluated
 without aliases or inference, while no archive extraction, Moonraker upload, or

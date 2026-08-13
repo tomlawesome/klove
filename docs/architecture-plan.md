@@ -517,18 +517,18 @@ fail closed.
 
 ## Immediate next slice
 
-The active prerequisite is the versioned artifact contract in
+The versioned artifact-contract prerequisite is complete in
 [issue #7](https://github.com/tomlawesome/klove/issues/7). It freezes strict
 intake, selected-plate, exact-target, validation-evidence, operation-state, and
-structured-error models without reading an archive or adding transport. Hostile
-3MF/G-code validation follows, then target binding, bounded upload and metadata
-checks, one idempotent print start, and durable restart reconciliation.
-MQTT/FTPS compatibility work follows that safety boundary. Print start remains
-blocked until a dedicated ADR is accepted; this sequencing statement authorizes
-no new actuator. Track the programme in
-[GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38), the active
-contract slice in [issue #7](https://github.com/tomlawesome/klove/issues/7), and
-artifact dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
+structured-error models without reading an archive or adding transport. The
+immediate next slice is hostile 3MF/G-code validation in
+[issue #6](https://github.com/tomlawesome/klove/issues/6), followed by target
+binding, bounded upload and metadata checks, one idempotent print start, and
+durable restart reconciliation. MQTT/FTPS compatibility work follows that
+safety boundary. Print start remains blocked until a dedicated ADR is accepted;
+this sequencing statement authorizes no new actuator. Track the programme in
+[GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38) and artifact
+dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 
 ## Primary references
 
