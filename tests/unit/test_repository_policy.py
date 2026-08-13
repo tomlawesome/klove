@@ -6,27 +6,37 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 
 
-def test_read_only_slice_contains_no_printer_actuator_transport() -> None:
+def test_control_slice_contains_only_dedicated_job_actuators() -> None:
     forbidden_methods = {
         "machine.reboot",
         "machine.shutdown",
         "printer.emergency_stop",
         "printer.gcode.script",
-        "printer.print.cancel",
-        "printer.print.pause",
-        "printer.print.resume",
         "printer.print.start",
     }
-    package_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted((ROOT / "src" / "klove").rglob("*.py"))
-    )
+    production_files = sorted((ROOT / "src" / "klove").rglob("*.py"))
+    package_text = "\n".join(path.read_text(encoding="utf-8") for path in production_files)
     assert not forbidden_methods.intersection(package_text.split('"'))
+    actuator_files = {
+        path.relative_to(ROOT).as_posix()
+        for path in production_files
+        if any(
+            method in path.read_text(encoding="utf-8")
+            for method in (
+                "printer.print.cancel",
+                "printer.print.pause",
+                "printer.print.resume",
+            )
+        )
+    }
+    assert actuator_files == {"src/klove/adapters/moonraker/control.py"}
 
 
-def test_native_api_exposes_only_get_routes() -> None:
+def test_native_api_exposes_only_get_and_one_typed_post_route() -> None:
     api_text = (ROOT / "src" / "klove" / "northbound" / "api.py").read_text(encoding="utf-8")
     route_methods = set(re.findall(r"app\.router\.add_([a-z]+)\(", api_text))
-    assert route_methods == {"get"}
+    assert route_methods == {"get", "post"}
+    assert api_text.count("app.router.add_post(") == 1
 
 
 def test_all_github_actions_are_pinned_to_full_commit_shas() -> None:

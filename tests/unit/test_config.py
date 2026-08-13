@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from klove.config import ApiConfig, AppConfig, PrinterConfig, load_config, read_secret
+from klove.config import (
+    ApiConfig,
+    AppConfig,
+    ControlConfig,
+    PrinterConfig,
+    load_config,
+    read_secret,
+)
 from klove.errors import ConfigurationError
 
 
@@ -67,6 +74,33 @@ def test_insecure_remote_http_requires_explicit_consent() -> None:
 def test_duplicate_printer_ids_are_rejected() -> None:
     with pytest.raises(ValidationError, match="must be unique"):
         AppConfig(api=ApiConfig(token_file=Path("token")), printers=(printer(), printer()))
+
+
+def test_control_is_explicit_per_installation_and_printer() -> None:
+    with pytest.raises(ValidationError, match=r"requires control\.enabled"):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            printers=(printer(control_enabled=True),),
+        )
+    assert AppConfig(
+        api=ApiConfig(token_file=Path("token")),
+        control=ControlConfig(enabled=True),
+        printers=(printer(control_enabled=True),),
+    )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"request_timeout_seconds": float("nan")},
+        {"confirmation_timeout_seconds": float("nan")},
+        {"poll_interval_seconds": float("nan")},
+        {"confirmation_timeout_seconds": 1, "poll_interval_seconds": 2},
+    ],
+)
+def test_control_timing_is_finite_positive_and_consistent(values: dict[str, float]) -> None:
+    with pytest.raises(ValidationError):
+        ControlConfig(**values)  # type: ignore[arg-type]
 
 
 def test_bad_configuration_files_have_one_bounded_error(tmp_path: Path) -> None:

@@ -15,3 +15,7 @@ class ProtocolError(KloveError):
 
 class StateEvidenceError(KloveError):
     """Printer evidence was stale, malformed, or internally contradictory."""
+
+
+class ControlTransportError(KloveError):
+    """A control transport failed without exposing remote or secret material."""

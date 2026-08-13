@@ -18,7 +18,7 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def write_config(tmp_path: Path, port: int, *, printer: bool) -> Path:
+def write_config(tmp_path: Path, port: int, *, printer: bool, control: bool = False) -> Path:
     api_token = tmp_path / "api.token"
     api_token.write_text("a" * 32, encoding="utf-8")
     printer_block = ""
@@ -31,6 +31,7 @@ def write_config(tmp_path: Path, port: int, *, printer: bool) -> Path:
 id = "voron"
 endpoint = "http://127.0.0.1:7125"
 api_key_file = "{moonraker_token.as_posix()}"
+control_enabled = {str(control).lower()}
 """
     config = tmp_path / f"config-{port}.toml"
     config.write_text(
@@ -39,6 +40,9 @@ api_key_file = "{moonraker_token.as_posix()}"
 listen_host = "127.0.0.1"
 listen_port = {port}
 token_file = "{api_token.as_posix()}"
+
+[control]
+enabled = {str(control).lower()}
 {printer_block}
 """.strip(),
         encoding="utf-8",
@@ -63,13 +67,20 @@ async def test_serve_starts_read_only_api_and_cleans_up_monitors(
     monkeypatch.setattr(app_module, "MoonrakerMonitor", FakeMonitor)
     port = free_port()
     stop = asyncio.Event()
-    task = asyncio.create_task(serve(write_config(tmp_path, port, printer=True), stop))
+    task = asyncio.create_task(
+        serve(write_config(tmp_path, port, printer=True, control=True), stop)
+    )
     await asyncio.wait_for(started.wait(), timeout=2)
 
     async with aiohttp.ClientSession() as session:
         response = await session.get(f"http://127.0.0.1:{port}/health/ready")
         assert response.status == 200
         assert await response.json() == {"status": "ready"}
+        control_response = await session.post(
+            f"http://127.0.0.1:{port}/v1/printers/voron/commands/pause",
+            headers={"Authorization": f"Bearer {'a' * 32}"},
+        )
+        assert control_response.status == 400
 
     stop.set()
     await asyncio.wait_for(task, timeout=2)

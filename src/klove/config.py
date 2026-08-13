@@ -35,6 +35,7 @@ class PrinterConfig(BaseModel):
     api_key_file: Path
     allow_insecure_http: bool = False
     verify_tls: bool = True
+    control_enabled: bool = False
 
     @model_validator(mode="after")
     def validate_endpoint(self) -> PrinterConfig:
@@ -56,7 +57,7 @@ class PrinterConfig(BaseModel):
 
 
 class ApiConfig(BaseModel):
-    """Read-only native API configuration."""
+    """Native API configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -65,12 +66,32 @@ class ApiConfig(BaseModel):
     token_file: Path
 
 
+class ControlConfig(BaseModel):
+    """Explicit, bounded job-control settings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    request_timeout_seconds: float = Field(default=10.0, gt=0, le=30, allow_inf_nan=False)
+    confirmation_timeout_seconds: float = Field(default=5.0, gt=0, le=30, allow_inf_nan=False)
+    poll_interval_seconds: float = Field(default=0.1, gt=0, le=5, allow_inf_nan=False)
+    idempotency_capacity: int = Field(default=1024, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def finite_consistent_timing(self) -> ControlConfig:
+        """Reject non-finite limits and polling slower than confirmation."""
+        if self.poll_interval_seconds > self.confirmation_timeout_seconds:
+            raise ValueError("control poll interval must not exceed confirmation timeout")
+        return self
+
+
 class AppConfig(BaseModel):
     """Complete Klove configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     api: ApiConfig
+    control: ControlConfig = ControlConfig()
     printers: tuple[PrinterConfig, ...] = ()
 
     @model_validator(mode="after")
@@ -79,6 +100,8 @@ class AppConfig(BaseModel):
         ids = [printer.id for printer in self.printers]
         if len(ids) != len(set(ids)):
             raise ValueError("printer ids must be unique")
+        if not self.control.enabled and any(printer.control_enabled for printer in self.printers):
+            raise ValueError("per-printer control requires control.enabled=true")
         return self
 
 

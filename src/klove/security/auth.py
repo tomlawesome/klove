@@ -17,9 +17,15 @@ class Principal:
 class BearerAuthenticator:
     """Authenticate one configured bearer credential without secret logging."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(
+        self,
+        token: str,
+        *,
+        scopes: frozenset[str] = frozenset({"printers:read"}),
+    ) -> None:
         """Retain the already validated token in process memory."""
         self._token = token
+        self._principal = Principal(scopes=scopes)
 
     def authenticate(self, authorization: str | None) -> Principal | None:
         """Return a principal only for one exact RFC 6750-style header."""
@@ -30,7 +36,7 @@ class BearerAuthenticator:
             return None
         if not hmac.compare_digest(supplied, self._token):
             return None
-        return Principal()
+        return self._principal
 
 
 def authorize(principal: Principal | None, required_scope: str) -> bool:

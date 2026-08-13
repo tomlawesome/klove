@@ -3,9 +3,17 @@ listen_host = "127.0.0.1"
 listen_port = 8080
 token_file = "/run/secrets/klove_api_token"
 
+[control]
+enabled = true
+request_timeout_seconds = 10
+confirmation_timeout_seconds = 5
+poll_interval_seconds = 0.1
+idempotency_capacity = 1024
+
 [[printers]]
 id = "voron-24"
 endpoint = "http://voron-24.local:7125"
 api_key_file = "/run/secrets/voron_24_moonraker_api_key"
 allow_insecure_http = true
 verify_tls = true
+control_enabled = true
