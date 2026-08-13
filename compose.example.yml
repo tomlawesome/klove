@@ -1,0 +1,16 @@
+services:
+  klove:
+    image: ghcr.io/tomlawesome/klove@sha256:replace-with-an-accepted-digest
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config.toml:/etc/klove/config.toml:ro
+      - ./secrets:/run/secrets:ro

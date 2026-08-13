@@ -1,0 +1,16 @@
+{
+  "eventtime": 100.5,
+  "status": {
+    "pause_resume": {"is_paused": false},
+    "print_stats": {
+      "filename": "",
+      "filament_used": 0.0,
+      "info": {},
+      "message": "",
+      "print_duration": 0.0,
+      "state": "standby",
+      "total_duration": 0.0
+    },
+    "virtual_sdcard": {"file_position": 0, "is_active": false, "progress": 0.0}
+  }
+}

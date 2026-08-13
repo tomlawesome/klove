@@ -1,0 +1,54 @@
+name: Promote tested Klove preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_digest:
+        description: Accepted preview digest beginning sha256:
+        required: true
+        type: string
+
+concurrency:
+  group: klove-stable-promotion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    name: Promote immutable digest
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify and promote exact digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ inputs.preview_digest }}
+        run: |
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="${IMAGE,,}"
+          gh attestation verify "oci://${image}@${DIGEST}" --repo "${GITHUB_REPOSITORY}"
+          docker pull "${image}@${DIGEST}"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}@${DIGEST}")"
+          source_branch="$(docker image inspect --format '{{ index .Config.Labels "io.github.tomlawesome.klove.source-branch" }}' "${image}@${DIGEST}")"
+          test "${source_branch}" = preview
+          [[ "${revision}" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "${revision}" HEAD
+          git diff --quiet "${revision}^{tree}" "HEAD^{tree}"
+          docker buildx imagetools create --prefer-index=false --tag "${image}:latest" "${image}@${DIGEST}"

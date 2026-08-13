@@ -22,6 +22,13 @@ container in the same Docker deployment by default. Klove connects outward to
 each printer's Moonraker HTTP and WebSocket APIs; it does not scrape Mainsail,
 modify Klipper, or require an installation on every printer host.
 
+Klove is a headless, automation-first translation layer. Grove owns the normal
+operator experience. Prefer direct, structured controller-to-controller
+evidence over human input; reconcile automatically when a bounded proof exists
+and otherwise fail closed. A Klove-local Web UI is permitted only as a last
+resort for a demonstrated irreducible human choice or recovery action and
+requires its own accepted decision. See ADR 0002.
+
 Use two northbound interfaces in stages:
 
 1. A deliberately small Bambu-compatible MQTT/FTPS facade gets a useful MVP
@@ -151,10 +158,13 @@ For every configured printer Klove should:
    later `notify_status_update` diffs into local state.
 4. Watch `notify_klippy_ready`, `notify_klippy_shutdown`, and
    `notify_klippy_disconnected`; re-probe capabilities after restart.
-5. Use HTTP `/server/files/upload` for G-code and JSON-RPC
-   `printer.print.start`, `.pause`, `.resume`, and `.cancel` for job control.
-6. Use Moonraker metadata and history to estimate remaining time and reconcile
-   jobs after either side restarts.
+5. For the accepted first control slice, use only JSON-RPC
+   `printer.print.pause`, `.resume`, and `.cancel`.
+6. A later artifact-dispatch slice proposes HTTP `/server/files/upload` and
+   `printer.print.start`, but neither transport is authorized until its own ADR
+   is accepted.
+7. Use Moonraker metadata and history to estimate remaining time and reconcile
+   jobs after either side restarts when the relevant slice is authorized.
 
 Minimum required Klipper objects for farm dispatch are `virtual_sdcard`,
 `print_stats`, and `pause_resume`. A printer missing one should remain visible
@@ -229,10 +239,15 @@ instead of inventing sensors or AMS state.
 
 ## Typed command translation and safety policy
 
-Decode every Grove request into one of a small set of canonical operations:
+The accepted canonical operations are currently limited to:
+
+- pause, resume, cancel
+
+The roadmap proposes the following later operations, but each remains
+prohibited until its own ADR accepts the complete typed contract and safety
+evidence:
 
 - dispatch artifact
-- pause, resume, cancel
 - set hotend or bed target
 - set speed multiplier
 - set a mapped fan or light
@@ -242,23 +257,33 @@ Decode every Grove request into one of a small set of canonical operations:
 - exclude objects
 - invoke an explicitly configured macro with a declared parameter schema
 
-Then validate the operation before invoking Moonraker:
+The following are design constraints for any future accepted operation, not
+authorization to implement it:
 
 - Reject unknown MQTT commands and arbitrary `gcode_line` by default.
 - Pause/resume/cancel use Moonraker's typed print endpoints, not G-code strings.
-- Heater targets are clamped to the lower of the operator policy and the
+- Any future heater-target design must use the lower of the operator policy and
   discovered Klipper limit, with a configured safety margin.
-- Jogging is allowed only while idle, only on homed axes, inside current
+- A future jogging design would require idle state, homed axes, current
   `toolhead.axis_minimum/axis_maximum`, and below configured distance/speed
-  limits. Klove generates the complete relative/absolute-mode script itself.
-- Extrusion is allowed only while idle, when the selected hotend reports
-  `can_extrude`, and within length/rate limits.
-- Fan and light commands require explicit object/macro mappings. Never guess by
-  substring alone.
-- Printer, heater, fan, and macro names are selected from discovered allowlists;
-  they are never interpolated from a Grove payload.
-- While printing, allow only the small live-control set explicitly safe for
-  that state.
+  limits. Whether Klove may generate any bounded sequence requires its own ADR.
+- A future extrusion design would require idle state, a selected hotend
+  reporting `can_extrude`, and configured length/rate limits.
+- Future fan and light commands require explicit object or reviewed macro
+  mappings. Never guess by substring alone.
+- Future printer, heater, fan, and macro targets must be selected from
+  discovered allowlists; they must never be interpolated from a Grove payload.
+- Any future live control while printing must be separately accepted as safe
+  for that exact state.
+
+ADR 0001 accepts stock Moonraker pause, resume, and cancel for the first control
+slice. The printer owner is responsible for the correctness and safety of any
+Klipper macros replacing `PAUSE`, `RESUME`, or `CANCEL_PRINT`. Klove mitigates,
+but cannot remove, Moonraker's non-atomic query/control interval: it requires an
+exact state token and job match, serializes by printer, polls immediately before
+one dispatch, and binds confirmation to later evidence for the same job. Any
+ambiguity after dispatch is `outcome_unknown` and never triggers a blind retry.
+No generic G-code or print-start transport is part of this decision.
 
 Grove sends MQTT with QoS 1, so Klove must assume duplicate delivery. Deduplicate
 commands by printer, command kind, sequence/task ID, and payload hash. A repeated
@@ -272,7 +297,7 @@ file sliced for a Bambu machine is not made safe for a Klipper printer by
 renaming it or extracting it from a 3MF. Klove must not rewrite a foreign start
 G-code dialect or silently ignore commands.
 
-MVP policy:
+Proposed future artifact policy (not yet authorized):
 
 1. Accept Grove's `.gcode.3mf` container only when its selected plate contains
    G-code sliced for the target Klipper profile. Never support unsliced geometry
@@ -286,7 +311,8 @@ MVP policy:
 4. Treat the 3MF as a hostile ZIP: cap upload/compressed/uncompressed sizes and
    entry count; reject traversal, links, encrypted entries, duplicate paths, and
    compression bombs; stream only the chosen plate G-code.
-5. Upload to a unique `klove/<operation-id>.gcode` path through Moonraker, wait
+5. After a dedicated dispatch ADR is accepted, upload to a unique
+   `klove/<operation-id>.gcode` path through Moonraker, wait
    for metadata processing, validate the returned metadata, then issue one
    idempotent start request.
 6. Observe the expected Moonraker filename/state transition before reporting a
@@ -309,6 +335,11 @@ The first usable bridge can work without a Grove fork:
 - specific-printer queueing only; no model-based scheduling in the first demo
 - external camera URLs configured in Grove
 - no AMS/MMU, calibration, firmware, or Bambu HMS emulation
+
+Klove must publish enough conservative state and operation lifecycle detail for
+Grove to remain the sole normal user interface, including stale/unavailable
+reasons, structured denials, and `outcome_unknown`. It must not move a workflow
+into human input merely because a compatibility mapping is inconvenient.
 
 A single Klove endpoint can serve many printers: MQTT routing includes the
 serial, and FTPS routing can use the unique access code. The access code must be
@@ -341,7 +372,8 @@ then introduce a `PrinterBackend` protocol for connection, state, artifact
 transfer, dispatch, and typed controls. The existing Bambu backend wraps current
 MQTT/FTPS code; a Klove backend calls the native API. Feature visibility and
 model matching should use capabilities and a target profile, not a fake Bambu
-model. This is the sustainable multi-vendor seam for future printer stacks.
+model. This is the sustainable multi-vendor seam for future printer stacks and
+the long-term user-experience boundary; Klove does not grow a parallel frontend.
 
 ## Persistence, reconciliation, and operations
 
@@ -392,25 +424,45 @@ Exit: mappings and rejected behaviours are executable tests, not only prose.
 Exit: stable monitoring through Moonraker restarts and network partitions; no
 printer-changing command exists.
 
-### Phase 2: current-Grove monitoring and typed basic control
+### Phase 2: typed Moonraker job control
 
-- Minimal MQTT/TLS facade and Bambu status projection.
-- Pause, resume, cancel, bounded temperatures, speed, and explicitly mapped
-  light/fan controls. Keep jog/extrude disabled until their safety tests exist.
+- Deliver the ADR-0001 pause, resume, and cancel contract through the typed
+  native route.
+- Keep print start, generic G-code, temperature, speed, fan, light, motion, and
+  extrusion absent.
 
-Exit: current Grove can monitor and perform supported controls; unknown commands
-fail visibly and never reach `printer.gcode.script`.
+Exit: one exact current job-control request is dispatched at most once, and
+every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
 ### Phase 3: safe file dispatch
 
-- FTPS spool, hostile-3MF validation, target manifest/profile checks, Moonraker
+- First accept a dedicated dispatch ADR; this phase is blocked until then.
+- Implement hostile-3MF validation, target manifest/profile checks, Moonraker
   upload/metadata/start, dedupe, acknowledgement, and restart reconciliation.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
 Exit: one target-tagged job can be queued, started, paused, resumed, cancelled,
 completed, and reconciled without duplicate starts.
 
-### Phase 4: fleet hardening
+### Phase 4: current-Grove compatibility bridge
+
+- Decide compatibility-facade licence and provenance.
+- Add the minimal conservative MQTT/TLS state/control facade and bounded FTPS
+  spool, using only operations already accepted by their own ADRs.
+
+Exit: current Grove can monitor and safely dispatch to one exact Klove printer;
+unsupported commands fail visibly and never reach a generic G-code path.
+
+### Phase 5: bounded live controls
+
+- Separately decide and test temperature/speed and explicitly mapped fan/light
+  operations. Keep jog and extrusion disabled until separately proven.
+
+Exit: every enabled control has a current, exact capability and state proof,
+bounded typed parameters, idempotency, reconciliation, and complete negative
+tests.
+
+### Phase 6: fleet hardening
 
 - Multi-printer routing, per-printer credentials/policies, job journal, cameras
   via external URLs, metrics, backups, migration tests, and upgrade/rollback.
@@ -420,7 +472,7 @@ Exit: fault-injection and soak tests cover simultaneous printers, Klove/Grove/
 Moonraker restarts, lost acknowledgements, corrupt uploads, stale config, and
 credential rejection.
 
-### Phase 5: native Grove provider
+### Phase 7: native Grove provider
 
 - Add the Grove backend seam, provider/capability-aware UI, structured errors,
   target-profile scheduling, and native Klove API client.
@@ -458,11 +510,16 @@ fail closed.
 
 ## Immediate next slice
 
-The first implementation slice should be Phase 0 plus the read-only portion of
-Phase 1. It creates the repository, schemas, Moonraker simulator, and one
-read-only adapter that can discover and continuously report a printer. It should
-not open MQTT/FTPS listeners or expose any command until the canonical contract
-and safety policy have tests.
+After the typed pause/resume/cancel PR is cleanly merged through `develop`, the
+next slice is the artifact acceptance and dispatch boundary: hostile 3MF/G-code
+validation, exact target/profile binding, bounded upload and metadata checks,
+single idempotent print start, and durable restart reconciliation. MQTT/FTPS
+compatibility work follows that safety boundary. Print start remains blocked
+until a dedicated ADR is accepted; this sequencing statement authorizes no new
+actuator. Track the programme in
+[GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38), the active
+control slice in [issue #4](https://github.com/tomlawesome/klove/issues/4), and
+artifact dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 
 ## Primary references
 
