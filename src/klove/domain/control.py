@@ -26,6 +26,14 @@ class ControlStatus(StrEnum):
     OUTCOME_UNKNOWN = "outcome_unknown"
 
 
+class ReconciliationDecision(StrEnum):
+    """Internal interpretation of one post-dispatch poll."""
+
+    CONFIRMED = "confirmed"
+    PENDING = "pending"
+    AMBIGUOUS = "ambiguous"
+
+
 class ControlResult(BaseModel):
     """A bounded result that never reflects remote error text."""
 
@@ -120,11 +128,17 @@ def validate_live_preflight(cached: CachedControlEvidence, live: LiveControlStat
     return None
 
 
-def is_confirmed(
+def reconcile_postcondition(
     operation: ControlOperation,
     live: LiveControlState,
     *,
-    after_eventtime: float,
-) -> bool:
-    """Confirm only a target state observed after the command preflight."""
-    return live.eventtime > after_eventtime and live.phase is _TARGET_PHASES[operation]
+    preflight: LiveControlState,
+) -> ReconciliationDecision:
+    """Bind post-dispatch evidence to the preflight job and target transition."""
+    if live.filename != preflight.filename or live.eventtime < preflight.eventtime:
+        return ReconciliationDecision.AMBIGUOUS
+    if operation is not ControlOperation.CANCEL and live.file_position < preflight.file_position:
+        return ReconciliationDecision.AMBIGUOUS
+    if live.eventtime > preflight.eventtime and live.phase is _TARGET_PHASES[operation]:
+        return ReconciliationDecision.CONFIRMED
+    return ReconciliationDecision.PENDING

@@ -12,8 +12,9 @@ from klove.domain.control import (
     ControlResult,
     ControlStatus,
     LiveControlState,
+    ReconciliationDecision,
     authorize_cached_intent,
-    is_confirmed,
+    reconcile_postcondition,
     validate_live_preflight,
 )
 from klove.errors import ControlTransportError
@@ -50,6 +51,7 @@ class ControlService:
         )
         self._journal_lock = asyncio.Lock()
         self._printer_locks = {printer_id: asyncio.Lock() for printer_id in transports}
+        self._uncertain_tokens: set[tuple[str, str]] = set()
 
     async def execute(self, intent: ControlIntent) -> ControlResult:
         """Execute an intent once; duplicates await and reuse the original result."""
@@ -72,7 +74,7 @@ class ControlService:
             if not task.done() or task.cancelled():
                 continue
             result = task.result()
-            if result.status is not ControlStatus.OUTCOME_UNKNOWN:
+            if result.status is ControlStatus.DENIED:
                 del self._journal[key]
                 return True
         return False
@@ -90,6 +92,9 @@ class ControlService:
         if transport is None:
             return _denied(intent.operation, "control_disabled")
         async with self._printer_locks[intent.printer_id]:
+            uncertainty_key = (intent.printer_id, intent.state_token)
+            if uncertainty_key in self._uncertain_tokens:
+                return _unknown(intent.operation)
             cached = authorize_cached_intent(intent, await self._registry.get(intent.printer_id))
             if isinstance(cached, str):
                 return _denied(intent.operation, cached)
@@ -104,21 +109,22 @@ class ControlService:
             latest = authorize_cached_intent(intent, await self._registry.get(intent.printer_id))
             if isinstance(latest, str):
                 return _denied(intent.operation, latest)
-            mismatch = validate_live_preflight(latest, preflight)
-            if mismatch is not None:
-                return _denied(intent.operation, mismatch)
 
+            self._uncertain_tokens.add(uncertainty_key)
             try:
                 await transport.dispatch(intent.operation)
             except ControlTransportError:
                 return _unknown(intent.operation)
-            return await self._confirm(intent.operation, transport, preflight.eventtime)
+            result = await self._confirm(intent.operation, transport, preflight)
+            if result.status is ControlStatus.CONFIRMED:
+                self._uncertain_tokens.remove(uncertainty_key)
+            return result
 
     async def _confirm(
         self,
         operation: ControlOperation,
         transport: ControlTransport,
-        after_eventtime: float,
+        preflight: LiveControlState,
     ) -> ControlResult:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._confirmation_timeout
@@ -127,10 +133,13 @@ class ControlService:
                 live = await transport.query()
             except ControlTransportError:
                 return _unknown(operation)
-            if is_confirmed(operation, live, after_eventtime=after_eventtime):
+            decision = reconcile_postcondition(operation, live, preflight=preflight)
+            if decision is ReconciliationDecision.CONFIRMED:
                 return ControlResult(
                     operation=operation, status=ControlStatus.CONFIRMED, code="confirmed"
                 )
+            if decision is ReconciliationDecision.AMBIGUOUS:
+                return _unknown(operation)
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return _unknown(operation)

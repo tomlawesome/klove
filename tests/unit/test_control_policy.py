@@ -9,8 +9,9 @@ from klove.domain.control import (
     ControlIntent,
     ControlOperation,
     LiveControlState,
+    ReconciliationDecision,
     authorize_cached_intent,
-    is_confirmed,
+    reconcile_postcondition,
     validate_live_preflight,
 )
 from klove.domain.discovery import discover_capabilities
@@ -155,21 +156,62 @@ def test_live_preflight_must_match_job_and_move_forward() -> None:
         (ControlOperation.CANCEL, PrinterPhase.CANCELLED),
     ],
 )
-def test_confirmation_requires_target_phase_after_preflight(
+def test_reconciliation_confirms_only_target_phase_after_preflight(
     operation: ControlOperation, target: PrinterPhase
 ) -> None:
-    assert is_confirmed(
-        operation,
-        LiveControlState(11.0, target, "job.gcode", 100),
-        after_eventtime=10.0,
+    preflight = LiveControlState(10.0, PrinterPhase.PRINTING, "job.gcode", 100)
+    assert (
+        reconcile_postcondition(
+            operation,
+            LiveControlState(11.0, target, "job.gcode", 100),
+            preflight=preflight,
+        )
+        is ReconciliationDecision.CONFIRMED
     )
-    assert not is_confirmed(
-        operation,
-        LiveControlState(10.0, target, "job.gcode", 100),
-        after_eventtime=10.0,
+    assert (
+        reconcile_postcondition(
+            operation,
+            LiveControlState(10.0, target, "job.gcode", 100),
+            preflight=preflight,
+        )
+        is ReconciliationDecision.PENDING
     )
-    assert not is_confirmed(
-        operation,
-        LiveControlState(11.0, PrinterPhase.ERROR, "job.gcode", 100),
-        after_eventtime=10.0,
+    assert (
+        reconcile_postcondition(
+            operation,
+            LiveControlState(11.0, PrinterPhase.ERROR, "job.gcode", 100),
+            preflight=preflight,
+        )
+        is ReconciliationDecision.PENDING
     )
+
+
+def test_reconciliation_rejects_ambiguous_job_evidence() -> None:
+    preflight = LiveControlState(10.0, PrinterPhase.PRINTING, "job.gcode", 100)
+
+    for live in (
+        LiveControlState(11.0, PrinterPhase.PAUSED, "other.gcode", 100),
+        LiveControlState(9.0, PrinterPhase.PAUSED, "job.gcode", 100),
+        LiveControlState(11.0, PrinterPhase.PAUSED, "job.gcode", 99),
+    ):
+        assert (
+            reconcile_postcondition(ControlOperation.PAUSE, live, preflight=preflight)
+            is ReconciliationDecision.AMBIGUOUS
+        )
+
+    assert (
+        reconcile_postcondition(
+            ControlOperation.CANCEL,
+            LiveControlState(11.0, PrinterPhase.CANCELLED, "job.gcode", 0),
+            preflight=preflight,
+        )
+        is ReconciliationDecision.CONFIRMED
+    )
+    for live in (
+        LiveControlState(11.0, PrinterPhase.CANCELLED, "other.gcode", 0),
+        LiveControlState(9.0, PrinterPhase.CANCELLED, "job.gcode", 0),
+    ):
+        assert (
+            reconcile_postcondition(ControlOperation.CANCEL, live, preflight=preflight)
+            is ReconciliationDecision.AMBIGUOUS
+        )

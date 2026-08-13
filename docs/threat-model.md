@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: initial, enforced by the read-only foundation
+Status: active through the first typed-control slice
 
 ## Protected assets
 
@@ -17,14 +17,13 @@ WebSocket notifications, printer configuration, filenames, metadata, logs, and
 network peers are untrusted. Configuration proves only operator intent; it does
 not prove that live state is current.
 
-## Initial controls
+## Monitoring and identity controls
 
-- The first slice has no printer-changing Moonraker method and no arbitrary
-  G-code transport.
 - Native status endpoints require a constant-time bearer credential loaded from
   a mounted file. Health endpoints disclose no printer data.
-- Moonraker API keys are loaded from files and sent only through the documented
-  connection-identification request. They are never placed in URLs or logs.
+- Moonraker API keys are loaded from files and sent only to the configured
+  endpoint through the documented WebSocket identification request or HTTP
+  `X-Api-Key` header. They are never placed in URLs or logs.
 - Configuration rejects unknown fields, embedded URL credentials, ambiguous
   printer identifiers, and unacknowledged cleartext remote transport.
 - State is derived only after Moonraker and Klippy independently report ready,
@@ -39,18 +38,43 @@ not prove that live state is current.
   caller cannot reuse a revision number after Klove restarts.
 - Duplicate authentication header instances are denied rather than combined.
 
-## Deferred stock Moonraker control
+## Typed job-control controls
 
-Moonraker's dedicated pause, resume, and cancel requests are not accepted as a
-sufficient actuator boundary. Query and control are not atomic, another client
-can change the job between them, and Klipper may resolve the request through an
-operator-defined G-code macro. Klove therefore contains no such transport or
-mutating route. See `docs/decisions/0001-typed-job-control.md`.
+- Global and per-printer configuration must both opt in. Authentication must
+  yield the exact `printers:control` scope.
+- The API accepts only pause, resume, and cancel with one canonical idempotency
+  key and one exact boot-scoped state token. Duplicate or malformed headers,
+  JSON members, operations, tokens, and keys are denied before orchestration.
+- A per-printer lock serializes cached validation, immediate direct preflight,
+  one dispatch, and post-action polling.
+- Cached and live evidence must agree on the configured target, allowed phase,
+  capability, filename, state token, event ordering, and non-regressing file
+  position. The token is rechecked after the direct poll.
+- Once dispatch may have occurred, every lost response, transport failure,
+  mismatched job, contradictory observation, timeout, or internal failure is
+  retained as `outcome_unknown`. The affected printer and state token remain
+  fenced even if a caller changes its idempotency key; only a newly observed
+  state token can authorize another attempt.
+- Dispatched and uncertain idempotency entries are never evicted. Capacity
+  exhaustion denies new keys, and process restart invalidates all old state
+  tokens.
+- Repository policy permits only the three dedicated Moonraker job-control
+  methods in one adapter. Generic G-code, print start, and other actuators remain
+  absent.
 
-## Required future controls before actuation
+## Accepted residual risk
 
-Every operation requires an authenticated Grove identity, exact printer route,
-current state revision, explicit capability, configured policy, bounded typed
-parameters, idempotency key, and observable postcondition. The absence of any
-one item is denial. Uploaded 3MF/G-code validation and target binding must be
-complete before print dispatch exists.
+Stock Moonraker query and control are not atomic. Another client can change the
+job between Klove's final poll and the action. Klipper resolves the methods
+through `PAUSE`, `RESUME`, and `CANCEL_PRINT`, which operators may replace with
+macros. Printer owners accept responsibility for those macros and for
+coordinating other clients. Klove limits the interval, binds any claimed success
+to later evidence for the same job, and reports ambiguity without retrying. See
+`docs/decisions/0001-typed-job-control.md`.
+
+## Required controls before print start and later actuators
+
+Uploaded 3MF/G-code validation, target binding, and durable dispatch
+reconciliation must be complete before print start exists. Every later actuator
+requires its own typed parameters, positive capability and policy evidence, and
+an accepted decision; the absence of any one item is denial.

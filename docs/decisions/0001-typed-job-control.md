@@ -1,20 +1,20 @@
-# ADR 0001: stock Moonraker job control is not a safety boundary
+# ADR 0001: accept bounded stock Moonraker job control
 
-Status: deferred
+Status: accepted
 
-Date: 2026-08-12
+Date: 2026-08-13
 
 ## Context
 
-Klove's read-only foundation deliberately contains no actuator transport. We
-evaluated Moonraker's dedicated `printer.print.pause`,
-`printer.print.resume`, and `printer.print.cancel` methods for the first control
-slice.
+Klove's read-only foundation deliberately contained no actuator transport. The
+first control slice requires pause, resume, and cancel without introducing a
+generic G-code interface or a host-installed Klove component. Moonraker exposes
+dedicated `printer.print.pause`, `printer.print.resume`, and
+`printer.print.cancel` methods for these operations.
 
 ## Findings
 
-The method names are typed at Moonraker's external API, but they do not provide
-the proof required by Klove's fail-closed policy:
+The methods have important limitations:
 
 1. A state query and a control request are separate operations. Another client
    or printer event can change the active job between them. Stock Moonraker
@@ -26,40 +26,62 @@ the proof required by Klove's fail-closed policy:
 3. A successful JSON-RPC response acknowledges request processing, not the
    resulting printer state. Lost responses and delayed notifications create
    outcomes that cannot be safely retried.
-4. Independent WebSocket and HTTP connections do not prove that both resolved
-   to the same remote instance when transport identity is weak.
+4. Independent WebSocket monitoring and HTTP control connections can observe
+   different moments in printer state and rely on the configured endpoint's
+   transport identity.
 
 ## Decision
 
-Do not add these methods to Klove. No control credential, mutating route, or
-Moonraker actuator transport will ship in this slice. Command decoding remains
-classification-only and ends in `actuation_disabled`.
+Accept the stock Moonraker methods for this deliberately narrow slice. Printer
+owners accept responsibility for the correctness and safety of their Klipper
+`PAUSE`, `RESUME`, and `CANCEL_PRINT` commands, including any operator-defined
+macros that replace them. Klove does not infer macro semantics or claim that
+Moonraker makes query-and-control atomic.
 
-Klove will first add the prerequisites that are safe without actuation:
+The client-side contract is fail-closed:
 
-- a boot-scoped opaque state token that binds revision, phase, filename, file
-  position, and Moonraker event time;
-- monotonic local evidence-receipt timestamps;
-- race-safe waiting for newer observations;
-- strict duplicate-header handling;
-- executable repository rules proving that actuator methods and mutating routes
-  remain absent.
+1. Control requires explicit installation-wide and per-printer opt-in plus an
+   authenticated principal with the exact control scope.
+2. The route binds one configured printer id to one endpoint and credential.
+   The caller supplies a boot-scoped state token binding the exact cached
+   revision, phase, filename, file position, and Moonraker event time.
+3. A per-printer lock serializes preflight, dispatch, and reconciliation. Under
+   that lock Klove validates capability, phase, cached token, and job identity;
+   polls Moonraker immediately before the action; requires the live phase and
+   filename to match with non-regressing event time and file position; then
+   rechecks that the caller's exact state token is still current.
+4. A canonical idempotency key creates one process-epoch operation. Duplicate
+   requests await or return the original result. Entries for operations that
+   dispatched or may have dispatched are never evicted; journal exhaustion
+   denies new work. An uncertain result fences every later request against the
+   same printer and state token, even when it uses a different idempotency key;
+   the caller must obtain a newly observed state token. A restart changes every
+   state token, preventing replay of a prior-epoch request.
+5. Klove dispatches exactly one parameter-free dedicated method. It never
+   retries a dispatch, and it exposes no generic G-code or print-start method.
+6. After dispatch, Klove polls directly for a later event on the same filename
+   and the operation's exact target phase. Pause and resume also require file
+   position not to regress; cancel permits Klipper's documented reset of virtual
+   SD position. A lost response, transport error, job mismatch, contradictory
+   evidence, timeout, or internal ambiguity becomes `outcome_unknown`.
 
-The future control boundary must atomically compare target identity, boot
-epoch, job identity, state, and a reviewed control-profile fingerprint before
-executing one typed transition. This likely requires a small host-local
-Moonraker component or Klipper extension. Choosing and deploying that component
-is a separate architecture decision because it changes the earlier
-central-sidecar-only deployment model.
+The non-atomic interval between the final poll and Moonraker applying the
+method remains a residual race. The accepted behavior is to make that interval
+small, serialize Klove-originated actions, never claim success without a bound
+postcondition, and never turn uncertainty into a blind retry. Deployments that
+need a stronger multi-client atomic guarantee require a future host-side
+protocol and a separate decision; it is not a prerequisite for this slice.
 
 ## Consequences
 
-- Klove remains monitoring-only after this slice.
-- Pause, resume, and cancel wait until an atomic host-side gate exists.
-- Common operator-defined pause macros can eventually be supported only after
-  their live configuration matches an explicitly approved fingerprint.
-- The path is less convenient, but it is consistent with the product invariant:
-  uncertainty, however small, is denial.
+- Pause, resume, and cancel are available only through the typed native route
+  when both configuration gates are enabled.
+- Operators must coordinate other Moonraker clients and own their macro safety;
+  Klove cannot prevent an external client changing a job during the residual
+  non-atomic interval.
+- `outcome_unknown` means an action may have happened. Callers must refresh
+  state and obtain a new state token rather than retrying.
+- Print start, arbitrary G-code, and all other actuators remain prohibited.
 
 ## Primary references
 

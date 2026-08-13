@@ -8,6 +8,7 @@ import pytest
 from klove.domain.control import (
     ControlIntent,
     ControlOperation,
+    ControlResult,
     ControlStatus,
     LiveControlState,
 )
@@ -26,8 +27,10 @@ class FakeTransport:
         self.dispatch_entered = asyncio.Event()
         self.release_dispatch = asyncio.Event()
         self.release_dispatch.set()
+        self.query_count = 0
 
     async def query(self) -> LiveControlState:
+        self.query_count += 1
         value = next(self.queries)
         if isinstance(value, Exception):
             raise value
@@ -123,6 +126,50 @@ async def test_concurrent_duplicate_awaits_the_same_single_dispatch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_distinct_operations_for_one_printer_are_serialized_through_reconciliation() -> None:
+    class ReconciliationBarrierTransport(FakeTransport):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    live(),
+                    live(11.0, PrinterPhase.PAUSED),
+                    live(11.0, PrinterPhase.PAUSED),
+                ]
+            )
+            self.confirmation_entered = asyncio.Event()
+            self.release_confirmation = asyncio.Event()
+
+        async def query(self) -> LiveControlState:
+            result = await super().query()
+            if self.query_count == 2:
+                self.confirmation_entered.set()
+                await self.release_confirmation.wait()
+            return result
+
+    transport = ReconciliationBarrierTransport()
+    service, intent, _registry = await setup(transport)
+    second_intent = ControlIntent(
+        intent.printer_id,
+        intent.operation,
+        intent.state_token,
+        "10000000-0000-4000-8000-000000000000",
+    )
+
+    first = asyncio.create_task(service.execute(intent))
+    await transport.confirmation_entered.wait()
+    second = asyncio.create_task(service.execute(second_intent))
+    await asyncio.sleep(0)
+
+    assert transport.query_count == 2
+    assert not second.done()
+
+    transport.release_confirmation.set()
+    assert (await first).status is ControlStatus.CONFIRMED
+    assert (await second).code == "preflight_state_mismatch"
+    assert transport.dispatched == [ControlOperation.PAUSE]
+
+
+@pytest.mark.asyncio
 async def test_same_key_with_different_intent_is_denied() -> None:
     transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
     service, intent, _registry = await setup(transport)
@@ -208,6 +255,62 @@ async def test_every_post_dispatch_failure_is_outcome_unknown_and_never_retried(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["dispatch", "reconciliation"])
+async def test_unknown_fences_every_new_key_for_the_same_state_token(failure: str) -> None:
+    if failure == "dispatch":
+        transport = FakeTransport([live()])
+        transport.dispatch_error = True
+    else:
+        transport = FakeTransport([live(), live(11.0, filename="other.gcode")])
+    service, intent, _registry = await setup(transport)
+
+    first = await service.execute(intent)
+    second = await service.execute(
+        ControlIntent(
+            intent.printer_id,
+            ControlOperation.CANCEL,
+            intent.state_token,
+            "10000000-0000-4000-8000-000000000000",
+        )
+    )
+
+    assert first.status is ControlStatus.OUTCOME_UNKNOWN
+    assert second == ControlResult(
+        operation=ControlOperation.CANCEL,
+        status=ControlStatus.OUTCOME_UNKNOWN,
+        code="outcome_unknown",
+    )
+    assert transport.dispatched == [ControlOperation.PAUSE]
+    expected_queries = 1 if failure == "dispatch" else 2
+    assert transport.query_count == expected_queries
+
+
+@pytest.mark.asyncio
+async def test_newly_observed_state_token_can_cross_an_uncertainty_fence() -> None:
+    transport = FakeTransport([live(), live(12.0), live(13.0, PrinterPhase.PAUSED)])
+    transport.dispatch_error = True
+    service, intent, registry = await setup(transport)
+    assert (await service.execute(intent)).status is ControlStatus.OUTCOME_UNKNOWN
+
+    current = await registry.get(intent.printer_id)
+    assert current is not None
+    observed = current.model_copy(update={"revision": 2, "eventtime": 12.0})
+    await registry.replace(observed)
+    transport.dispatch_error = False
+    result = await service.execute(
+        ControlIntent(
+            intent.printer_id,
+            intent.operation,
+            observed.state_token,
+            "10000000-0000-4000-8000-000000000000",
+        )
+    )
+
+    assert result.status is ControlStatus.CONFIRMED
+    assert transport.dispatched == [ControlOperation.PAUSE, ControlOperation.PAUSE]
+
+
+@pytest.mark.asyncio
 async def test_unexpected_state_until_deadline_is_outcome_unknown() -> None:
     transport = FakeTransport([live(), *([live()] * 100)])
     service, intent, _registry = await setup(transport, timeout=0.002, poll=0.001)
@@ -216,19 +319,48 @@ async def test_unexpected_state_until_deadline_is_outcome_unknown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capacity_evicts_confirmed_but_never_uncertain_or_inflight_entries() -> None:
-    confirmed_transport = FakeTransport(
-        [live(), live(11.0, PrinterPhase.PAUSED), ControlTransportError()]
+@pytest.mark.parametrize(
+    "ambiguous",
+    [
+        live(11.0, PrinterPhase.PAUSED, filename="other.gcode"),
+        live(9.0, PrinterPhase.PAUSED),
+        live(11.0, PrinterPhase.PAUSED, position=99),
+    ],
+)
+async def test_ambiguous_post_dispatch_result_is_retained_and_never_retried(
+    ambiguous: LiveControlState,
+) -> None:
+    transport = FakeTransport([live(), ambiguous])
+    service, intent, _registry = await setup(transport)
+
+    first = await service.execute(intent)
+    second = await service.execute(intent)
+
+    assert first.status is ControlStatus.OUTCOME_UNKNOWN
+    assert second == first
+    assert transport.dispatched == [ControlOperation.PAUSE]
+    assert transport.query_count == 2
+
+
+@pytest.mark.asyncio
+async def test_capacity_evicts_denials_but_never_dispatched_or_inflight_entries() -> None:
+    denied_transport = FakeTransport(
+        [ControlTransportError(), live(), live(11.0, PrinterPhase.PAUSED)]
     )
-    service, intent, _registry = await setup(confirmed_transport, capacity=1)
-    assert (await service.execute(intent)).status is ControlStatus.CONFIRMED
+    service, intent, _registry = await setup(denied_transport, capacity=1)
+    assert (await service.execute(intent)).status is ControlStatus.DENIED
     second = ControlIntent(
         intent.printer_id,
         intent.operation,
         intent.state_token,
         "10000000-0000-4000-8000-000000000000",
     )
-    assert (await service.execute(second)).code == "preflight_unavailable"
+    assert (await service.execute(second)).status is ControlStatus.CONFIRMED
+
+    confirmed_transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
+    service, intent, _registry = await setup(confirmed_transport, capacity=1)
+    assert (await service.execute(intent)).status is ControlStatus.CONFIRMED
+    assert (await service.execute(second)).code == "idempotency_capacity"
 
     uncertain_transport = FakeTransport([live()])
     uncertain_transport.dispatch_error = True

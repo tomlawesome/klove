@@ -59,12 +59,12 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
         await runner.setup()
         site = web.TCPSite(runner, config.api.listen_host, config.api.listen_port)
         try:
+            await site.start()
+            app[ready_key].ready = True
             for printer_id, monitor in monitors:
                 monitor_tasks.append(
                     asyncio.create_task(monitor.run(stop_event), name=f"moonraker:{printer_id}")
                 )
-            await site.start()
-            app[ready_key].ready = True
             LOGGER.info("klove ready configured_printers=%d", len(config.printers))
             await stop_event.wait()
         finally:

@@ -7,9 +7,11 @@ from typing import Any
 
 import aiohttp
 import pytest
+from aiohttp import web
 
 import klove.app as app_module
 from klove.app import serve
+from klove.northbound.api import create_api, ready_key
 
 
 def free_port() -> int:
@@ -51,26 +53,55 @@ enabled = {str(control).lower()}
 
 
 @pytest.mark.asyncio
-async def test_serve_starts_read_only_api_and_cleans_up_monitors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(("control", "expected_control_status"), [(True, 400), (False, 401)])
+async def test_serve_starts_api_before_monitors_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control: bool,
+    expected_control_status: int,
 ) -> None:
     started = asyncio.Event()
+    site_started = asyncio.Event()
+    applications: list[Any] = []
+    observed_startup_order: list[tuple[bool, bool]] = []
+
+    real_site = web.TCPSite
+    real_create_api = create_api
+
+    class InstrumentedSite:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._site = real_site(*args, **kwargs)
+
+        async def start(self) -> None:
+            # Force a scheduling point that made the former monitor-first order observable.
+            await asyncio.sleep(0)
+            await self._site.start()
+            site_started.set()
+
+    def capture_application(*args: Any, **kwargs: Any) -> Any:
+        application = real_create_api(*args, **kwargs)
+        applications.append(application)
+        return application
 
     class FakeMonitor:
         def __init__(self, *_args: Any) -> None:
             pass
 
         async def run(self, stop: asyncio.Event) -> None:
+            observed_startup_order.append((site_started.is_set(), applications[0][ready_key].ready))
             started.set()
             await stop.wait()
 
+    monkeypatch.setattr(web, "TCPSite", InstrumentedSite)
+    monkeypatch.setattr("klove.app.create_api", capture_application)
     monkeypatch.setattr(app_module, "MoonrakerMonitor", FakeMonitor)
     port = free_port()
     stop = asyncio.Event()
     task = asyncio.create_task(
-        serve(write_config(tmp_path, port, printer=True, control=True), stop)
+        serve(write_config(tmp_path, port, printer=True, control=control), stop)
     )
     await asyncio.wait_for(started.wait(), timeout=2)
+    assert observed_startup_order == [(True, True)]
 
     async with aiohttp.ClientSession() as session:
         response = await session.get(f"http://127.0.0.1:{port}/health/ready")
@@ -80,7 +111,7 @@ async def test_serve_starts_read_only_api_and_cleans_up_monitors(
             f"http://127.0.0.1:{port}/v1/printers/voron/commands/pause",
             headers={"Authorization": f"Bearer {'a' * 32}"},
         )
-        assert control_response.status == 400
+        assert control_response.status == expected_control_status
 
     stop.set()
     await asyncio.wait_for(task, timeout=2)

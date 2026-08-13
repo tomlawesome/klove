@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import klove
+
 ROOT = Path(__file__).parents[2]
+
+
+def test_suite_imports_the_working_tree_package() -> None:
+    package_file = Path(klove.__file__).resolve()
+    assert package_file.is_relative_to((ROOT / "src" / "klove").resolve())
 
 
 def test_control_slice_contains_only_dedicated_job_actuators() -> None:

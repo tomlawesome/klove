@@ -170,7 +170,13 @@ class MoonrakerMonitor:
             if "method" in response:
                 await self._notification(websocket, response)
                 continue
-            if response.get("jsonrpc") != "2.0" or response.get("id") != self._request_id:
+            response_id = response.get("id")
+            if (
+                response.get("jsonrpc") != "2.0"
+                or isinstance(response_id, bool)
+                or not isinstance(response_id, int)
+                or response_id != self._request_id
+            ):
                 raise ProtocolError("JSON-RPC response does not match its request")
             if "error" in response:
                 raise ProtocolError("Moonraker rejected a JSON-RPC request")

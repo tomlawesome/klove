@@ -8,13 +8,21 @@ positive, current, internally consistent, and unambiguous. Unknown or missing
 evidence is a denial. Never infer printer capabilities from names, models, or
 near matches.
 
-The read-only foundation must contain no Moonraker actuator RPC, generic G-code
-execution path, or mutating HTTP route. Introducing actuation requires an
-accepted architecture decision, a narrow typed interface, negative tests, and
-100% statement and branch coverage across authentication, authorization,
-decoding, translation, and policy code. Stock Moonraker print-control endpoints
-are not an accepted safety boundary because they are non-atomic and may invoke
-operator-defined Klipper macros.
+Actuation is limited to the accepted job-control contract in ADR 0001:
+Moonraker's dedicated pause, resume, and cancel RPCs behind explicit global and
+per-printer opt-in. Every request requires exact authenticated scope, printer
+route, state token, job identity, phase, capability, a direct pre-action poll,
+per-printer serialization, single-dispatch idempotency, and post-action
+reconciliation. Once dispatch may have occurred, uncertainty is
+`outcome_unknown`; the exact printer and state token remain fenced across all
+idempotency keys until a newly observed token is supplied. Printer owners are
+responsible for the semantics and safety of their configured `PAUSE`, `RESUME`,
+and `CANCEL_PRINT` macros.
+
+No generic G-code execution path or print-start transport is permitted. Any new
+actuator requires its own accepted architecture decision, narrow typed
+interface, negative tests, and 100% statement and branch coverage across
+authentication, authorization, control, decoding, translation, and policy.
 
 ## Delivery lanes
 

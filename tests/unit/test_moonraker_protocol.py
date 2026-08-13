@@ -97,6 +97,9 @@ def test_mapping_rejects_non_objects() -> None:
     "response",
     [
         {"jsonrpc": "2.0", "id": 999, "result": {}},
+        {"jsonrpc": "2.0", "id": True, "result": {}},
+        {"jsonrpc": "2.0", "id": 1.0, "result": {}},
+        {"jsonrpc": "2.0", "id": "1", "result": {}},
         {"jsonrpc": "2.0", "id": 1, "error": {"code": -1}},
         {"jsonrpc": "2.0", "id": 1, "result": {}, "extra": True},
     ],

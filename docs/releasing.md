@@ -15,6 +15,6 @@ promotion workflow must be dispatched with its `sha256:` digest. The workflow
 verifies the attestation, source-branch label, Git ancestry, and exact source
 tree before moving `latest` to that digest. Promotion does not rebuild.
 
-Klove is currently pre-release. Do not run stable promotion until an actuation
-slice has its own accepted safety decision and production-like acceptance
-evidence.
+Klove is currently pre-release. ADR 0001 accepts the first actuation slice, but
+do not run stable promotion until the exact candidate has production-like
+acceptance evidence for that control contract.

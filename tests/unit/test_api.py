@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from klove.domain.control import ControlOperation, ControlResult, ControlStatus
+from klove.domain.control import ControlIntent, ControlOperation, ControlResult, ControlStatus
 from klove.northbound.api import create_api, ready_key
 from klove.orchestration.control import ControlService
 from klove.registry import PrinterRegistry
@@ -83,11 +83,11 @@ async def test_duplicate_authorization_headers_are_rejected(client: TestClient[A
 class FakeControls:
     def __init__(self) -> None:
         self.status = ControlStatus.CONFIRMED
-        self.intents: list[object] = []
+        self.intents: list[ControlIntent] = []
 
-    async def execute(self, intent: object) -> ControlResult:
+    async def execute(self, intent: ControlIntent) -> ControlResult:
         self.intents.append(intent)
-        return ControlResult(operation=ControlOperation.PAUSE, status=self.status, code=self.status)
+        return ControlResult(operation=intent.operation, status=self.status, code=self.status)
 
 
 @pytest.fixture
@@ -111,6 +111,36 @@ def command_headers(**updates: str) -> dict[str, str]:
     }
     result.update(updates)
     return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", list(ControlOperation))
+async def test_control_route_forwards_exact_typed_intent(
+    control_client: tuple[TestClient[Any, Any], FakeControls],
+    operation: ControlOperation,
+) -> None:
+    client, controls = control_client
+    state_token = "a" * 64
+    response = await client.post(
+        f"/v1/printers/voron/commands/{operation}",
+        headers=command_headers(),
+        data=json.dumps({"state_token": state_token}),
+    )
+
+    assert response.status == 200
+    assert await response.json() == {
+        "operation": operation,
+        "status": ControlStatus.CONFIRMED,
+        "code": ControlStatus.CONFIRMED,
+    }
+    assert controls.intents == [
+        ControlIntent(
+            printer_id="voron",
+            operation=operation,
+            state_token=state_token,
+            idempotency_key=KEY,
+        )
+    ]
 
 
 @pytest.mark.asyncio

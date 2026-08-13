@@ -90,6 +90,8 @@ class MoonrakerControlTransport:
             not isinstance(document, dict)
             or set(document) != {"jsonrpc", "id", "result"}
             or document.get("jsonrpc") != "2.0"
+            or isinstance(document.get("id"), bool)
+            or not isinstance(document.get("id"), int)
             or document.get("id") != self._request_id
         ):
             raise ControlTransportError
