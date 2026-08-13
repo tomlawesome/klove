@@ -12,10 +12,12 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from klove import __version__
+from klove.adapters.moonraker.history import decode_history_list, decode_history_notification
 from klove.config import PrinterConfig
 from klove.domain.discovery import discover_capabilities
-from klove.domain.models import PrinterSnapshot, initial_snapshot
+from klove.domain.models import JobIdentitySnapshot, PrinterSnapshot, initial_snapshot
 from klove.domain.reducer import (
+    apply_history_job,
     apply_status_update,
     establish_snapshot,
     mark_capability_limited,
@@ -27,6 +29,7 @@ from klove.registry import PrinterRegistry
 
 LOGGER = logging.getLogger(__name__)
 _MAX_MESSAGE_BYTES = 1024 * 1024
+_HISTORY_PARAMS = {"limit": 1, "start": 0, "order": "desc"}
 _SUBSCRIPTION_FIELDS: dict[str, list[str]] = {
     "display_status": ["message", "progress"],
     "gcode_move": ["extrude_factor", "speed_factor"],
@@ -64,6 +67,7 @@ class MoonrakerMonitor:
         self._registry = registry
         self._session = session
         self._snapshot = initial_snapshot(config.id)
+        self._history_job: JobIdentitySnapshot | None = None
         self._request_id = 0
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -100,6 +104,7 @@ class MoonrakerMonitor:
                         raise ProtocolError("unexpected JSON-RPC response")
                     await self._notification(websocket, message)
         finally:
+            self._history_job = None
             await self._publish(mark_disconnected(self._snapshot))
 
     async def _identify(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
@@ -136,6 +141,9 @@ class MoonrakerMonitor:
         if not capabilities.dispatch_eligible:
             await self._publish(mark_capability_limited(self._snapshot, capabilities))
             return
+        history_before = decode_history_list(
+            await self._rpc(websocket, "server.history.list", _HISTORY_PARAMS)
+        )
         subscription = _mapping(
             await self._rpc(
                 websocket,
@@ -144,6 +152,12 @@ class MoonrakerMonitor:
             ),
             "printer.objects.subscribe",
         )
+        history_after = decode_history_list(
+            await self._rpc(websocket, "server.history.list", _HISTORY_PARAMS)
+        )
+        if history_before != history_after:
+            raise StateEvidenceError("job history changed during discovery")
+        self._history_job = history_after
         await self._publish(
             establish_snapshot(
                 self._snapshot,
@@ -151,6 +165,7 @@ class MoonrakerMonitor:
                 printer_info=printer_info,
                 capabilities=capabilities,
                 subscription=subscription,
+                job=self._history_job,
             )
         )
 
@@ -205,6 +220,10 @@ class MoonrakerMonitor:
             await self._publish(mark_not_ready(self._snapshot, "klippy_shutdown"))
         elif method == "notify_klippy_disconnected":
             await self._publish(mark_disconnected(self._snapshot, "klippy_disconnected"))
+        elif method == "notify_history_changed":
+            self._history_job = decode_history_notification(params)
+            if self._snapshot.connected and self._snapshot.capabilities is not None:
+                await self._publish(apply_history_job(self._snapshot, self._history_job))
 
     async def _publish(self, snapshot: PrinterSnapshot) -> None:
         if snapshot.revision <= self._snapshot.revision:

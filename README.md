@@ -45,16 +45,25 @@ The native API binds to loopback by default. `/health/live` and
 `/v1/printers/{id}` require the configured bearer token. Each printer document
 includes an opaque, boot-scoped `state_token`.
 
+The token binds a dedicated control-evidence revision, capability fingerprint,
+phase, filename, and Moonraker history job identity. Ordinary telemetry and
+forward progress advance the public snapshot revision without changing that
+token. Reconnect, rediscovery, job replacement, phase change, invalid or
+regressing job evidence, and history identity change rotate it.
+
 Job control is disabled unless both `[control].enabled` and the target
 printer's `control_enabled` are true. An enabled request uses
 `POST /v1/printers/{id}/commands/{pause|resume|cancel}`, a canonical UUIDv4
 `Idempotency-Key` header, and an exact JSON body containing the current
-`state_token`. Klove serializes requests per printer, polls immediately before
-dispatch, sends the dedicated Moonraker method once, then polls for the exact
-job transition. Any ambiguity after dispatch returns `outcome_unknown` and is
-never retried automatically. Changing the idempotency key does not bypass that
-uncertainty: the affected printer and state token remain fenced until the caller
-obtains a newly observed token.
+`state_token`. Klove serializes requests per printer, brackets an immediate
+Moonraker object poll with the exact current history job identity, rechecks the
+same token, sends the dedicated Moonraker method once, then polls for the exact
+job transition. Each poll may take a bounded number of read-only samples until
+its two history reads agree; it never repeats the action. Any unresolved
+ambiguity after dispatch returns `outcome_unknown`. Changing the idempotency key
+or observing ordinary forward progress does not bypass that uncertainty: the
+affected printer and state token remain fenced until control evidence produces
+a new token.
 
 Moonraker resolves these methods through Klipper's `PAUSE`, `RESUME`, and
 `CANCEL_PRINT` commands. Printer owners must review and safely maintain any
@@ -74,6 +83,20 @@ branch coverage. Pytest is configured to import Klove from `src`, so the gate
 exercises the working tree even when the environment also contains a
 non-editable or older package installation.
 
+Changes to Moonraker protocol/control, reconciliation, or its container fixture
+must also run `scripts/test-moonraker-sim.sh`. On Linux this builds a confined,
+rootless, revision-pinned native Klipper/Moonraker stack with Klipper's
+Linux-process MCU and exercises real authentication, monitoring, typed
+pause/resume/cancel, lost-response fencing, and restarts. The private fixture
+starts only a finite dwell job to establish test state; Klove itself still has
+no upload, print-start, or generic G-code capability. See the
+[integration fixture](tests/integration/moonraker-sim/README.md).
+
+That automated amd64 stack is not RatOS. RatOS host and physical-printer
+acceptance uses an exact verified RatOS v2.1.0 ARM disk image on supported
+hardware under the separate [RatOS acceptance procedure](docs/ratos-acceptance.md).
+
 See the [architecture and delivery plan](docs/architecture-plan.md),
 [active implementation plan](docs/implementation-plan.md),
-[threat model](docs/threat-model.md), and [testing policy](docs/testing.md).
+[threat model](docs/threat-model.md), [testing policy](docs/testing.md), and
+[RatOS acceptance lane](docs/ratos-acceptance.md).

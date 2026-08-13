@@ -281,9 +281,21 @@ slice. The printer owner is responsible for the correctness and safety of any
 Klipper macros replacing `PAUSE`, `RESUME`, or `CANCEL_PRINT`. Klove mitigates,
 but cannot remove, Moonraker's non-atomic query/control interval: it requires an
 exact state token and job match, serializes by printer, polls immediately before
-one dispatch, and binds confirmation to later evidence for the same job. Any
+one dispatch, and binds confirmation to the same Moonraker history job id and
+start time. The exact token is checked again after the direct poll; unrelated
+telemetry cannot rotate it, while any control-state or job-identity change does.
+Any
 ambiguity after dispatch is `outcome_unknown` and never triggers a blind retry.
 No generic G-code or print-start transport is part of this decision.
+
+The automated integration lane runs the production Klove image against pinned
+real Klipper and Moonraker processes with Klipper's Linux-process MCU. It tests
+authentication, status/control semantics, ambiguity, and restarts without
+hardware, host ports, devices, or privilege. It is not RatOS. The exact RatOS
+v2.1.0 ARM disk release, host services, configured macros, and physical effects
+remain a separate attended acceptance lane; full-system emulation may add
+evidence only if it faithfully boots the immutable release and does not weaken
+confinement.
 
 Grove sends MQTT with QoS 1, so Klove must assume duplicate delivery. Deduplicate
 commands by printer, command kind, sequence/task ID, and payload hash. A repeated
@@ -505,8 +517,11 @@ hidden as well as rejected.
 - Fuzz MQTT/JSON, URL, filename, ZIP/3MF, metadata, and G-code-header parsers.
 - Contract tests that run Grove's real MQTT client against Klove and Klove
   against a deterministic fake Moonraker WebSocket/HTTP server.
-- Integration tests for uploads, metadata delays, lost responses, reconnects,
-  history reconciliation, and concurrent printers.
+- A native real-process Klipper/Moonraker integration test for authentication,
+  typed controls, lost responses, exact single dispatch, and process restarts.
+- Later integration tests for authorized uploads, metadata delays, history
+  reconciliation, and concurrent printers; roadmap placement does not
+  authorize those transports.
 - Scripted Grove browser tests for status, capability-driven controls, queue
   state, structured errors, and authentication/privacy boundaries.
 - Hardware-in-the-loop release-candidate tests on a dedicated printer with a

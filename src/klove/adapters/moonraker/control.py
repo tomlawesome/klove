@@ -9,10 +9,11 @@ from typing import Any
 
 import aiohttp
 
+from klove.adapters.moonraker.history import decode_history_list
 from klove.config import PrinterConfig
 from klove.domain.control import ControlOperation, LiveControlState
-from klove.domain.models import PrinterPhase
-from klove.errors import ControlTransportError
+from klove.domain.models import JobIdentitySnapshot, PrinterPhase
+from klove.errors import ControlTransportError, ProtocolError
 
 _MAX_RESPONSE_BYTES = 64 * 1024
 _QUERY_OBJECTS = {
@@ -26,6 +27,8 @@ _METHODS = {
     ControlOperation.RESUME: "printer.print.resume",
     ControlOperation.CANCEL: "printer.print.cancel",
 }
+_HISTORY_PARAMS: dict[str, object] = {"limit": 1, "start": 0, "order": "desc"}
+_COHERENCE_ATTEMPTS = 3
 _PHASES = {
     "standby": PrinterPhase.IDLE,
     "printing": PrinterPhase.PRINTING,
@@ -55,9 +58,18 @@ class MoonrakerControlTransport:
         self._request_id = 0
 
     async def query(self) -> LiveControlState:
-        """Fetch and strictly validate current actuation-relevant state."""
-        result = await self._rpc("printer.objects.query", {"objects": _QUERY_OBJECTS})
-        return _live_state(result)
+        """Bracket current printer state with one exact history identity."""
+        for _attempt in range(_COHERENCE_ATTEMPTS):
+            history_before = _history_job(
+                await self._rpc("server.history.list", dict(_HISTORY_PARAMS))
+            )
+            result = await self._rpc("printer.objects.query", {"objects": _QUERY_OBJECTS})
+            history_after = _history_job(
+                await self._rpc("server.history.list", dict(_HISTORY_PARAMS))
+            )
+            if history_before == history_after:
+                return _live_state(result, history_after)
+        raise ControlTransportError
 
     async def dispatch(self, operation: ControlOperation) -> None:
         """Send one parameter-free dedicated print-control method."""
@@ -123,7 +135,7 @@ def _unique_object(pairs: Iterable[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _live_state(value: object) -> LiveControlState:
+def _live_state(value: object, job: JobIdentitySnapshot | None) -> LiveControlState:
     if not isinstance(value, dict) or set(value) != {"eventtime", "status"}:
         raise ControlTransportError
     eventtime = value["eventtime"]
@@ -161,12 +173,25 @@ def _live_state(value: object) -> LiveControlState:
         or is_active is not (raw_phase == "printing")
     ):
         raise ControlTransportError
+    phase = _PHASES[raw_phase]
+    if job is None or job.filename != filename:
+        raise ControlTransportError
     return LiveControlState(
         eventtime=float(eventtime),
-        phase=_PHASES[raw_phase],
+        phase=phase,
+        job_id=job.job_id,
+        job_start_time=job.start_time,
         filename=filename,
         file_position=file_position,
+        job_status=job.status,
     )
+
+
+def _history_job(value: object) -> JobIdentitySnapshot | None:
+    try:
+        return decode_history_list(value)
+    except ProtocolError as exc:
+        raise ControlTransportError from exc
 
 
 def _exact_object(value: object, fields: set[str]) -> dict[str, object]:

@@ -5,6 +5,7 @@ on:
     branches: [main, develop, preview]
   push:
     branches: [preview, "hotfix/**"]
+  workflow_dispatch:
 
 concurrency:
   group: klove-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
@@ -40,10 +41,26 @@ jobs:
           path: coverage.json
           retention-days: 14
 
+  moonraker-sim:
+    name: Native Moonraker integration
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      CI: "true"
+      KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"
+      KLOVE_SIM_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Exercise real Klipper, Moonraker, and Klove contract
+        run: sh scripts/test-moonraker-sim.sh
+
   exact-container:
     name: Exact container contract
-    if: github.event_name == 'push'
-    needs: fast
+    if: github.event_name == 'push' && github.ref_name == 'preview'
+    needs: [fast, moonraker-sim]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -97,12 +114,17 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
         run: |
           image="${IMAGE,,}"
-          docker tag klove:preview-test "${image}:preview"
-          docker push "${image}:preview"
-          digest="$(docker buildx imagetools inspect "${image}:preview" | awk '$1 == "Digest:" {print $2; exit}')"
+          candidate="preview-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          docker tag klove:preview-test "${image}:${candidate}"
+          docker push "${image}:${candidate}"
+          digest="$(docker buildx imagetools inspect "${image}:${candidate}" | awk '$1 == "Digest:" {print $2; exit}')"
           test -n "${digest}"
+          docker buildx imagetools create --tag "${image}:preview" "${image}@${digest}"
+          preview_digest="$(docker buildx imagetools inspect "${image}:preview" | awk '$1 == "Digest:" {print $2; exit}')"
+          test "${preview_digest}" = "${digest}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "candidate=${image}:${candidate}" >> "${GITHUB_OUTPUT}"
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -122,7 +144,7 @@ jobs:
   verify-preview:
     name: Verify tested preview for stable merge
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    needs: fast
+    needs: [fast, moonraker-sim]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -7,6 +7,8 @@ Last updated: 2026-08-13
 
 - Ordinary work starts from and targets protected `develop`.
 - `preview` is the protected, exact-container acceptance lane.
+- A successful `preview` push publishes a unique `preview-<run>-<attempt>`
+  candidate tag and moves the `preview` pointer to that exact recorded digest.
 - `main` receives only a tested `preview` revision and stable promotion reuses
   the accepted digest without rebuilding it.
 - This is deliberately a single-maintainer repository. Pull requests and
@@ -33,7 +35,10 @@ Last updated: 2026-08-13
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
 - [Hostile artifact issue #6](https://github.com/tomlawesome/klove/issues/6)
-  is the active non-actuating validation slice.
+  and [PR #47](https://github.com/tomlawesome/klove/pull/47) record the completed
+  non-actuating validation slice.
+- [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
+  is the active pinned Klipper/Moonraker and RatOS-acceptance slice.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -79,7 +84,9 @@ denied or classified without reaching an actuator.
 
 ## Completed slice: typed pause, resume, and cancel
 
-- [x] Boot-scoped opaque state tokens bind a revision to its observed job data.
+- [x] Boot-scoped opaque state tokens bind a dedicated control revision,
+  capability, phase, filename, and unique Moonraker history job identity while
+  remaining stable across unrelated telemetry and forward progress.
 - [x] Local monotonic receipt times make evidence freshness measurable.
 - [x] Condition-based revision waits provide race-safe future reconciliation.
 - [x] Duplicate authentication headers are rejected.
@@ -94,11 +101,17 @@ denied or classified without reaching an actuator.
   idempotency keys and exact boot-scoped state tokens.
 - [x] Per-printer locking serializes cached authorization, immediate live poll,
   one dispatch, and post-action reconciliation.
-- [x] Cached and live evidence must match phase and filename, with current token,
-  capability, monotonic event time, and non-regressing preflight position.
+- [x] The caller token must match exactly at admission and final cached recheck.
+  Cached and live evidence must match phase, filename, unique history job id and
+  start time with current capability, monotonic event time, and non-regressing
+  position. Equal history reads bracket every accepted direct object sample;
+  up to three read-only samples may obtain coherence without ever retrying an
+  action. A generic monitor update is accepted only when the exact token is
+  unchanged and its evidence is fully bounded by that preflight.
 - [x] Operations that dispatched or may have dispatched remain in the bounded
   process-epoch journal. An uncertain printer/state-token pair is fenced across
-  all idempotency keys; exhaustion fails closed rather than permitting replay.
+  all idempotency keys; ordinary progress cannot cross the fence, and exhaustion
+  fails closed rather than permitting replay.
 - [x] Post-action polling binds the target phase to the preflight filename and
   monotonic evidence. Any ambiguity becomes `outcome_unknown` with no retry.
 - [x] Repository policy permits only the three dedicated actuator RPCs in one
@@ -111,6 +124,41 @@ Exit criterion: one authenticated, current, exact pause/resume/cancel request is
 dispatched at most once and reported confirmed only from later evidence for the
 same job. Every missing, stale, contradictory, or post-dispatch ambiguous state
 fails closed.
+
+## Active delivery slice: native integration and RatOS acceptance
+
+- [x] Build an amd64 test-only image from immutable Python, Klipper, and
+  Moonraker identities with hash-pinned dependencies and fixture integrity
+  checks. Retain upstream source and licence files; do not publish the image.
+- [x] Run real Klipper with its Linux-process MCU, `kinematics: none`, no
+  heaters/motors/GPIO/devices, and one bounded virtual-SD dwell fixture.
+- [x] Run the production Klove image and real Moonraker behind an internal-only
+  network. Require Moonraker API-key authentication; expose no host port,
+  device, Docker socket, host network, privilege, or generic command route.
+- [x] Confirm typed pause/resume/cancel, unique history job-id/start-time
+  binding, exact final token recheck, exact single dispatch, duplicate result
+  reuse, stale-token pre-dispatch denial, post-action reconciliation, and
+  invalid northbound/southbound authentication.
+- [x] Drop one response after Moonraker receives pause and prove
+  `outcome_unknown` remains fenced across idempotency keys without another
+  dispatch.
+- [x] Restart the printer host while Klove stays live and prove that ambiguity
+  remains fenced after reconnect. Restart Klove and prove its new boot epoch
+  denies the prior token without dispatch.
+- [x] Bind each run to an exact validated run id, Compose project, Docker
+  context, daemon ID, and daemon mode. Use rootless Docker locally, bounded
+  operations, narrow volumes, generated credentials, and exact teardown.
+- [x] Define a separate RatOS v2.1.0 ARM hardware procedure with immutable asset
+  sizes/checksums, macro ownership, attended safety checks, and an evidence
+  template. Do not call the native stack RatOS; full-system emulation is
+  supplemental only when it faithfully boots the exact image.
+- [x] Obtain clean GitHub PR CI and merge through protected `develop` in
+  [PR #49](https://github.com/tomlawesome/klove/pull/49).
+
+Exit criterion: a reproducible confined run passes against the pinned real
+Klipper/Moonraker processes and retains negative, fault, and restart evidence;
+the exact RatOS hardware procedure is reviewable and remains visibly pending
+until actually executed.
 
 ## Completed slice: versioned artifact contracts
 
@@ -166,17 +214,35 @@ filesystem, network, printer, or actuation effects.
 
 ## Next slices
 
-1. Exact target/safety-profile binding, then separately decided safe upload,
+1. Keep the native integration lane as a required regression gate and execute
+   the RatOS v2.1.0 procedure on supported ARM hardware before stable
+   promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
+   and [stable promotion #3](https://github.com/tomlawesome/klove/issues/3).
+   First evaluate faithful rootless full-system virtualisation of the exact
+   RatOS image under [spike #50](https://github.com/tomlawesome/klove/issues/50).
+   This validation work authorizes no new actuator.
+2. Exact target/safety-profile binding, then separately decided safe upload,
    metadata verification, idempotent print start, and durable reconciliation.
    Print-start implementation and transport are blocked until a dedicated ADR
-   is accepted; roadmap placement is not authorization.
-2. Current-Grove MQTT/TLS and FTPS compatibility facade with conservative state
-   projection and specific-printer queueing.
-3. Separately decided and tested bounded temperature/speed plus explicitly
-   mapped fan/light controls. Keep jog and extrusion disabled until proven.
-4. Fleet hardening: durable journal, multi-printer fault isolation, cameras,
-   metrics, backup/restore, migrations, and restart/fault/soak tests.
-5. Native Grove provider integration with provider-neutral capabilities,
-   structured errors, and target-profile scheduling.
-6. Later adapters: exclude-object, richer cameras, MMU/toolchanger support,
-   optional outbound host agent, and additional printer stacks.
+   is accepted; roadmap placement is not authorization. Track the slices in
+   [#5](https://github.com/tomlawesome/klove/issues/5),
+   [#8](https://github.com/tomlawesome/klove/issues/8),
+   [#9](https://github.com/tomlawesome/klove/issues/9), and
+   [#12](https://github.com/tomlawesome/klove/issues/12) under
+   [artifact-dispatch epic #33](https://github.com/tomlawesome/klove/issues/33).
+3. Current-Grove MQTT/TLS and FTPS compatibility facade with conservative state
+   projection and specific-printer queueing, tracked under
+   [Grove-bridge epic #32](https://github.com/tomlawesome/klove/issues/32).
+4. Separately decided and tested bounded temperature/speed plus explicitly
+   mapped fan/light controls. Keep jog and extrusion disabled until proven;
+   [decision #15](https://github.com/tomlawesome/klove/issues/15) gates
+   [live-control epic #37](https://github.com/tomlawesome/klove/issues/37).
+5. Fleet hardening: durable journal, multi-printer fault isolation, cameras,
+   metrics, backup/restore, migrations, and restart/fault/soak tests, tracked in
+   [fleet epic #34](https://github.com/tomlawesome/klove/issues/34).
+6. Native Grove provider integration with provider-neutral capabilities,
+   structured errors, and target-profile scheduling, tracked in
+   [native-provider epic #36](https://github.com/tomlawesome/klove/issues/36).
+7. Later adapters: exclude-object, richer cameras, MMU/toolchanger support,
+   optional outbound host agent, and additional printer stacks, tracked in
+   [adapter epic #35](https://github.com/tomlawesome/klove/issues/35).
