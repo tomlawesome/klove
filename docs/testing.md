@@ -66,6 +66,24 @@ v2.1.0 acceptance separately records the exact ARM release asset checksum,
 supported board, running software identities, controlled configuration and
 macro hashes, and attended physical results under `docs/ratos-acceptance.md`.
 
+An opt-in supplemental full-system lane is available as
+`scripts/test-ratos-emulation.sh`. It verifies the exact RatOS v2.1.0 Raspberry
+Pi archive, preserves its expanded raw disk read-only, direct-loads the matching
+release kernel and DTB into QEMU's Pi 3B model, and writes only to a private COW
+overlay created fresh for each evidence run. Its fixed-snapshot tool image and
+unprivileged QEMU process receive the release inputs as separate read-only
+mounts; only the run COW is writable. The rootless outer container is
+networkless, capability-free, resource-bounded, and exposes guest services only
+to its own loopback. The lane records bounded non-secret
+RatOS/Moonraker/service identities and performs exact teardown, overlay checking,
+and derived-COW digesting without retaining raw guest serial output. Every
+archived run carries its own prepared-input, tool-image, daemon, Git-revision,
+and deterministic lane-source provenance, plus an atomic probe-success marker.
+It requires x86-64 Linux, GNU coreutils, rootless Docker, and at least 16 GB free
+for a fresh preparation. It is not in CI because the input is about 2.1 GB and
+ARM-on-x86 TCG boot is slow. It does not emulate a printer MCU, prove macro
+semantics, or replace attended hardware acceptance.
+
 Pytest prepends `src` to its import path, and a repository-policy assertion
 verifies that the suite imported Klove from the working tree. This prevents a
 non-editable or stale environment installation from producing misleading

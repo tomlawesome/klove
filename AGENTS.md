@@ -75,5 +75,14 @@ must never become a production Klove upload, print-start, or generic G-code
 path. The native stack is not RatOS; RatOS acceptance uses the separate pinned
 ARM hardware procedure in `docs/ratos-acceptance.md`.
 
+Use `scripts/test-ratos-emulation.sh` only for the opt-in supplemental RatOS
+v2.1.0 host/service lane. It must remain rootless, outer-networkless,
+capability-free, resource-bounded, digest-verified, COW-backed, and absent from
+routine CI and release artifacts. Each evidence run must start with a fresh COW
+over the immutable verified base; QEMU receives only that COW writable, and raw
+guest serial output is not retained. Direct-loading the exact kernel and device
+tree bypasses the physical Pi firmware path; never describe the result as board,
+MCU, configured-macro, job-control, or physical acceptance.
+
 Never commit credentials. Configuration names secret files; secret values live
 only in untracked, narrowly mounted files.

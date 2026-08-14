@@ -1,8 +1,9 @@
 # RatOS v2.1.0 acceptance lane
 
-Status: procedure defined; exact-image emulation is tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50), while conclusive
-execution still requires supported ARM hardware
+Status: supplemental exact-release emulation executed; conclusive acceptance
+still requires supported ARM hardware under the attended procedure below.
+Implementation and evidence are tracked in
+[issue #50](https://github.com/tomlawesome/klove/issues/50).
 
 RatOS acceptance is deliberately separate from Klove's native
 Klipper/Moonraker container test. The automated fixture proves the current
@@ -26,12 +27,10 @@ rolling image, rebuilt archive, or another board image.
 
 ## Virtualisation feasibility boundary
 
-These are board-specific ARM whole-disk images, not OCI images. The current
-x86-64 rootless host has no registered ARM binary-format emulator or QEMU
-system emulator. Extracting their userspace into a container would omit the
-bootloader, board kernel and device tree, systemd service graph, udev, and
-hardware integration that make the release RatOS; it does not count as a RatOS
-test.
+These are board-specific ARM whole-disk images, not OCI images. Extracting
+their userspace into a container would omit the board kernel and device tree,
+systemd service graph, udev, and hardware integration that make the release
+RatOS; it does not count as a RatOS test.
 
 The rootless full-system experiment is tracked in
 [issue #50](https://github.com/tomlawesome/klove/issues/50) and is acceptable
@@ -46,6 +45,61 @@ only if it:
 
 Do not weaken rootless confinement or install an unreviewed emulator merely to
 label the native integration fixture “RatOS.”
+
+## Executed Raspberry Pi 3B emulation
+
+On 2026-08-14, the x86-64 rootless host executed the opt-in lane under
+`tests/integration/ratos-emulation/`. It used the exact verified Raspberry Pi
+asset above as an immutable raw backing disk and QEMU's `raspi3b` model under
+TCG. The matching release `kernel8` payload and Pi 3B device tree were extracted
+read-only, hashed, and direct-loaded; all guest writes went to a fresh,
+derived qcow2 overlay.
+
+The proof reached and queried the running RatOS-managed services through
+loopback forwards inside a networkless outer container:
+
+| Evidence | Observed identity/state |
+| --- | --- |
+| RatOS | `2.1.0`, Raspbian GNU/Linux 11 Bullseye |
+| Emulated board/kernel | Raspberry Pi 3 Model B, `6.1.21-v8+` |
+| Moonraker | `v0.9.1-0-g63578ae`, API `1.4.0` |
+| SSH | OpenSSH `8.4p1 Raspbian-5+deb11u5` |
+| Managed services | Klipper, Moonraker, and RatOS Configurator active/running |
+| Klippy | not ready; exploratory runs observed `startup` or `disconnected`, and `/printer/info` remained unavailable without a usable printer configuration/MCU |
+
+The guest also exhibited expected emulation-only limitations around Raspberry
+Pi EEPROM, GPIO/firmware interfaces, and camera hardware. A raw firmware-style
+boot produced no usable console or write evidence; QEMU's Pi model required
+direct-loading the exact kernel and DTB. That bypasses the physical Raspberry
+Pi firmware boot chain, so this is exact release-kernel and immutable-base-image
+service evidence—not a complete whole-disk boot claim. No CB1 experiment is
+planned because upstream QEMU has no matching Allwinner H616/CB1 machine.
+
+Run `scripts/test-ratos-emulation.sh` with the official asset path to reproduce
+the bounded lifecycle. It verifies all release identities, records the exact
+local tool-image and rootless daemon, permits only one evidenced first-boot
+restart, probes non-secret system/service identities, removes the exact
+container, and checks and archives the fresh run's derived COW disk with its
+digest. Each run also archives its prepared-input identities, tool-image/daemon
+origin, Git revision, and deterministic lane-source digest. Probe success uses
+a separate atomic marker rather than being inferred from evidence-file
+presence. Each run starts from a new overlay; no prior mutable guest state is
+reused. The tool image uses a fixed Debian package snapshot. Raw guest serial
+output is not retained. The lane is deliberately excluded from routine CI
+because the download and TCG boot are large and slow.
+
+This result does not exercise Klove's job-control contract. A faithful virtual
+printer still needs an explicitly controlled Klipper configuration and virtual
+MCU without modifying or misrepresenting the golden release. That work is
+tracked in
+[spike #51](https://github.com/tomlawesome/klove/issues/51). Physical RatOS,
+configured macro semantics, board peripherals, timing, USB MCU behavior, and
+safe printer action remain subject to the attended procedure. QEMU's TCG
+[security policy](https://www.qemu.org/docs/master/system/security.html) also
+provides no supported guest-isolation guarantee; the rootless, capability-free
+outer container remains the host confinement boundary. The relevant upstream
+board limitations are recorded in QEMU's
+[Raspberry Pi machine documentation](https://www.qemu.org/docs/master/system/arm/raspi.html).
 
 ## Attended hardware procedure
 

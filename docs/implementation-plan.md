@@ -1,7 +1,7 @@
 # Klove implementation plan
 
 Status: active  
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## Delivery policy
 
@@ -218,9 +218,14 @@ filesystem, network, printer, or actuation effects.
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
    promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
    and [stable promotion #3](https://github.com/tomlawesome/klove/issues/3).
-   First evaluate faithful rootless full-system virtualisation of the exact
-   RatOS image under [spike #50](https://github.com/tomlawesome/klove/issues/50).
-   This validation work authorizes no new actuator.
+   The rootless full-system feasibility work under
+   [spike #50](https://github.com/tomlawesome/klove/issues/50) now boots and
+   probes the exact RatOS v2.1.0 release kernel/base image and managed services
+   under a confined Pi 3B QEMU lane. The separate
+   [virtual-MCU/configuration spike #51](https://github.com/tomlawesome/klove/issues/51)
+   is required before the Klove contract can run there; supported hardware
+   remains the release-acceptance authority. This validation work authorizes no
+   new actuator.
 2. Exact target/safety-profile binding, then separately decided safe upload,
    metadata verification, idempotent print start, and durable reconciliation.
    Print-start implementation and transport are blocked until a dedicated ADR
