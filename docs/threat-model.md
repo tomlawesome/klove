@@ -94,7 +94,8 @@ to later evidence for the same job, and reports ambiguity without retrying. See
   non-canonical aliases are rejected.
 - Archive compressed and expanded bytes, ZIP entry count, compression ratio,
   central-directory bytes, selected G-code bytes, header bytes, line bytes, and
-  future metadata waits have finite operator limits whose own configuration is
+  upload requests, metadata waits and polls, and upload idempotency capacity
+  have finite operator limits whose own configuration is
   bounded. Ratio evidence carries exact compressed and expanded byte counts for
   the highest-ratio entry; aggregate consistency and the policy threshold are
   checked by integer cross-multiplication.
@@ -123,9 +124,38 @@ to later evidence for the same job, and reports ambiguity without retrying. See
 - A manual review record binds one exact file and records its actor, time, and
   reason, but its schema fixes automatic authority to false and the automatic
   policy always denies it.
-- Qualification grants no transport or actuation authority. The current slice
-  creates no file, contacts no printer, and introduces no upload or print-start
-  transport.
+- Qualification grants no transport or actuation authority. Only the separate
+  ADR-0004 service may consume it after repeating current target and source
+  checks; no northbound route constructs that service in this slice.
+
+## Non-actuating upload controls
+
+- A per-printer lock contains the final profile/source recheck, the one upload
+  request, metadata polling, remote-file digest, and second metadata read. The
+  exact retained archive is re-inspected and its selected member reopened
+  immediately before the request. A stale printer UUID, profile id, generation,
+  fingerprint, artifact, selected path, digest, or size denies before transport.
+- The only destination is the canonical operation-derived
+  `gcodes/klove/<operation-id>.gcode` path. The multipart request supplies the
+  selected SHA-256 to Moonraker's checksum verifier and literal `print=false`.
+  The response must be an exact non-starting `create_file` result with matching
+  location, root, path, size, timestamp and permissions.
+- Exact duplicates share one task and terminal result. An operation-id or
+  idempotency-key collision denies. Accepted entries are retained in a bounded
+  process journal; capacity exhaustion denies new work. A restart never infers
+  upload authority from an existing remote filename.
+- Once the request may have begun, a lost response, disconnect, timeout,
+  malformed reply, cancellation, metadata delay, mismatch, remote digest
+  mismatch, substitution, or changing metadata becomes `outcome_unknown`.
+  Klove never blindly retries or deletes the uncertain path.
+- Metadata must identify the exact path, byte size, upload timestamp and a
+  canonical UUID, have bounded increasing command offsets, retain no job/start
+  identity or file processors, and match the configured nozzle. Klove streams
+  the remote file within the exact selected size and digest while equal
+  metadata reads bracket that download.
+- `VerifiedUpload` carries only remote-file evidence. It cannot start a print,
+  and generic G-code remains absent. A later durable start slice must recheck
+  current evidence immediately before its separate one-time action.
 
 ## Required controls before print start and later actuators
 

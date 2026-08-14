@@ -13,7 +13,8 @@ authenticates native API clients, and classifies Grove commands. Its first
 opt-in control slice exposes only typed pause, resume, and cancel operations.
 
 This is pre-release software. It cannot start a print, execute arbitrary G-code,
-or provide any other motion, heating, fan, light, or macro control.
+or provide any other motion, heating, fan, light, or macro control. Its bounded
+file transport is not exposed through a northbound route.
 
 Klove defines a strict v3 contract and non-actuating validator for
 `.gcode.3mf` intake, one exact selected plate path, target approval,
@@ -29,8 +30,14 @@ and an exact current configured safety profile. Printer UUID, registered slicer
 profile, generation, canonical fingerprint, Klipper dialect, nozzle, build
 volume, and plate must all match. Model names and near matches are ignored.
 Manual review records are per-file audit evidence and are always denied by the
-automatic path. Qualification still does not upload a file or authorize print
-start. See ADR 0003 and the safety-profile example in `config.example.toml`.
+automatic path. Qualification itself grants no transport authority. The
+separate ADR-0004 upload service rechecks current target and source evidence,
+writes only `klove/<operation-id>.gcode` once with Moonraker checksum validation
+and `print=false`, polls bounded metadata, downloads and hashes the remote file
+between identical metadata reads, and emits non-actuating `VerifiedUpload`
+evidence. Any ambiguity after the request begins is retained as
+`outcome_unknown` without retry. See ADRs 0003 and 0004 and the safety-profile
+example in `config.example.toml`.
 
 ## Run the service
 
@@ -97,8 +104,9 @@ must also run `scripts/test-moonraker-sim.sh`. On Linux this builds a confined,
 rootless, revision-pinned native Klipper/Moonraker stack with Klipper's
 Linux-process MCU and exercises real authentication, monitoring, typed
 pause/resume/cancel, lost-response fencing, and restarts. The private fixture
-starts only a finite dwell job to establish test state; Klove itself still has
-no upload, print-start, or generic G-code capability. See the
+starts only a finite dwell job to establish test state; the fixture does not
+exercise the production upload service, and Klove still exposes no print-start
+or generic G-code capability. See the
 [integration fixture](tests/integration/moonraker-sim/README.md).
 
 That automated amd64 stack is not RatOS. RatOS host and physical-printer

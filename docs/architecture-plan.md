@@ -160,9 +160,10 @@ For every configured printer Klove should:
    `notify_klippy_disconnected`; re-probe capabilities after restart.
 5. For the accepted first control slice, use only JSON-RPC
    `printer.print.pause`, `.resume`, and `.cancel`.
-6. A later artifact-dispatch slice proposes HTTP `/server/files/upload` and
-   `printer.print.start`, but neither transport is authorized until its own ADR
-   is accepted.
+6. ADR 0004 accepts HTTP `/server/files/upload` only for bounded,
+   operation-unique, checksum-verified placement with `print=false`, remote
+   digest verification, and no northbound route. `printer.print.start` remains
+   prohibited until its own accepted decision and durable dispatch slice.
 7. Use Moonraker metadata and history to estimate remaining time and reconcile
    jobs after either side restarts when the relevant slice is authorized.
 
@@ -324,15 +325,17 @@ start remain unauthorized:
 4. Treat the 3MF as a hostile ZIP: cap upload/compressed/uncompressed sizes and
    entry count; reject traversal, links, encrypted entries, duplicate paths, and
    compression bombs; stream only the chosen plate G-code.
-5. After a dedicated dispatch ADR is accepted, upload to a unique
-   `klove/<operation-id>.gcode` path through Moonraker, wait
-   for metadata processing, validate the returned metadata, then issue one
-   idempotent start request.
+5. Under ADR 0004, upload once to a unique `klove/<operation-id>.gcode` path
+   through Moonraker with the selected digest and `print=false`; wait for
+   metadata processing, bracket a bounded remote-file digest with identical
+   metadata reads, and retain every post-request ambiguity without retry.
+   A separate later decision must revalidate that evidence before issuing one
+   durable idempotent start request.
 6. Observe the expected Moonraker filename/state transition before reporting a
    successful start to Grove. If the response is lost, reconcile current state
    and history instead of retrying blindly.
 
-The implemented boundary is deliberately non-actuating. Its strict v3 contract
+The implemented dispatch prerequisite remains deliberately non-actuating. Its strict v3 contract
 keeps hostile byte inspection separate from independently trusted target
 approval. The validator accepts one immutable byte snapshot, bounds and
 validates hostile ZIP/ZIP64 metadata before parsing, and streams only the exact
@@ -341,8 +344,12 @@ Qualification then requires the same exact bytes in one controller/slicer
 approval and one current configured safety profile. Canonical printer UUID,
 registered slicer profile, generation, fingerprint, Klipper dialect, nozzle,
 build volume, and plate must all agree. Names and near matches are not proof;
-manual overrides remain audit-only and are denied by automation. The result
-writes nothing, uploads nothing, and exposes no print start.
+manual overrides remain audit-only and are denied by automation. Qualification
+itself writes nothing. ADR 0004 may consume only that exact qualification,
+recheck the current profile and immutable source, upload the selected G-code
+once with Moonraker checksum verification and `print=false`, and emit verified
+remote-file evidence only after bounded metadata and byte-digest reconciliation.
+It exposes no print start.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
@@ -461,9 +468,11 @@ every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
 ### Phase 3: safe file dispatch
 
-- First accept a dedicated dispatch ADR; this phase is blocked until then.
+- ADRs 0003 and 0004 now accept exact qualification and non-actuating Moonraker
+  upload. Print start remains blocked on its separate decision.
 - Implement hostile-3MF validation, target manifest/profile checks, Moonraker
-  upload/metadata/start, dedupe, acknowledgement, and restart reconciliation.
+  upload/metadata/start, dedupe, acknowledgement, and restart reconciliation in
+  separately gated slices.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
 Exit: one target-tagged job can be queued, started, paused, resumed, cancelled,
@@ -542,10 +551,12 @@ The artifact-contract prerequisite in
 [issue #7](https://github.com/tomlawesome/klove/issues/7) and hostile
 3MF/G-code validator in [issue #6](https://github.com/tomlawesome/klove/issues/6)
 and exact target qualification in
-[issue #5](https://github.com/tomlawesome/klove/issues/5) are complete without
-transport. The immediate next slice is separately decided bounded upload and
-metadata verification in [issue #8](https://github.com/tomlawesome/klove/issues/8),
-followed by one idempotent print start and durable restart reconciliation.
+[issue #5](https://github.com/tomlawesome/klove/issues/5) are complete. The
+separately decided bounded upload and metadata-verification slice in
+[issue #8](https://github.com/tomlawesome/klove/issues/8) is also implemented
+without print start. The immediate next slice is one idempotent print start and
+durable restart reconciliation in
+[issue #9](https://github.com/tomlawesome/klove/issues/9).
 MQTT/FTPS compatibility work follows that safety boundary. Print start remains
 blocked until a dedicated ADR is accepted; this sequencing statement authorizes
 no new actuator. Track the programme in

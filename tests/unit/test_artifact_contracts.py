@@ -242,6 +242,19 @@ def test_safety_profile_has_canonical_exact_fingerprint_and_klipper_dialect() ->
         BuildVolume(x_micrometres=350_000.0, y_micrometres=350_000, z_micrometres=350_000)  # type: ignore[arg-type]
 
 
+def test_artifact_limits_require_upload_polling_to_fit_the_metadata_window() -> None:
+    limits = ArtifactLimits(
+        upload_timeout_seconds=1,
+        metadata_wait_seconds=0.2,
+        metadata_poll_interval_seconds=0.1,
+        upload_idempotency_capacity=1,
+    )
+    assert limits.upload_timeout_seconds == 1
+    assert limits.upload_idempotency_capacity == 1
+    with pytest.raises(ValidationError, match="poll interval"):
+        ArtifactLimits(metadata_wait_seconds=0.1, metadata_poll_interval_seconds=0.2)
+
+
 def test_operation_result_requires_exact_state_payload() -> None:
     operation_id = intent().operation_id
     received = ArtifactOperationResult(

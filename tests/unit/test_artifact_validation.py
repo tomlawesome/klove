@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import stat
 import struct
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -13,7 +14,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import klove.domain.artifact_validation as validation
-from klove.domain.artifact_validation import ValidatedGcodeCandidate, inspect_gcode_3mf
+from klove.domain.artifact_validation import (
+    ValidatedGcodeCandidate,
+    inspect_gcode_3mf,
+    open_selected_gcode,
+)
 from klove.domain.artifacts import (
     ArtifactBoundary,
     ArtifactFailure,
@@ -169,6 +174,43 @@ def test_valid_archive_returns_byte_exact_candidate_and_observed_evidence() -> N
     assert result.inspection.zip_entry_count == len(infos)
     assert result.inspection.archive_expanded_bytes == sum(info.file_size for info in infos)
     assert "source_archive" not in repr(result)
+
+
+def test_selected_gcode_can_only_reopen_the_exact_inspected_member() -> None:
+    payload = zip_bytes()
+    candidate = inspect(payload)
+    assert isinstance(candidate, ValidatedGcodeCandidate)
+
+    with open_selected_gcode(candidate) as selected:
+        assert selected.read() == VALID_GCODE
+
+    missing = replace(
+        candidate,
+        inspection=candidate.inspection.model_copy(
+            update={
+                "selected_plate": candidate.inspection.selected_plate.model_copy(
+                    update={"archive_path": "Metadata/missing.gcode"}
+                )
+            }
+        ),
+    )
+    wrong_size = replace(
+        candidate,
+        inspection=candidate.inspection.model_copy(
+            update={
+                "selected_plate": candidate.inspection.selected_plate.model_copy(
+                    update={"gcode_size_bytes": len(VALID_GCODE) + 1}
+                )
+            }
+        ),
+    )
+    malformed = replace(candidate, source_archive=b"not-a-zip")
+    for value in (missing, wrong_size, malformed):
+        with (
+            pytest.raises(ValueError, match="selected member is unavailable"),
+            open_selected_gcode(value),
+        ):
+            raise AssertionError("unreachable")
 
 
 def test_valid_strict_zip64_archive_is_supported() -> None:
