@@ -3,10 +3,12 @@
 Klove is a fail-closed interface between Grove Control and Klipper printers
 managed through Moonraker.
 
-Klove is intentionally headless: Grove owns normal user interaction, while
-Klove exchanges structured evidence between controllers and exposes the
-smallest practical machine-facing surface. Human input—and therefore any local
-Web UI—is a last resort for a separately justified, irreducible interaction.
+Klove is intentionally headless for routine operation: Grove owns normal user
+interaction, while Klove exchanges structured evidence between controllers and
+exposes the smallest practical machine-facing surface. ADR 0006 accepts one
+narrow exception: a Klove-owned setup and recovery page embedded in Grove's
+custom **Klipper via Klove** Add Printer path. It is not a dashboard or control
+surface.
 
 Klove discovers Moonraker capabilities, maintains a canonical printer state,
 authenticates native API clients, and classifies Grove commands. Its first
@@ -17,6 +19,16 @@ This is pre-release software. Its native API cannot submit an artifact, upload
 or start a print, execute arbitrary G-code, or provide any other motion,
 heating, fan, light, or macro control. The separately accepted upload and
 durable print-start domain services are not exposed through a northbound route.
+
+The product onboarding path is accepted but not implemented yet. Once the
+runtime facade in issues #10/#14 and onboarding issues #58–#60 ship, an
+authorized Grove user will select **Klipper via Klove**, complete Moonraker setup
+inside the embedded Klove page, review direct identity and safety-profile
+evidence, and return only Klove's proxy host, stable serial, display name, and
+generated compatibility access code to Grove's existing printer-create flow.
+Grove will never receive the Moonraker credential. Until then, the file-based
+steps below are a developer/bootstrap limitation, not the finished user
+experience.
 
 Klove defines a strict v3 contract and non-actuating validator for
 `.gcode.3mf` intake, one exact selected plate path, target approval,
@@ -51,7 +63,7 @@ Every unresolved outcome survives restart and fences that printer without a
 blind retry. No generic G-code path exists. See ADRs 0003–0005 and the
 safety-profile example in `config.example.toml`.
 
-## Run the service
+## Run the current bootstrap service
 
 1. Copy `config.example.toml` to `config.toml`, replace every example printer
    UUID with a generated stable UUIDv4, and use an explicit Moonraker URL for
@@ -134,4 +146,5 @@ host-MCU contract; it remains supplemental and is not physical acceptance.
 See the [architecture and delivery plan](docs/architecture-plan.md),
 [active implementation plan](docs/implementation-plan.md),
 [threat model](docs/threat-model.md), [testing policy](docs/testing.md), and
-[RatOS acceptance lane](docs/ratos-acceptance.md).
+[RatOS acceptance lane](docs/ratos-acceptance.md). The accepted onboarding
+boundary is [ADR 0006](docs/decisions/0006-embedded-grove-onboarding.md).

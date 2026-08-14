@@ -13,6 +13,22 @@ that the protocol model is complete. The suite therefore also includes:
 - a confined real-process lane using pinned native Klipper with its
   Linux-process MCU, pinned Moonraker, and the production Klove image;
 - API tests for missing, malformed, and insufficient credentials;
+- when ADR 0006 onboarding is implemented, registry and secret-boundary tests
+  for exact UUID/endpoint/profile identity, operation collisions, external
+  owner-only secret references, transactional create/rotate/disable/remove,
+  restart and partial failure, corrupt/future schema, backup/restore, unresolved
+  operation fences, and credential redaction;
+- scripted browser tests for independent Klove owner authentication, session
+  expiry/replay/concurrency, CSRF, exact Origin and CSP `frame-ancestors`, the
+  sandboxed parent/frame ready-and-nonce state machine, strict versioned
+  completion decoding, cancellation, hostile inputs, no browser persistence,
+  responsive layouts, keyboard navigation, accessibility, and recovery outside
+  the frame;
+- Grove contract and browser tests pinned to the supported source revision for
+  `KLOVE` create-field limits, stable proxy identity, successful and failed
+  handoff, image fallback, exact-printer scheduling, model-compatibility bypass,
+  unsupported Bambu feature suppression, and regression of existing Bambu
+  printer types;
 - control tests for exact token/job/state matching, per-printer serialization,
   history job-id/start-time bracketing, telemetry-stable control tokens, final
   exact-token rechecks, single dispatch, cross-key uncertainty fencing,
@@ -138,3 +154,10 @@ Pytest prepends `src` to its import path, and a repository-policy assertion
 verifies that the suite imported Klove from the working tree. This prevents a
 non-editable or stale environment installation from producing misleading
 coverage for code other than the source under review.
+
+The onboarding decision and documentation do not themselves add browser
+dependencies or authorize a UI implementation. Issue #59 must introduce a
+repeatable Playwright entry point only after #58's registry/authentication
+boundary is merged. Browser results supplement—not replace—the package-wide
+100% statement and branch gate for authentication, authorization, decoding,
+translation, control, and policy.

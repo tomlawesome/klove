@@ -5,10 +5,21 @@
 Klove is a headless, automation-first security and translation layer. Grove
 owns normal user interaction. Prefer direct structured evidence and automatic
 reconciliation between Grove, Klove, and Moonraker over human input. Expose the
-smallest practical machine-facing surface. A Klove-local Web UI is a last resort
-for a demonstrated irreducible human choice or recovery action and requires its
-own accepted architecture decision; never add a dashboard, configuration UI, or
-duplicate workflow for convenience.
+smallest practical machine-facing surface. ADR 0006 accepts one narrow Web UI
+exception for irreducible printer setup and recovery: Klove owns the embedded
+Grove-themed surface, runtime registry, Moonraker credentials, direct probes,
+stable identity, and safety-profile binding. It must never grow into a
+dashboard, routine configuration UI, printer control surface, or duplicate
+Grove workflow.
+
+Grove integration is limited to an explicit conservative `KLOVE` printer type,
+one **Klipper via Klove** Add Printer path, the embedded setup frame, a strict
+versioned completion handoff into Grove's existing printer-create flow, and
+feature gates that hide unsupported Bambu behavior. Grove must never receive
+Moonraker credentials or implement Klipper semantics. Do not revive the retired
+native-provider programme or create a persistent Grove fork without a new
+accepted decision. Any Grove contribution is developed in a fork and proposed
+upstream normally.
 
 ## Safety invariant
 

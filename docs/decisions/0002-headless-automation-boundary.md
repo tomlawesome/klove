@@ -1,6 +1,6 @@
 # ADR 0002: keep Klove headless and automation-first
 
-Status: accepted
+Status: accepted; setup and recovery exception defined by ADR 0006
 
 Date: 2026-08-13
 
@@ -22,9 +22,8 @@ Klove remains headless and automation-first:
 
 1. Grove owns normal user interaction. Klove sends Grove conservative canonical
    state, capabilities, operation outcomes, and reconciliation status through
-   the bounded MQTT/TLS compatibility contract and, later, the native provider
-   API. Artifact movement remains prohibited until a separately accepted
-   spool/dispatch contract exists.
+   the bounded MQTT/TLS compatibility contract. Artifact movement remains
+   prohibited until a separately accepted spool/dispatch contract exists.
 2. Klove sources evidence directly from configured controllers and exchanges
    structured data between controllers. It does not ask an operator to
    transcribe information that can be discovered or reconciled automatically.
@@ -46,15 +45,20 @@ Klove remains headless and automation-first:
 - When introduced, the Grove bridge must carry enough typed state and outcome
   detail for Grove to present stale evidence, denials, and `outcome_unknown`
   correctly.
-- The native provider boundary remains the long-term operator integration; it
-  does not create a Klove frontend.
-- Configuration and credentials remain operator-managed files and secret
-  mounts. Diagnostics remain machine-readable and redacted.
-- No frontend framework, browser bundle, or UI service is added to Klove now.
-- A future UI proposal must first prove why controller-to-controller exchange,
-  automatic reconciliation, Grove, and bounded CLI/configuration paths are
+- ADR 0006 records the required proof and accepts the smallest setup/recovery
+  exception: a Klove-owned frame embedded in Grove's custom Add Printer path.
+  It does not permit a dashboard or routine control surface.
+- Normal per-printer onboarding moves to Klove's runtime registry and external
+  secret store when those slices ship. Tracked configuration remains a
+  deployment/bootstrap input rather than the product onboarding workflow.
+- Grove receives an explicit conservative `KLOVE` type and a narrow completion
+  handoff. The formerly proposed broad native provider boundary is retired as
+  not planned.
+- Any further UI surface must independently prove why controller exchange,
+  automatic reconciliation, Grove, and the accepted setup/recovery path are
   insufficient.
 
 ## Tracking
 
 - [GitHub decision #40](https://github.com/tomlawesome/klove/issues/40)
+- [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)

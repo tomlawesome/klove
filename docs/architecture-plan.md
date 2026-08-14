@@ -22,20 +22,28 @@ container in the same Docker deployment by default. Klove connects outward to
 each printer's Moonraker HTTP and WebSocket APIs; it does not scrape Mainsail,
 modify Klipper, or require an installation on every printer host.
 
-Klove is a headless, automation-first translation layer. Grove owns the normal
-operator experience. Prefer direct, structured controller-to-controller
+Klove is headless and automation-first for routine operation. Grove owns the
+normal operator experience. Prefer direct, structured controller-to-controller
 evidence over human input; reconcile automatically when a bounded proof exists
-and otherwise fail closed. A Klove-local Web UI is permitted only as a last
-resort for a demonstrated irreducible human choice or recovery action and
-requires its own accepted decision. See ADR 0002.
+and otherwise fail closed. ADR 0006 accepts one narrow exception to ADR 0002:
+a Klove-owned setup/recovery page embedded by Grove's **Klipper via Klove** Add
+Printer path. It is limited to irreducible onboarding and recovery choices and
+must not become a dashboard or printer-control surface.
 
-Use two northbound interfaces in stages:
+Use three deliberately narrow northbound surfaces:
 
-1. A deliberately small Bambu-compatible MQTT/FTPS facade gets a useful MVP
-   working with current Grove Control.
-2. A versioned native Klove API and a thin Grove printer-provider adapter become
-   the production boundary. The compatibility facade remains available for
-   unmodified Grove releases but must not define Klove's internal model.
+1. A Bambu-shaped MQTT/TLS and implicit-FTPS facade supplies only conservative
+   runtime behavior already accepted by Klove's own safety contracts.
+2. A setup/recovery HTTP surface owns authenticated onboarding, direct
+   Moonraker probes, the runtime registry, secret handling, and a strict
+   completion handoff to Grove.
+3. Existing versioned Klove HTTP endpoints remain bounded machine interfaces;
+   they are not a commitment to a broad native Grove provider.
+
+Grove receives only an explicit conservative `KLOVE` printer type, the embedded
+Add Printer path, completion-message decoding, and feature gates. It does not
+receive Moonraker credentials or implement Klipper semantics. The earlier broad
+native-provider programme is retired as not planned.
 
 Do not translate `printer.cfg` into arbitrary commands and do not attempt to
 convert Bambu-sliced G-code into Klipper G-code. Read Klipper's exposed objects
@@ -57,7 +65,7 @@ already provides.
 | Central Klove container | One install and upgrade; one audit/logging point; manages many printers; uses official Moonraker APIs; natural future-adapter boundary | Requires network reachability and credentials to Moonraker; central failure affects Grove integration | Default |
 | systemd service on every Klipper host | Can use loopback or the Klipper Unix socket; each host has a distinct IP for Bambu-compatible ports | Fleet-wide installation, upgrades, secrets, certificates, and support burden; competes for small SBC resources | Optional later for isolated/outbound-only networks |
 | Moonraker component/plugin | Close integration and local access | Couples Klove to Moonraker internals and its release cadence; must be installed everywhere | Reject for v1 |
-| Implement Klipper directly in Grove | Fewest runtime services | Expands Grove's Bambu-specific core, couples release cycles, and weakens Klove as a reusable adapter layer | Do not use as the primary design |
+| Implement Klipper directly in Grove | Fewest runtime services | Expands Grove's Bambu-specific core, couples release cycles, and creates a new Klipper maintenance surface | Reject; permit only the minimal `KLOVE` type, embedded Add Printer path, handoff, and conservative feature gates in ADR 0006 |
 
 An optional lightweight agent can be designed later for sites where Moonraker
 cannot accept an authenticated connection from the Grove host. It should make an
@@ -94,18 +102,23 @@ Relevant source:
 This makes pure Bambu impersonation the quickest experiment, but a poor domain
 model. It would force Klipper printers to pretend to have a Bambu model, storage,
 AMS, HMS errors, camera protocol, and feature set. It also makes silent
-unsupported-command behaviour too easy.
+unsupported-command behaviour too easy. The reviewed create schema limits a
+serial to 50 uppercased characters and an access code to 20 characters, while
+model values drive scheduling and hardware features. ADR 0006 therefore uses a
+stable `KLOVE-<UUID>` proxy serial, a 20-character generated access code, and an
+explicit `KLOVE` model with conservative gates.
 
 ## Target architecture
 
 ```text
 Grove Control
-  |  current: MQTT/TLS + implicit FTPS
-  |  target:  Klove HTTP/WS provider API
+  |  setup: exact-origin iframe + strict completion message
+  |  runtime: MQTT/TLS + implicit FTPS
   v
-Klove northbound gateways
-  -> authentication and per-printer routing
-  -> command decoder / state encoder
+Klove northbound boundaries
+  -> owner-authenticated setup/recovery and runtime registry
+  -> compatibility authentication and exact per-printer routing
+  -> command decoder / conservative state encoder
   v
 Canonical printer domain
   -> typed state and capabilities
@@ -132,7 +145,8 @@ src/klove/
     moonraker/     HTTP/WS client, discovery, state and file mapping
   northbound/
     bambu_compat/  MQTT, FTPS, Bambu payload mapping
-    api/           versioned native HTTP/WS API
+    onboarding/    bounded setup/recovery HTTP and browser contract
+    api/           bounded versioned machine API
   persistence/     configuration, operation journal, migrations
 ```
 
@@ -367,16 +381,18 @@ must remain a separate optional service.
 
 ## Current-Grove compatibility facade
 
-The first usable bridge can work without a Grove fork:
+The runtime facade remains deliberately small:
 
-- TLS MQTT on 8883 with per-printer serial topics and unique high-entropy access
-  codes
-- implicit FTPS on 990, routing a login to a printer by its unique access code
-- manual printer registration in Grove; leave model unset rather than pretending
-  to be a Bambu model
-- specific-printer queueing only; no model-based scheduling in the first demo
-- external camera URLs configured in Grove
-- no AMS/MMU, calibration, firmware, or Bambu HMS emulation
+- TLS MQTT on 8883 with stable `KLOVE-<UUID>` per-printer serial topics and
+  unique 20-character high-entropy access codes;
+- implicit FTPS on 990, routing a login to the exact printer by its unique
+  access code;
+- specific-printer queueing only, with Klove's exact target approval rather
+  than Grove model matching as dispatch authority;
+- external camera URLs configured in Grove only after their separate boundary
+  is supported; and
+- no AMS/MMU, calibration, firmware, maintenance, drying, Bambu HMS, camera
+  protocol, or unsupported hardware-control emulation.
 
 Klove must publish enough conservative state and operation lifecycle detail for
 Grove to remain the sole normal user interface, including stale/unavailable
@@ -384,45 +400,78 @@ reasons, structured denials, and `outcome_unknown`. It must not move a workflow
 into human input merely because a compatibility mapping is inconvenient.
 
 A single Klove endpoint can serve many printers: MQTT routing includes the
-serial, and FTPS routing can use the unique access code. The access code must be
-unique and secret because FTPS itself does not carry the printer serial.
+stable proxy serial, and FTPS routing uses the unique generated access code. The
+access code is secret because FTPS itself does not carry the printer serial.
 
-Run Grove and Klove on a private Docker network for the simplest setup. Grove's
-host-network mode and Grove's own virtual-printer feature can contend for 8883,
-990, and passive FTP ports; document bridge mode for the MVP and add configurable
-per-printer compatibility ports to Grove before claiming host-network support.
+Run Grove and Klove on a private Docker network for the simplest runtime setup.
+Grove's host-network mode and Grove's own virtual-printer feature can contend
+for 8883, 990, and passive FTP ports; document bridge mode for the MVP and add
+configurable compatibility ports before claiming host-network support.
 
 The fastest lawful reuse path is to make Klove AGPL-3.0-compatible and adapt
 Grove's tested virtual-printer MQTT/FTPS components with attribution. If a
 different Klove licence is desired, obtain permission or implement the facade
 without copying Grove code before development begins.
 
-## Native Klove/Grove boundary
+## Embedded onboarding and minimal Grove boundary
 
-Define a small versioned API before making the compatibility layer broad:
+ADR 0006 replaces manual product registration and the former broad native
+provider proposal. The supported workflow is:
 
-- list/get printers, capabilities, health, and canonical state
-- event WebSocket with monotonic revisions and resync support
-- upload/validate/dispatch with required idempotency keys
-- typed control endpoints
-- operation status and structured errors
-- diagnostics that distinguish Grove-to-Klove, Klove-to-Moonraker, Klippy, and
-  artifact-policy failures
+1. An authorized Grove user selects **Klipper via Klove**. Grove opens Klove's
+   setup route in a sandboxed frame at one configured exact origin.
+2. Klove independently authenticates an owner and creates a short-lived,
+   single-flow setup session. Grove authentication and private-network location
+   are not sufficient authority.
+3. Klove discovers candidate Moonraker endpoints or accepts one bounded manual
+   host entry. The user supplies the Moonraker credential directly to Klove.
+4. Klove performs direct identity and capability probes, presents only the
+   irreducible name, exact safety-profile confirmation and opt-in choices, and
+   persists the canonical UUID, endpoint, evidence, profile binding and opaque
+   secret references in its one runtime registry.
+5. Klove generates the stable proxy serial and compatibility access code. An
+   exact-origin, nonce-bound, versioned completion message returns only the
+   display name, serial, Klove host/IP and access code.
+6. Grove sets the model to `KLOVE` and uses its existing authorized
+   printer-create path. Cancellation or failure creates nothing. The access code
+   is cleared from transient browser state after submission.
 
-The matching Grove change should add `provider` and `capabilities` to a printer,
-then introduce a `PrinterBackend` protocol for connection, state, artifact
-transfer, dispatch, and typed controls. The existing Bambu backend wraps current
-MQTT/FTPS code; a Klove backend calls the native API. Feature visibility and
-model matching should use capabilities and a target profile, not a fake Bambu
-model. This is the sustainable multi-vendor seam for future printer stacks and
-the long-term user-experience boundary; Klove does not grow a parallel frontend.
+The same Klove route exposes credential rotation, disable/removal, and bounded
+recovery after independent owner authentication. It contains no status
+dashboard or controls. Normal onboarding does not edit per-printer TOML; file
+configuration remains deployment/bootstrap input.
+
+`KLOVE` is an explicit conservative type, not a fake Bambu model. Grove must
+suppress model-derived file matching and scheduling, firmware, maintenance,
+AMS, HMS, drying, calibration and unsupported hardware controls. Initial queue
+routing is exact-printer only. Klove independently rejects anything outside its
+accepted runtime contracts.
+
+The frame and parent use exact origins and window references, an explicit
+ready/nonce handshake, strict versioned schemas, and no wildcard
+`postMessage`. Moonraker and Klove-owner credentials never cross the browser
+handoff or enter Grove. The Klove route is protected by owner authentication,
+short-lived server-side sessions, CSRF and exact-Origin checks, route-specific
+CSP `frame-ancestors`, a minimal iframe sandbox, no-store/no-referrer responses,
+and self-hosted assets. The complete browser and completion policy is frozen in
+ADR 0006.
+
+Compatibility is claimed only for an exact tested Grove revision. The currently
+reviewed baseline is `cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4`. Klove has
+read-only access upstream, so the small Grove contribution is built in a fork
+and proposed normally. Upstream rejection leaves the compatibility facade and
+standalone recovery available for development, but does not justify a permanent
+private fork or revive the native-provider programme.
 
 ## Persistence, reconciliation, and operations
 
-Persist only what Klove owns: printer registry, secret references, confirmed
-capability mappings, safety-profile history, artifact/operation identifiers,
-and the bounded idempotency journal. Grove remains the queue and production
-system of record; Moonraker/Klipper remains the execution state of record.
+Persist only what Klove owns: one canonical runtime printer registry, opaque
+secret references, confirmed capability mappings, safety-profile history,
+artifact/operation identifiers, and bounded idempotency journals. Secret values
+remain in owner-only storage outside the database. Grove remains the queue and
+production system of record; Moonraker/Klipper remains the execution state of
+record. Per-printer TOML is a temporary bootstrap path, not a parallel product
+registry.
 
 On startup or reconnect:
 
@@ -460,9 +509,10 @@ Exit: mappings and rejected behaviours are executable tests, not only prose.
 
 ### Phase 1: read-only Moonraker core
 
-- Configuration/secrets, Moonraker authentication, discovery/onboarding,
-  WebSocket subscriptions, state reducer, capability probe, reconnect, and
-  health API.
+- Bootstrap configuration/secrets, Moonraker authentication, discovery
+  primitives, WebSocket subscriptions, state reducer, capability probe,
+  reconnect, and health API. Product onboarding is completed by ADR 0006's
+  later runtime-registry and setup/recovery slices.
 - Support one and then multiple fake/real Moonraker endpoints.
 
 Exit: stable monitoring through Moonraker restarts and network partitions; no
@@ -478,8 +528,12 @@ printer-changing command exists.
 Exit: one exact current job-control request is dispatched at most once, and
 every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
-### Phase 3: safe file dispatch
+### Phase 3: runtime registry and safe file dispatch
 
+- Implement ADR 0006's one canonical runtime printer registry and external
+  owner-only secret store under issue #58. The registry supplies an exact
+  onboarded UUID, endpoint and safety-profile binding without adding a UI or
+  actuator.
 - ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
   durable at-most-once typed print start as separate internal components.
 - Implement hostile-3MF validation, target manifest/profile checks, Moonraker
@@ -489,17 +543,26 @@ every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
   issue #12 before claiming this phase's exit criterion.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
-Exit: one target-tagged job can be queued, started, paused, resumed, cancelled,
-completed, and reconciled without duplicate starts.
+Exit: one canonically registered target-tagged job can be queued, started,
+paused, resumed, cancelled, completed, and reconciled without duplicate starts.
 
 ### Phase 4: current-Grove compatibility bridge
 
-- Decide compatibility-facade licence and provenance.
+- Accept ADR 0006's Klove-owned runtime registry, embedded setup/recovery
+  surface, strict completion message, and minimal Grove `KLOVE` type boundary.
+- Decide compatibility-facade and Grove-theme licence and provenance.
+- Use the Phase 3 runtime registry for the product onboarding path; do not add a
+  second UI registry or return to per-printer TOML.
 - Add the minimal conservative MQTT/TLS state/control facade and bounded FTPS
   spool, using only operations already accepted by their own ADRs.
+- Build the Grove-themed embedded setup/recovery flow and propose the tiny
+  `KLOVE` Add Printer contribution upstream through a fork.
 
-Exit: current Grove can monitor and safely dispatch to one exact Klove printer;
-unsupported commands fail visibly and never reach a generic G-code path.
+Exit: an authorized Grove user can onboard and monitor one exact Klove printer
+without entering Moonraker credentials into Grove or editing per-printer TOML,
+and can safely dispatch only through accepted Klove contracts. Unsupported
+commands are hidden, fail visibly if sent, and never reach a generic G-code
+path.
 
 ### Phase 5: bounded live controls
 
@@ -520,15 +583,14 @@ Exit: fault-injection and soak tests cover simultaneous printers, Klove/Grove/
 Moonraker restarts, lost acknowledgements, corrupt uploads, stale config, and
 credential rejection.
 
-### Phase 7: native Grove provider
+### Retired option: broad native Grove provider
 
-- Add the Grove backend seam, provider/capability-aware UI, structured errors,
-  target-profile scheduling, and native Klove API client.
-- Keep the Bambu facade as a compatibility mode with a documented reduced
-  feature set.
-
-Exit: no Klipper printer needs a fake Bambu model and unsupported controls are
-hidden as well as rejected.
+The provider/backend abstraction formerly planned as Phase 7 is not planned.
+It would create an unacceptable Klipper maintenance requirement in Grove. ADR
+0006 instead gives Klipper printers an explicit `KLOVE` type, conservative
+feature gates, embedded Klove-owned onboarding, and a Bambu-shaped compatibility
+facade whose semantics remain wholly owned and enforced by Klove. Reopening the
+broad provider option requires a new accepted decision and upstream agreement.
 
 ### Later adapters
 
@@ -549,8 +611,11 @@ hidden as well as rejected.
   delays, lost acknowledgements, history reconciliation, cancellation,
   completion, substitution, restart and concurrent printers; component ADRs do
   not authorize a public workflow by themselves.
-- Scripted Grove browser tests for status, capability-driven controls, queue
-  state, structured errors, and authentication/privacy boundaries.
+- Scripted browser tests for the real Grove parent/Klove frame handshake,
+  independent Klove owner authentication, CSRF and exact-origin rejection,
+  strict completion decoding, cancellation, responsive/accessibility behavior,
+  privacy boundaries, `KLOVE` feature suppression, exact-printer queueing, and
+  regression of existing Bambu types.
 - Hardware-in-the-loop release-candidate tests on a dedicated printer with a
   known safe low-risk file. Heating, motion, and cancellation tests require an
   attended checklist and must never be part of routine CI.
@@ -562,21 +627,23 @@ fail closed.
 
 ## Immediate next slice
 
-The artifact-contract prerequisite in
-[issue #7](https://github.com/tomlawesome/klove/issues/7) and hostile
-3MF/G-code validator in [issue #6](https://github.com/tomlawesome/klove/issues/6)
-and exact target qualification in
-[issue #5](https://github.com/tomlawesome/klove/issues/5) are complete. The
-separately decided bounded upload and metadata-verification slice in
-[issue #8](https://github.com/tomlawesome/klove/issues/8) and durable typed
-print start under accepted ADR 0005 in
-[issue #9](https://github.com/tomlawesome/klove/issues/9) are also implemented
-as internal components. The immediate next dependent slice is the target-bound
-intake-through-completion proof in
-[issue #12](https://github.com/tomlawesome/klove/issues/12).
-MQTT/FTPS compatibility follows that safety boundary. Track the programme in
-[GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38) and artifact
-dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
+The artifact contract, hostile validator, exact target qualification, bounded
+upload, and durable print-start components are complete under issues #5–#9.
+ADR 0006 now freezes the missing product-onboarding boundary. The immediate
+implementation prerequisite is the secure runtime printer registry and secret
+store in [issue #58](https://github.com/tomlawesome/klove/issues/58). It unblocks
+the target-bound intake-through-completion proof in
+[issue #12](https://github.com/tomlawesome/klove/issues/12) without making Grove
+or the browser part of that internal safety proof.
+
+The compatibility provenance decision in
+[issue #11](https://github.com/tomlawesome/klove/issues/11) may proceed in
+parallel. Registry work then feeds the embedded setup/recovery UI in
+[issue #59](https://github.com/tomlawesome/klove/issues/59), the conservative
+MQTT/FTPS facade, and the minimal upstream Grove contribution in
+[issue #60](https://github.com/tomlawesome/klove/issues/60). Track the complete
+order under [Grove epic #32](https://github.com/tomlawesome/klove/issues/32) and
+[programme roadmap #38](https://github.com/tomlawesome/klove/issues/38).
 
 ## Primary references
 
