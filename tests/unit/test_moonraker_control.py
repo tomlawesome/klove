@@ -64,6 +64,7 @@ def history_result(state: str = "printing", job_id: str = "000001") -> dict[str,
 def config(endpoint: str) -> PrinterConfig:
     return PrinterConfig(
         id="voron",
+        uuid="11111111-1111-4111-8111-111111111111",
         endpoint=endpoint,
         api_key_file=Path("unused"),
         allow_insecure_http=True,

@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through the hostile-artifact validation slice
+Status: active through exact artifact target qualification
 
 ## Protected assets
 
@@ -83,15 +83,15 @@ coordinating other clients. Klove limits the interval, binds any claimed success
 to later evidence for the same job, and reports ambiguity without retrying. See
 `docs/decisions/0001-typed-job-control.md`.
 
-## Artifact validation controls
+## Artifact inspection and target-qualification controls
 
-- The v2 artifact contract accepts only one known archive format, canonical
+- The v3 artifact contract accepts only one known archive format, canonical
   UUIDv4 operation/artifact/idempotency identities, lowercase SHA-256 digests,
-  one selected plate with its exact canonical archive path, one exact printer
-  id, one slicer-profile id, and one safety-profile fingerprint. V2 supersedes
-  the unexposed v1 request because exact selection cannot be inferred safely
-  from a plate id. Unknown contract members and non-canonical aliases are
-  rejected.
+  one selected plate with its exact canonical archive path, and one exact
+  printer UUID, slicer-profile id, safety-profile generation, and fingerprint.
+  V3 supersedes the unexposed v2 request because hostile inspection and trusted
+  target approval must remain separate. Unknown contract members and
+  non-canonical aliases are rejected.
 - Archive compressed and expanded bytes, ZIP entry count, compression ratio,
   central-directory bytes, selected G-code bytes, header bytes, line bytes, and
   future metadata waits have finite operator limits whose own configuration is
@@ -110,13 +110,22 @@ to later evidence for the same job, and reports ambiguity without retrying. See
   canonical ASCII line endings and controls, finite header/line limits, a known
   supported slicer marker, actual motion, and a conservative set of known
   Bambu-only generator and executable signatures.
-- Validation requires exactly one complete candidate matching the intent and
-  the currently configured target. Unknown, missing, multiple, stale, or
-  contradictory evidence produces a bounded denial without echoing source
-  text.
-- Validation success is not proof of target/profile compatibility and grants no
-  transport or actuation authority. The current slice creates no file, contacts
-  no printer, and introduces no upload or print-start transport.
+- Qualification requires exactly one inspection and one independently trusted
+  approval binding the same operation, idempotency key, archive, selected path,
+  selected G-code digest and size, current printer UUID, registered slicer
+  profile, generation, canonical fingerprint, Klipper dialect, nozzle, build
+  volume, and plate. Unknown, missing, multiple, stale, contradictory, or
+  mismatched evidence produces a bounded denial without echoing source text.
+- Route slugs, filenames, model names, near matches, and self-asserted archive
+  metadata are not target proof. The future external approval boundary must
+  authenticate and authorize the controller or slicer registry before it may
+  construct trusted approval evidence.
+- A manual review record binds one exact file and records its actor, time, and
+  reason, but its schema fixes automatic authority to false and the automatic
+  policy always denies it.
+- Qualification grants no transport or actuation authority. The current slice
+  creates no file, contacts no printer, and introduces no upload or print-start
+  transport.
 
 ## Required controls before print start and later actuators
 

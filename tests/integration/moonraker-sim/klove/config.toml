@@ -12,6 +12,7 @@ idempotency_capacity = 32
 
 [[printers]]
 id = "simulated-printer"
+uuid = "11111111-1111-4111-8111-111111111111"
 endpoint = "http://moonraker-proxy:7125"
 api_key_file = "/run/klove-secrets/moonraker-api-key"
 allow_insecure_http = true

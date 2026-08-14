@@ -40,9 +40,13 @@ authentication, authorization, control, decoding, translation, and policy.
 
 Hostile artifact validation accepts only one bounded immutable archive snapshot
 with an exact selected member path. It never extracts the archive, infers a
-plate, rewrites G-code, or treats validation as target compatibility or dispatch
-authority. Upload and print start remain prohibited until their own accepted
-decision and later safety slices are complete.
+plate, or rewrites G-code. Target qualification additionally requires one
+independently trusted approval bound to the exact inspected bytes, operation,
+canonical printer UUID, current safety-profile generation and fingerprint,
+registered slicer profile, nozzle, build volume, plate, and Klipper dialect.
+Names, models, near matches, self-asserted archive text, and manual overrides
+never authorize automation. Upload and print start remain prohibited until
+their own accepted decision and later safety slices are complete.
 
 ## Delivery lanes
 

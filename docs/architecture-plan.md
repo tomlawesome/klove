@@ -332,14 +332,17 @@ start remain unauthorized:
    successful start to Grove. If the response is lost, reconcile current state
    and history instead of retrying blindly.
 
-The implemented boundary is deliberately non-actuating. Its strict v2 contract
-represents archive identity, one exact plate path, target/profile binding,
-validation metrics, operation state, and structured denials. The validator
-accepts one immutable byte snapshot, bounds and validates hostile ZIP/ZIP64
-metadata before parsing, and streams only the exact selected G-code through
-integrity and conservative syntax/vendor checks. It writes nothing, uploads
-nothing, and exposes no print start. Candidate status does not prove target
-compatibility; that is the next policy slice.
+The implemented boundary is deliberately non-actuating. Its strict v3 contract
+keeps hostile byte inspection separate from independently trusted target
+approval. The validator accepts one immutable byte snapshot, bounds and
+validates hostile ZIP/ZIP64 metadata before parsing, and streams only the exact
+selected G-code through integrity and conservative syntax/vendor checks.
+Qualification then requires the same exact bytes in one controller/slicer
+approval and one current configured safety profile. Canonical printer UUID,
+registered slicer profile, generation, fingerprint, Klipper dialect, nozzle,
+build volume, and plate must all agree. Names and near matches are not proof;
+manual overrides remain audit-only and are denied by automation. The result
+writes nothing, uploads nothing, and exposes no print start.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
@@ -538,12 +541,14 @@ fail closed.
 The artifact-contract prerequisite in
 [issue #7](https://github.com/tomlawesome/klove/issues/7) and hostile
 3MF/G-code validator in [issue #6](https://github.com/tomlawesome/klove/issues/6)
-are complete without transport. The immediate next slice is exact target and
-safety-profile binding in [issue #5](https://github.com/tomlawesome/klove/issues/5),
-followed by separately decided bounded upload/metadata checks, one idempotent
-print start, and durable restart reconciliation. MQTT/FTPS compatibility work
-follows that safety boundary. Print start remains blocked until a dedicated ADR
-is accepted; this sequencing statement authorizes no new actuator. Track the programme in
+and exact target qualification in
+[issue #5](https://github.com/tomlawesome/klove/issues/5) are complete without
+transport. The immediate next slice is separately decided bounded upload and
+metadata verification in [issue #8](https://github.com/tomlawesome/klove/issues/8),
+followed by one idempotent print start and durable restart reconciliation.
+MQTT/FTPS compatibility work follows that safety boundary. Print start remains
+blocked until a dedicated ADR is accepted; this sequencing statement authorizes
+no new actuator. Track the programme in
 [GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38) and artifact
 dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 
