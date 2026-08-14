@@ -184,6 +184,157 @@ def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
     assert "--profile contract down" in down
 
 
+def test_ratos_emulation_toolchain_is_exact() -> None:
+    fixture = ROOT / "tests" / "integration" / "ratos-emulation"
+    dockerfile = (fixture / "Dockerfile").read_text(encoding="utf-8")
+    debian_sources = (fixture / "debian.sources").read_text(encoding="utf-8")
+    tool = (fixture / "tool.py").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"^# syntax=docker/dockerfile:1\.7@sha256:[0-9a-f]{64}$", dockerfile, re.MULTILINE
+    )
+    from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert len(from_lines) == 1
+    assert re.search(r"@sha256:[0-9a-f]{64}$", from_lines[0])
+    for package in (
+        "mtools=4.0.33-1+really4.0.32-1",
+        "qemu-system-arm=1:7.2+dfsg-7+deb12u18+b3",
+        "qemu-utils=1:7.2+dfsg-7+deb12u18+b3",
+        "xz-utils=5.4.1-1+deb12u1",
+    ):
+        assert package in dockerfile
+    assert "QEMU emulator version 7.2.22" in dockerfile
+    assert "COPY --chmod=0555 tool.py /opt/klove-ratos/tool.py" in dockerfile
+    assert "ARG KLOVE_SOURCE_REVISION=unknown" in dockerfile
+    assert "ARG KLOVE_SOURCE_DIGEST=unknown" in dockerfile
+    assert 'io.klove.source-revision="$KLOVE_SOURCE_REVISION"' in dockerfile
+    assert 'io.klove.source-digest="$KLOVE_SOURCE_DIGEST"' in dockerfile
+    assert "USER 10001:10001" in dockerfile
+    assert debian_sources.count("snapshot.debian.org/archive/debian/20260803T000000Z") == 1
+    assert debian_sources.count("snapshot.debian.org/archive/debian-security/20260803T000000Z") == 1
+    assert debian_sources.count("Check-Valid-Until: no") == 2
+    assert "deb.debian.org" not in debian_sources
+
+    assert "ASSET_SIZE: Final = 2_125_243_800" in tool
+    assert "513465cf6b233d73e5c9ed048568493894d77c7c67e93586609f9b7fbc182153" in tool
+    assert "63e95ea4f7a362a1fa9adf210d8f069c671341fb8531a4595f35e2ff6e4a1f51" in tool
+    assert "6cc7aad62b32a1efa774955edc10ea302ae015a58abbea683c23287839b097f8" in tool
+    assert "83eefb232fe362a75a8cced8d3f5f17af4398e1d121d486e45eff8937a86b0a1" in tool
+    assert '_run([QEMU_IMG, "check", str(OVERLAY)])' in tool
+    assert "each evidence run must start fresh" in tool
+    assert "EXPECTED_MOONRAKER_VERSION" in tool
+    assert "EXPECTED_DISTRIBUTION" in tool
+    assert "EXPECTED_RATOS_VERSION" in tool
+    assert "EXPECTED_KERNEL" in tool
+    assert "EXPECTED_MODEL" in tool
+    assert "EXPECTED_SERVICES" in tool
+    assert 'service.get("active_state") != "active"' in tool
+    assert 'service.get("sub_state") != "running"' in tool
+    assert 'HTTPConnection("127.0.0.1", 18080' in tool
+    assert 'create_connection(("127.0.0.1", 12222)' in tool
+
+
+def test_ratos_emulation_lifecycle_is_confined() -> None:
+    script_library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+    up = (ROOT / "scripts" / "ratos-emulation-up.sh").read_text(encoding="utf-8")
+    probe = (ROOT / "scripts" / "ratos-emulation-probe.sh").read_text(encoding="utf-8")
+    down = (ROOT / "scripts" / "ratos-emulation-down.sh").read_text(encoding="utf-8")
+
+    assert "name=rootless" in script_library
+    assert "GNU coreutils on Linux" in script_library
+    assert "docker context show" in script_library
+    assert "docker info --format '{{.ID}}'" in script_library
+    assert "ratos_require_private_dir" in script_library
+    assert "ratos_require_private_file" in script_library
+    assert "ratos_require_absent" in script_library
+    assert "ratos_actual_image" in script_library
+    assert "ratos_require_active" in probe
+    assert "ratos_require_active" in down
+    for confinement in (
+        "--network none",
+        "--read-only",
+        "--cap-drop ALL",
+        "--security-opt no-new-privileges",
+        "--pids-limit 256",
+        "--memory 2g",
+        "--cpus 4",
+    ):
+        assert confinement in up
+    assert "--privileged" not in up
+    assert "--user 0:0" not in up
+    assert "--publish" not in up
+    assert "/var/run/docker.sock" not in up
+    assert "--device" not in up
+    assert "--log-driver local" in up
+    assert "--log-opt max-size=1m" in up
+    assert "--log-opt max-file=2" in up
+    assert "restrict=on" in up
+    assert up.count("hostfwd=tcp:127.0.0.1:") == 3
+    assert up.count(',readonly"') == 3
+    assert "target=/work" not in up
+    assert 'target=/run-state/$ratos_overlay_name"' in up
+    assert "-no-reboot" in up
+    assert "-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny" in up
+    assert "firstboot-required" in up
+    assert "firstboot-required" in probe
+    assert "firstboot-restarted" in probe
+    assert probe.count("docker start") == 1
+    assert "firstboot_timeout_seconds=600" in probe
+    assert "service_timeout_seconds=900" in probe
+    assert "deadline=$(( $(date +%s) + firstboot_timeout_seconds ))" in probe
+    assert "deadline=$(( $(date +%s) + service_timeout_seconds ))" in probe
+    assert 'if ! timeout 15 docker logs "$ratos_container" > "$reboot_log" 2>&1' in probe
+    assert 'docker logs "$ratos_container" 2>&1 |' not in probe
+    assert "reboot: Restarting system" in probe
+    assert "did not complete first boot within the fixed deadline" in probe
+    assert "did not expose the service contract within the fixed post-reboot deadline" in probe
+    assert "retained guarded runtime state" in up
+    assert "ratos_run_overlay_tool check-overlay" in down
+    assert "docker logs" not in down
+    assert "console" not in down
+    assert "fresh-run COW and bounded evidence were retained" in down
+
+
+def test_ratos_emulation_evidence_is_self_binding() -> None:
+    script_library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+    prepare = (ROOT / "scripts" / "ratos-emulation-prepare.sh").read_text(encoding="utf-8")
+    probe = (ROOT / "scripts" / "ratos-emulation-probe.sh").read_text(encoding="utf-8")
+    down = (ROOT / "scripts" / "ratos-emulation-down.sh").read_text(encoding="utf-8")
+
+    assert "ratos_capture_source_state" in script_library
+    assert "ratos_stored_source_digest" in script_library
+    assert "io.klove.source-digest" in script_library
+    assert '--build-arg "KLOVE_SOURCE_REVISION=$ratos_source_revision"' in prepare
+    assert '--build-arg "KLOVE_SOURCE_DIGEST=$ratos_source_digest"' in prepare
+    assert "ratos_archive_runtime" in script_library
+    assert 'cp -- "$ratos_origin" "$ratos_archived_run/origin"' in script_library
+    assert 'identities.json" "$ratos_archived_run/identities.json"' in script_library
+    assert "origin_sha256=%s" in script_library
+    assert "identities_sha256=%s" in script_library
+    assert 'chmod 0600 "$ratos_archived_run/overlay.qcow2"' in script_library
+    assert 'mv -- "$probe_success_partial" "$ratos_probe_succeeded"' in probe
+    assert probe.index('cat "$ratos_probe"') < probe.index(
+        'mv -- "$probe_success_partial" "$ratos_probe_succeeded"'
+    )
+    assert 'if [ -e "$ratos_probe_succeeded" ]' in down
+    assert 'ratos_require_private_file "$ratos_probe_succeeded" 600' in down
+
+
+def test_ratos_emulation_remains_supplemental() -> None:
+    fixture = ROOT / "tests" / "integration" / "ratos-emulation"
+    readme = (fixture / "README.md").read_text(encoding="utf-8")
+    workflows = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    )
+
+    assert "A later run may reuse" not in readme
+    assert "Linux" in readme
+    assert "GNU coreutils" in readme
+    assert "does not emulate a printer MCU" in readme
+    assert "test-ratos-emulation" not in workflows
+
+
 def test_dependency_locks_require_hashes() -> None:
     integration_locks = sorted(
         (ROOT / "tests" / "integration" / "moonraker-sim").glob("requirements-*.lock")
