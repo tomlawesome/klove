@@ -111,6 +111,8 @@ def operation(**updates: object) -> RegistryOperationRecord:
 
 
 def make_stores(tmp_path: Path) -> tuple[SecretStore, PrinterStore]:
+    tmp_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp_path.chmod(0o700)
     secret_directory = tmp_path / "registry-secrets"
     secret_directory.mkdir(mode=0o700, parents=True)
     secrets = SecretStore(secret_directory, random_bytes=lambda length: b"k" * length)
