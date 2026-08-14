@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -10,13 +11,80 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-KLOVE = "http://klove:8080"
-MOONRAKER = "http://printer-host:7125"
-MOONRAKER_PROXY = "http://moonraker-proxy:7125"
-PROXY_CONTROL = "http://moonraker-proxy:9126"
+
+def _environment_url(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    value = default if raw is None or raw == "" else raw
+    parsed = urllib.parse.urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{name} contains an invalid port") from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or not parsed.hostname.isascii()
+        or any(character.isspace() or ord(character) < 32 for character in parsed.hostname)
+    ):
+        raise ValueError(f"{name} must be an uncredentialed HTTP(S) origin")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError(f"{name} contains an invalid port")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _environment_host_header(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    if (
+        len(raw) > 255
+        or not raw.isascii()
+        or any(character.isspace() or not 33 <= ord(character) <= 126 for character in raw)
+    ):
+        raise ValueError(f"{name} contains an invalid HTTP Host value")
+    parsed = urllib.parse.urlsplit(f"http://{raw}")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{name} contains an invalid HTTP Host value") from error
+    if (
+        parsed.netloc != raw
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ValueError(f"{name} contains an invalid HTTP Host value")
+    return raw
+
+
+def _environment_choice(name: str, default: str, allowed: set[str]) -> str:
+    raw = os.environ.get(name)
+    value = default if raw is None or raw == "" else raw
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return value
+
+
+KLOVE = _environment_url("KLOVE_TEST_KLOVE_URL", "http://klove:8080")
+MOONRAKER = _environment_url("KLOVE_TEST_MOONRAKER_URL", "http://printer-host:7125")
+MOONRAKER_PROXY = _environment_url("KLOVE_TEST_MOONRAKER_PROXY_URL", "http://moonraker-proxy:7125")
+PROXY_CONTROL = _environment_url("KLOVE_TEST_PROXY_CONTROL_URL", "http://moonraker-proxy:9126")
+MOONRAKER_HOST_HEADER = _environment_host_header("KLOVE_TEST_MOONRAKER_HOST_HEADER")
+MOONRAKER_AUTH_EXPECTATION = _environment_choice(
+    "KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION", "rejected", {"rejected", "trusted"}
+)
 PRINTER_ID = "simulated-printer"
-TOKEN = Path("/run/klove-secrets/klove-token").read_text(encoding="utf-8").strip()
-MOONRAKER_KEY = Path("/run/klove-secrets/moonraker-api-key").read_text(encoding="utf-8").strip()
+TOKEN_PATH = Path("/run/klove-secrets/klove-token")
+MOONRAKER_KEY_PATH = Path("/run/klove-secrets/moonraker-api-key")
 STATE_TOKEN_PATH = Path("/run/test-state/state-token")
 
 
@@ -44,15 +112,30 @@ def _require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
-def _klove_headers(*, key: str | None = None, token: str = TOKEN) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def _read_secret(path: Path) -> str:
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise RuntimeError("contract secret file is empty")
+    return value
+
+
+def _klove_headers(*, key: str | None = None, token: str | None = None) -> dict[str, str]:
+    actual_token = _read_secret(TOKEN_PATH) if token is None else token
+    headers = {
+        "Authorization": f"Bearer {actual_token}",
+        "Content-Type": "application/json",
+    }
     if key is not None:
         headers["Idempotency-Key"] = key
     return headers
 
 
-def _moonraker_headers(*, api_key: str = MOONRAKER_KEY) -> dict[str, str]:
-    return {"Content-Type": "application/json", "X-Api-Key": api_key}
+def _moonraker_headers(*, api_key: str | None = None, direct: bool = True) -> dict[str, str]:
+    actual_key = _read_secret(MOONRAKER_KEY_PATH) if api_key is None else api_key
+    headers = {"Content-Type": "application/json", "X-Api-Key": actual_key}
+    if direct and MOONRAKER_HOST_HEADER is not None:
+        headers["Host"] = MOONRAKER_HOST_HEADER
+    return headers
 
 
 def _snapshot() -> dict[str, Any]:
@@ -121,8 +204,9 @@ def _control_current(
         if (
             status_code == 409
             and isinstance(document, dict)
-            and document.get("code") == "state_token_mismatch"
+            and document.get("code") in {"job_identity_unavailable", "state_token_mismatch"}
         ):
+            time.sleep(0.1)
             continue
         return state_token, key, response
     raise RuntimeError(f"could not submit current {operation} intent")
@@ -176,11 +260,19 @@ def main() -> int:
     )
     _require(status == 401, "invalid bearer token was not rejected")
 
-    status, _document = _request_json(
+    status, document = _request_json(
         f"{MOONRAKER_PROXY}/printer/objects/query?print_stats",
-        headers=_moonraker_headers(api_key="0" * 32),
+        headers=_moonraker_headers(api_key="0" * 32, direct=False),
     )
-    _require(status == 401, "invalid Moonraker API key was not rejected")
+    if MOONRAKER_AUTH_EXPECTATION == "rejected":
+        _require(status == 401, "invalid Moonraker API key was not rejected")
+    else:
+        _require(status == 200, "stock trusted Moonraker transport was not accepted")
+        try:
+            trusted_phase = document["result"]["status"]["print_stats"]["state"]
+        except (KeyError, TypeError) as error:
+            raise RuntimeError("trusted Moonraker transport returned malformed state") from error
+        _require(trusted_phase == "standby", "trusted Moonraker transport returned wrong state")
 
     _start_test_print()
     printing = _wait_klove_phase("printing")

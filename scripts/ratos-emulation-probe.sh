@@ -20,7 +20,7 @@ ratos_restart_marker="$ratos_runtime_dir/firstboot-restarted"
 ratos_probe="$ratos_runtime_dir/probe.json"
 ratos_probe_succeeded="$ratos_runtime_dir/probe-succeeded"
 firstboot_timeout_seconds=600
-service_timeout_seconds=900
+service_timeout_seconds=1200
 ratos_require_origin "$ratos_origin"
 ratos_require_prepared_inputs
 ratos_require_active "$ratos_active"
@@ -39,7 +39,8 @@ chmod 0600 "$probe_success_partial"
 cleanup_probe_files() {
     rm -f -- "$probe_output" "$probe_error" "$probe_success_partial" "$reboot_log"
 }
-trap cleanup_probe_files EXIT HUP INT TERM
+trap cleanup_probe_files EXIT
+trap 'exit 1' HUP INT TERM
 
 deadline=$(( $(date +%s) + firstboot_timeout_seconds ))
 while [ "$(date +%s)" -lt "$deadline" ]; do

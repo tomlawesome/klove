@@ -17,7 +17,8 @@ ratos_evidence_dir="$ratos_state_dir/evidence"
 ratos_origin="$ratos_state_dir/origin"
 ratos_active="$ratos_runtime_dir/active"
 dockerfile="$repo_root/tests/integration/ratos-emulation/Dockerfile"
-build_context="$repo_root/tests/integration/ratos-emulation"
+build_context="$repo_root"
+klove_dockerfile="$repo_root/Dockerfile"
 
 ratos_require_host_tools
 umask 077
@@ -69,7 +70,8 @@ else
     cleanup_asset_partial() {
         rm -f -- "$partial"
     }
-    trap cleanup_asset_partial EXIT HUP INT TERM
+    trap cleanup_asset_partial EXIT
+    trap 'exit 1' HUP INT TERM
     cp --reflink=auto -- "$source_archive" "$partial"
     chmod 0400 "$partial"
     mv -- "$partial" "$destination"
@@ -84,15 +86,24 @@ timeout 1200 docker build \
     --tag "$ratos_tool_tag" \
     "$build_context"
 ratos_tool_image_id=$(timeout 15 docker image inspect --format '{{.Id}}' "$ratos_tool_tag")
+timeout 1200 docker build \
+    --build-arg "VCS_REF=$ratos_source_revision" \
+    --build-arg "SOURCE_BRANCH=ratos-integration" \
+    --build-arg "SOURCE_DIGEST=$ratos_source_digest" \
+    --file "$klove_dockerfile" \
+    --tag "$ratos_klove_tag" \
+    "$build_context"
+ratos_klove_image_id=$(timeout 15 docker image inspect --format '{{.Id}}' "$ratos_klove_tag")
 
 origin_partial=$(mktemp "$ratos_state_dir/origin.XXXXXX")
 identities_partial=$(mktemp "$ratos_state_dir/identities.XXXXXX")
 cleanup_prepare_partials() {
     rm -f -- "$origin_partial" "$identities_partial"
 }
-trap cleanup_prepare_partials EXIT HUP INT TERM
-printf '%s\n%s\n%s\n%s\n%s\n' \
-    "$ratos_context" "$ratos_daemon_id" "$ratos_tool_image_id" \
+trap cleanup_prepare_partials EXIT
+trap 'exit 1' HUP INT TERM
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    "$ratos_context" "$ratos_daemon_id" "$ratos_tool_image_id" "$ratos_klove_image_id" \
     "$ratos_source_revision" "$ratos_source_digest" > "$origin_partial"
 chmod 0600 "$origin_partial"
 mv -- "$origin_partial" "$ratos_origin"

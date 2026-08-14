@@ -6,10 +6,13 @@ import hashlib
 import http.client
 import json
 import os
+import secrets
 import socket
 import stat
 import subprocess
 import sys
+import time
+import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
 from typing import BinaryIO, Final, cast
@@ -17,6 +20,11 @@ from typing import BinaryIO, Final, cast
 PREPARE_WORK: Final = Path("/work")
 INPUTS: Final = Path("/inputs")
 RUN_STATE: Final = Path("/run-state")
+SECRETS: Final = Path("/run/klove-secrets")
+CONTRACT_ROOT: Final = Path("/opt/klove-ratos/contract")
+CONTRACT_PRINTER_CONFIG: Final = CONTRACT_ROOT / "printer.cfg"
+CONTRACT_KLOVE_CONFIG: Final = CONTRACT_ROOT / "klove.toml"
+CONTRACT_GCODE: Final = CONTRACT_ROOT / "contract.gcode"
 ASSET_NAME: Final = "2026-03-04-RatOS-2.1.0-raspberry-rpi32.img.xz"
 RAW_NAME: Final = ASSET_NAME.removesuffix(".xz")
 ASSET_SIZE: Final = 2_125_243_800
@@ -49,6 +57,14 @@ EXPECTED_RATOS_VERSION: Final = "2.1.0"
 EXPECTED_KERNEL: Final = "6.1.21-v8+"
 EXPECTED_MODEL: Final = "Raspberry Pi 3 Model B"
 EXPECTED_SERVICES: Final = {"klipper", "moonraker", "ratos-configurator"}
+EXPECTED_MCU_VERSION: Final = "?-20240727_132503-fv-az659-741"
+EXPECTED_CONTRACT_COUNTS: Final = {
+    "printer.print.cancel": 1,
+    "printer.print.pause": 2,
+    "printer.print.resume": 1,
+}
+HTTP_BODY_LIMIT: Final = 1024 * 1024
+HTTP_TIMEOUT_SECONDS: Final = 60
 
 BOOT_FILES: Final[dict[str, tuple[int, str]]] = {
     "kernel8.img": (
@@ -268,24 +284,61 @@ def overlay() -> None:
         raise
 
 
-def _http_json(path: str) -> Mapping[str, object]:
-    connection = http.client.HTTPConnection("127.0.0.1", 18080, timeout=10)
+def _http_request(  # noqa: PLR0913 -- bounded internal HTTP fixture primitive.
+    port: int,
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    headers: Mapping[str, str] | None = None,
+    host_header: str = "127.0.0.1",
+    timeout: float = HTTP_TIMEOUT_SECONDS,
+) -> tuple[int, bytes]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    request_headers = {"Accept": "application/json", "Host": host_header}
+    if headers is not None:
+        request_headers.update(headers)
     try:
-        connection.request(
-            "GET", path, headers={"Accept": "application/json", "Host": "ratos.local"}
-        )
-        response = connection.getresponse()
-        body = response.read(1024 * 1024 + 1)
+        try:
+            connection.request(method, path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            response_body = response.read(HTTP_BODY_LIMIT + 1)
+            status = response.status
+        except TimeoutError as error:
+            raise RuntimeError(f"{path} timed out") from error
     finally:
         connection.close()
-    if response.status != 200:
-        raise RuntimeError(f"{path} returned HTTP {response.status}")
-    if len(body) > 1024 * 1024:
+    if len(response_body) > HTTP_BODY_LIMIT:
         raise RuntimeError(f"{path} returned an oversized response")
+    return status, response_body
+
+
+def _parse_json(body: bytes, path: str) -> Mapping[str, object]:
     parsed = json.loads(body)
     if not isinstance(parsed, dict):
         raise RuntimeError(f"{path} returned malformed JSON")
     return cast(Mapping[str, object], parsed)
+
+
+def _http_json(
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    headers: Mapping[str, str] | None = None,
+    expected_status: int = 200,
+) -> Mapping[str, object]:
+    status, response_body = _http_request(
+        18080,
+        path,
+        method=method,
+        body=body,
+        headers=headers,
+        host_header="ratos.local",
+    )
+    if status != expected_status:
+        raise RuntimeError(f"{path} returned HTTP {status}")
+    return _parse_json(response_body, path)
 
 
 def _result(response: Mapping[str, object], path: str) -> Mapping[str, object]:
@@ -397,9 +450,368 @@ def probe() -> None:
     print(json.dumps(evidence, indent=2, sort_keys=True))
 
 
+def _contract_source(path: Path) -> bytes:
+    metadata = _regular_file(path)
+    if metadata.st_size <= 0 or metadata.st_size > HTTP_BODY_LIMIT // 2:
+        raise RuntimeError(f"contract input has an invalid size: {path.name}")
+    return path.read_bytes()
+
+
+def _contract_identity(path: Path) -> dict[str, object]:
+    metadata = _regular_file(path)
+    return {"bytes": metadata.st_size, "sha256": _digest(path)}
+
+
+def _moonraker_api_key() -> str:
+    response = _http_json("/access/api_key")
+    api_key = response.get("result")
+    if not isinstance(api_key, str) or not 32 <= len(api_key) <= 512:
+        raise RuntimeError("Moonraker returned a malformed API key")
+    if any(ord(character) < 33 or ord(character) > 126 for character in api_key):
+        raise RuntimeError("Moonraker returned a malformed API key")
+    return api_key
+
+
+def _api_headers(api_key: str, *, content_type: str | None = None) -> dict[str, str]:
+    headers = {"X-Api-Key": api_key}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _multipart_upload_body(root: str, filename: str, content: bytes) -> tuple[str, bytes]:
+    checksum = hashlib.sha256(content).hexdigest()
+    boundary = f"klove-ratos-{checksum[:24]}"
+    segments = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="root"\r\n\r\n{root}\r\n'.encode(),
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="checksum"\r\n\r\n{checksum}\r\n'
+        ).encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="print"\r\n\r\nfalse\r\n'.encode(),
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+            f'filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+        ).encode(),
+        content,
+        f"\r\n--{boundary}--\r\n".encode(),
+    ]
+    body = b"".join(segments)
+    if len(body) > HTTP_BODY_LIMIT:
+        raise RuntimeError("contract upload body is oversized")
+    return f"multipart/form-data; boundary={boundary}", body
+
+
+def _upload_contract_file(
+    api_key: str,
+    *,
+    root: str,
+    filename: str,
+    content: bytes,
+    expect_print_status: bool,
+) -> None:
+    content_type, body = _multipart_upload_body(root, filename, content)
+    try:
+        response = _http_json(
+            "/server/files/upload",
+            method="POST",
+            body=body,
+            headers=_api_headers(api_key, content_type=content_type),
+            expected_status=201,
+        )
+    except RuntimeError as error:
+        raise RuntimeError(f"upload of {root}/{filename} failed: {error}") from error
+    result = _mapping(response, "upload result")
+    expected_fields = {"item", "action"}
+    if expect_print_status:
+        expected_fields.update(("print_started", "print_queued"))
+    if set(result) != expected_fields:
+        raise RuntimeError("Moonraker returned malformed upload result")
+    item = _mapping(result.get("item"), "uploaded item")
+    if set(item) != {"root", "path", "modified", "size", "permissions"}:
+        raise RuntimeError("Moonraker returned malformed uploaded item")
+    if item.get("root") != root or item.get("path") != filename:
+        raise RuntimeError("Moonraker returned a mismatched upload target")
+    size = item.get("size")
+    modified = item.get("modified")
+    if isinstance(size, bool) or not isinstance(size, int) or size != len(content):
+        raise RuntimeError("Moonraker returned a mismatched upload size")
+    if isinstance(modified, bool) or not isinstance(modified, (int, float)) or modified <= 0:
+        raise RuntimeError("Moonraker returned a malformed upload timestamp")
+    if item.get("permissions") != "rw":
+        raise RuntimeError("Moonraker returned unexpected upload permissions")
+    if result.get("action") != "create_file":
+        raise RuntimeError("Moonraker returned an unexpected upload action")
+    if expect_print_status:
+        if result.get("print_started") is not False:
+            raise RuntimeError("Moonraker unexpectedly started the uploaded file")
+        if result.get("print_queued") is not False:
+            raise RuntimeError("Moonraker unexpectedly queued the uploaded file")
+
+
+def _download_contract_file(api_key: str, *, root: str, filename: str) -> bytes:
+    quoted = urllib.parse.quote(filename, safe="")
+    status, body = _http_request(
+        18080,
+        f"/server/files/{root}/{quoted}",
+        headers=_api_headers(api_key),
+        host_header="ratos.local",
+    )
+    if status != 200:
+        raise RuntimeError("Moonraker could not return the exact uploaded contract file")
+    return body
+
+
+def _verify_remote_contract_file(
+    api_key: str, *, root: str, filename: str, expected: bytes
+) -> None:
+    actual = _download_contract_file(api_key, root=root, filename=filename)
+    if not secrets.compare_digest(actual, expected):
+        raise RuntimeError("Moonraker returned mismatched contract file bytes")
+
+
+def _wait_printer_ready(timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            server = _result(_http_json("/server/info"), "/server/info")
+            printer = _result(_http_json("/printer/info"), "/printer/info")
+            if (
+                server.get("klippy_connected") is True
+                and server.get("klippy_state") == "ready"
+                and printer.get("state") == "ready"
+            ):
+                return
+        except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
+            pass
+        time.sleep(2)
+    raise RuntimeError("RatOS Klippy did not become ready within the fixed deadline")
+
+
+def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
+    path = "/printer/objects/query?configfile&mcu&pause_resume&print_stats&virtual_sdcard"
+    result = _result(_http_json(path, headers=_api_headers(api_key)), path)
+    status = _mapping(result.get("status"), "contract object status")
+    configfile = _mapping(status.get("configfile"), "configfile status")
+    settings = _mapping(configfile.get("settings"), "configfile settings")
+    required_sections = {"idle_timeout", "mcu", "pause_resume", "printer", "virtual_sdcard"}
+    if not required_sections.issubset(settings):
+        raise RuntimeError("Klippy omitted required controlled configuration sections")
+    mcu_settings = _mapping(settings.get("mcu"), "MCU settings")
+    printer_settings = _mapping(settings.get("printer"), "printer settings")
+    if mcu_settings.get("serial") != "/tmp/klipper_host_mcu":  # noqa: S108
+        raise RuntimeError("Klippy loaded an unexpected MCU route")
+    if (
+        printer_settings.get("kinematics") != "none"
+        or printer_settings.get("max_velocity") != 1.0
+        or printer_settings.get("max_accel") != 1.0
+    ):
+        raise RuntimeError("Klippy loaded unexpected controlled printer limits")
+
+    mcu = _mapping(status.get("mcu"), "MCU status")
+    pause_resume = _mapping(status.get("pause_resume"), "pause-resume status")
+    print_stats = _mapping(status.get("print_stats"), "print status")
+    virtual_sdcard = _mapping(status.get("virtual_sdcard"), "virtual SD status")
+    if mcu.get("mcu_version") != EXPECTED_MCU_VERSION:
+        raise RuntimeError("RatOS returned an unexpected host MCU identity")
+    if print_stats.get("state") != expected_phase:
+        raise RuntimeError("RatOS returned an unexpected contract print phase")
+    expected_paused = expected_phase == "paused"
+    if pause_resume.get("is_paused") is not expected_paused:
+        raise RuntimeError("RatOS returned an inconsistent pause state")
+    if expected_phase == "standby" and virtual_sdcard.get("is_active") is not False:
+        raise RuntimeError("RatOS unexpectedly reported an active virtual SD job")
+    if expected_phase == "paused" and print_stats.get("filename") != "contract.gcode":
+        raise RuntimeError("RatOS returned the wrong contract job identity")
+    return {
+        "config_sections": sorted(str(section) for section in settings),
+        "filename": print_stats.get("filename"),
+        "mcu_version": EXPECTED_MCU_VERSION,
+        "phase": expected_phase,
+    }
+
+
+def _write_private(destination: Path, value: bytes) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(f"refusing to replace existing secret file: {destination.name}")
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.new")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def init_secrets() -> None:
+    if os.geteuid() != 10001 or os.getegid() != 10001:
+        raise RuntimeError("secret-volume initialization requires exact unprivileged uid/gid")
+    metadata = SECRETS.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or SECRETS.is_symlink():
+        raise RuntimeError("contract secret mount is not a real directory")
+    identity = (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode))
+    if identity != (10001, 10001, 0o700):
+        raise RuntimeError("contract secret volume has unexpected initial ownership or mode")
+    if any(SECRETS.iterdir()):
+        raise RuntimeError("contract secret volume must be empty before initialization")
+    print(json.dumps({"status": "initialized"}, sort_keys=True))
+
+
+def _require_secret_directory() -> None:
+    metadata = SECRETS.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or SECRETS.is_symlink():
+        raise RuntimeError("contract secret mount is not a real directory")
+    identity = (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode))
+    if os.geteuid() != 10001 or identity != (10001, 10001, 0o700):
+        raise RuntimeError("contract secret mount has unexpected ownership or mode")
+
+
+def _read_secret(name: str) -> str:
+    path = SECRETS / name
+    metadata = _regular_file(path)
+    identity = (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode))
+    if identity != (10001, 10001, 0o600):
+        raise RuntimeError(f"contract secret file has unexpected identity or mode: {name}")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise RuntimeError(f"contract secret file is empty: {name}")
+    return value
+
+
+def contract_prepare() -> None:
+    _require_secret_directory()
+    if any(SECRETS.iterdir()):
+        raise RuntimeError("contract secret volume must be empty before preparation")
+    printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
+    klove_config = _contract_source(CONTRACT_KLOVE_CONFIG)
+    contract_gcode = _contract_source(CONTRACT_GCODE)
+    _wait_printer_ready(900)
+    api_key = _moonraker_api_key()
+    _upload_contract_file(
+        api_key,
+        root="config",
+        filename="printer.cfg",
+        content=printer_config,
+        expect_print_status=False,
+    )
+    _upload_contract_file(
+        api_key,
+        root="gcodes",
+        filename="contract.gcode",
+        content=contract_gcode,
+        expect_print_status=True,
+    )
+    _verify_remote_contract_file(
+        api_key, root="config", filename="printer.cfg", expected=printer_config
+    )
+    _verify_remote_contract_file(
+        api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
+    )
+    restart = _http_json(
+        "/printer/restart",
+        method="POST",
+        body=b"{}",
+        headers=_api_headers(api_key, content_type="application/json"),
+    )
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    _wait_printer_ready(300)
+    printer_evidence = _contract_status(api_key, expected_phase="standby")
+    _verify_remote_contract_file(
+        api_key, root="config", filename="printer.cfg", expected=printer_config
+    )
+    _verify_remote_contract_file(
+        api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
+    )
+
+    _write_private(SECRETS / "moonraker-api-key", f"{api_key}\n".encode())
+    _write_private(SECRETS / "klove-token", f"{secrets.token_hex(32)}\n".encode())
+    _write_private(SECRETS / "config.toml", klove_config)
+    evidence = {
+        "contract_gcode": _contract_identity(CONTRACT_GCODE),
+        "klove_config": _contract_identity(CONTRACT_KLOVE_CONFIG),
+        "printer": printer_evidence,
+        "printer_config": _contract_identity(CONTRACT_PRINTER_CONFIG),
+    }
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+
+
+def wait_service(service: str) -> None:
+    if service == "proxy":
+        port, path, expected = 9126, "/health", {"status": "ok"}
+    elif service == "klove":
+        port, path, expected = 8080, "/health/ready", {"status": "ready"}
+    else:
+        raise RuntimeError("unknown contract service")
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            status, body = _http_request(port, path, timeout=5)
+            if status == 200 and _parse_json(body, path) == expected:
+                return
+        except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
+            pass
+        time.sleep(1)
+    raise RuntimeError(f"the {service} contract service did not become ready")
+
+
+def contract_evidence() -> None:
+    api_key = _read_secret("moonraker-api-key")
+    printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
+    contract_gcode = _contract_source(CONTRACT_GCODE)
+    _verify_remote_contract_file(
+        api_key, root="config", filename="printer.cfg", expected=printer_config
+    )
+    _verify_remote_contract_file(
+        api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
+    )
+    printer = _contract_status(api_key, expected_phase="paused")
+    status, body = _http_request(9126, "/stats")
+    if status != 200:
+        raise RuntimeError("the contract proxy did not return dispatch counts")
+    proxy_result = _parse_json(body, "/stats")
+    counts = _mapping(proxy_result.get("counts"), "contract dispatch counts")
+    if counts != EXPECTED_CONTRACT_COUNTS:
+        raise RuntimeError("the contract proxy returned unexpected dispatch counts")
+    server = _probe_moonraker()
+    evidence = {
+        "dispatch_counts": dict(sorted(EXPECTED_CONTRACT_COUNTS.items())),
+        "moonraker": {
+            "api_version_string": server["api_version_string"],
+            "moonraker_version": server["moonraker_version"],
+        },
+        "printer": printer,
+        "status": "passed",
+    }
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("check-overlay", "overlay", "prepare", "probe"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "check-overlay",
+            "contract-evidence",
+            "contract-prepare",
+            "init-secrets",
+            "overlay",
+            "prepare",
+            "probe",
+            "wait-service",
+        ),
+    )
+    parser.add_argument("service", nargs="?", choices=("klove", "proxy"))
     arguments = parser.parse_args()
     try:
         if arguments.command == "prepare":
@@ -408,8 +820,18 @@ def main() -> int:
             overlay()
         elif arguments.command == "check-overlay":
             check_overlay()
-        else:
+        elif arguments.command == "probe":
             probe()
+        elif arguments.command == "contract-prepare":
+            contract_prepare()
+        elif arguments.command == "contract-evidence":
+            contract_evidence()
+        elif arguments.command == "init-secrets":
+            init_secrets()
+        elif arguments.service is not None:
+            wait_service(arguments.service)
+        else:
+            raise RuntimeError("wait-service requires an exact service name")
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"RatOS emulation {arguments.command} failed: {error}", file=sys.stderr)
         return 1

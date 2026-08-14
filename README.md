@@ -95,6 +95,9 @@ no upload, print-start, or generic G-code capability. See the
 That automated amd64 stack is not RatOS. RatOS host and physical-printer
 acceptance uses an exact verified RatOS v2.1.0 ARM disk image on supported
 hardware under the separate [RatOS acceptance procedure](docs/ratos-acceptance.md).
+An opt-in, rootless full-system lane also boots that exact Raspberry Pi release
+under QEMU and exercises production Klove against its controlled Linux-process
+host-MCU contract; it remains supplemental and is not physical acceptance.
 
 See the [architecture and delivery plan](docs/architecture-plan.md),
 [active implementation plan](docs/implementation-plan.md),

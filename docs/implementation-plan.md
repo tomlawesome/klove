@@ -38,7 +38,13 @@ Last updated: 2026-08-14
   and [PR #47](https://github.com/tomlawesome/klove/pull/47) record the completed
   non-actuating validation slice.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
-  is the active pinned Klipper/Moonraker and RatOS-acceptance slice.
+  and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
+  are complete on protected `develop`.
+- [RatOS contract spike #51](https://github.com/tomlawesome/klove/issues/51)
+  has an implemented controlled host-MCU contract lane. Exact-release runs
+  proved the controlled configuration, production observation, and the three
+  dedicated controls, but no single uninterrupted run has yet completed the
+  lost-response case and archived `contract-passed`; the issue remains open.
 - [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
   records the remaining account-level GitHub Projects permission blocker.
 - This document remains the architecture and sequencing source of truth; GitHub
@@ -125,7 +131,7 @@ dispatched at most once and reported confirmed only from later evidence for the
 same job. Every missing, stale, contradictory, or post-dispatch ambiguous state
 fails closed.
 
-## Active delivery slice: native integration and RatOS acceptance
+## Completed slice: native integration and RatOS procedure
 
 - [x] Build an amd64 test-only image from immutable Python, Klipper, and
   Moonraker identities with hash-pinned dependencies and fixture integrity
@@ -159,6 +165,39 @@ Exit criterion: a reproducible confined run passes against the pinned real
 Klipper/Moonraker processes and retains negative, fault, and restart evidence;
 the exact RatOS hardware procedure is reviewable and remains visibly pending
 until actually executed.
+
+## Active supplemental slice: RatOS controlled host-MCU contract
+
+- [x] Keep the exact RatOS v2.1.0 raw image immutable and put every guest change
+  in one fresh private COW that is destroyed after identity-checked teardown.
+- [x] Install an exact test-only `kinematics: none` configuration and finite
+  dwell job through Moonraker into that COW, then verify their bytes and the
+  RatOS-supported Linux-process host MCU before starting production Klove.
+- [x] Build and bind exact source-labelled tool and production Klove images,
+  generated per-run credentials, rootless daemon identity, confinement,
+  sidecars, and sanitized evidence to one deterministic lane-source digest.
+- [x] Demonstrate on real RatOS-managed Klipper/Moonraker that Klippy reaches
+  ready, production Klove observes the exact immutable history job, and pause,
+  duplicate replay, stale denial, resume, and cancel retain single-dispatch and
+  post-action production semantics.
+- [x] Preserve fail-closed behaviour when a second job's northbound phase is
+  visible before its immutable Moonraker history identity; a bounded fixture
+  retry may re-snapshot only that pre-dispatch denial and never retries an
+  action or `outcome_unknown`.
+- [x] Make HUP, INT, and TERM exit every cleanup-owning lifecycle child so the
+  wrapper always executes exact teardown; interrupted-run verification left no
+  container, credential volume, COW, or active runtime state.
+- [ ] Complete one uninterrupted exact-release run that also proves the
+  deliberately lost response becomes `outcome_unknown` with no second dispatch
+  and archives the atomic `contract-passed` evidence marker.
+- [x] Prepare the fixture for protected `develop` with clean fast and native
+  integration validation, without treating partial emulation evidence as
+  acceptance.
+
+Exit criterion: one exact source-bound run archives `contract-passed` after all
+positive, negative, idempotency, stale-token, and lost-response assertions, then
+destroys the credential volume and COW. Until then issue #51 stays open and the
+partial observations are diagnostic evidence only.
 
 ## Completed slice: versioned artifact contracts
 
@@ -213,6 +252,13 @@ G-code candidate tied to its immutable source or a structured denial, without
 filesystem, network, printer, or actuation effects.
 
 ## Next slices
+
+The active authorized delivery chain is #51, then #5, #8, and #9. Each
+safety-critical prerequisite is delivered through its own protected `develop`
+pull request and must merge with required checks green before work begins on
+the next dependent implementation. Upload remains non-actuating in #8. Print
+start remains prohibited until #9 has its own accepted ADR, durable at-most-once
+journal, and restart reconciliation design.
 
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
