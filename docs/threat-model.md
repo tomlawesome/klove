@@ -47,8 +47,11 @@ Klove owner authorization.
 
 ## Required embedded-onboarding controls
 
-ADR 0006 accepts the boundary below; issues #58 and #59 must implement and test
-it before Klove claims product onboarding.
+ADR 0006 accepts the boundary below. Issue #62 implements the private registry,
+secret, lifecycle-journal, reconciliation, and snapshot foundation. Issues
+#63–#65 and #59 must add the direct probe/orchestration, dynamic runtime,
+protected API/authentication, and embedded flow before Klove claims product
+onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,
@@ -87,6 +90,10 @@ it before Klove claims product onboarding.
   and fail closed across restart. SQLite stores opaque secret references rather
   than values. Secret creation, registry commit, rotation, disable/removal,
   backup, and restore cannot discard unresolved control or dispatch fences.
+  Interrupted cleanup proves its target references are disjoint from every
+  active or disabled printer before deleting anything. The database snapshot,
+  complete secret directory and HMAC key, and separate durable actuator journals
+  are restored only as one quiesced recovery set.
 - Discovery grants no authority. A direct bounded Moonraker probe, exact
   identity, fresh capability evidence, exact profile binding, and operator
   intent must all agree. Names, model strings, discovery advertisements, near

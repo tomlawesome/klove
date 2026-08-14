@@ -20,15 +20,18 @@ or start a print, execute arbitrary G-code, or provide any other motion,
 heating, fan, light, or macro control. The separately accepted upload and
 durable print-start domain services are not exposed through a northbound route.
 
-The product onboarding path is accepted but not implemented yet. Once the
-runtime facade in issues #10/#14 and onboarding issues #58–#60 ship, an
-authorized Grove user will select **Klipper via Klove**, complete Moonraker setup
-inside the embedded Klove page, review direct identity and safety-profile
-evidence, and return only Klove's proxy host, stable serial, display name, and
-generated compatibility access code to Grove's existing printer-create flow.
-Grove will never receive the Moonraker credential. Until then, the file-based
-steps below are a developer/bootstrap limitation, not the finished user
-experience.
+The product onboarding path is accepted but not complete. Issue #62 implements
+its private versioned registry, external credential store, exact lifecycle
+journal, crash reconciliation, and database snapshot foundation. Issues #63–#65
+still have to add the direct Moonraker probe, lifecycle orchestration, dynamic
+runtime activation, owner-authenticated API, and issue #59's embedded page.
+Once those and the runtime facade in issues #10/#14 ship, an authorized Grove
+user will select **Klipper via Klove**, complete Moonraker setup inside the
+embedded Klove page, review direct identity and safety-profile evidence, and
+return only Klove's proxy host, stable serial, display name, and generated
+compatibility access code to Grove's existing printer-create flow. Grove will
+never receive the Moonraker credential. Until then, the file-based steps below
+are a developer/bootstrap limitation, not the finished user experience.
 
 Klove defines a strict v3 contract and non-actuating validator for
 `.gcode.3mf` intake, one exact selected plate path, target approval,
@@ -147,4 +150,6 @@ See the [architecture and delivery plan](docs/architecture-plan.md),
 [active implementation plan](docs/implementation-plan.md),
 [threat model](docs/threat-model.md), [testing policy](docs/testing.md), and
 [RatOS acceptance lane](docs/ratos-acceptance.md). The accepted onboarding
-boundary is [ADR 0006](docs/decisions/0006-embedded-grove-onboarding.md).
+boundary is [ADR 0006](docs/decisions/0006-embedded-grove-onboarding.md), and
+the registry's persistence and recovery rules are documented in the
+[registry storage contract](docs/registry-storage.md).

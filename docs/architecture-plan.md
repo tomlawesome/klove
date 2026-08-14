@@ -471,7 +471,9 @@ artifact/operation identifiers, and bounded idempotency journals. Secret values
 remain in owner-only storage outside the database. Grove remains the queue and
 production system of record; Moonraker/Klipper remains the execution state of
 record. Per-printer TOML is a temporary bootstrap path, not a parallel product
-registry.
+registry. The implemented persistence foundation, two-phase credential
+protocol, and inseparable backup/restore set are specified in
+`docs/registry-storage.md`.
 
 On startup or reconnect:
 
@@ -530,10 +532,12 @@ every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
 ### Phase 3: runtime registry and safe file dispatch
 
-- Implement ADR 0006's one canonical runtime printer registry and external
-  owner-only secret store under issue #58. The registry supplies an exact
-  onboarded UUID, endpoint and safety-profile binding without adding a UI or
-  actuator.
+- Complete ADR 0006's one canonical runtime printer registry chain under issue
+  #58. Issue #62 implements its exact-schema SQLite/WAL foundation, external
+  owner-only secret store, typed lifecycle journal, crash reconciliation, and
+  backup boundary. Issues #63–#65 add direct probing/orchestration, dynamic
+  runtime activation, and the protected API without adding an actuator or
+  dashboard.
 - ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
   durable at-most-once typed print start as separate internal components.
 - Implement hostile-3MF validation, target manifest/profile checks, Moonraker
@@ -629,10 +633,12 @@ fail closed.
 
 The artifact contract, hostile validator, exact target qualification, bounded
 upload, and durable print-start components are complete under issues #5–#9.
-ADR 0006 now freezes the missing product-onboarding boundary. The immediate
-implementation prerequisite is the secure runtime printer registry and secret
-store in [issue #58](https://github.com/tomlawesome/klove/issues/58). It unblocks
-the target-bound intake-through-completion proof in
+ADR 0006 freezes the product-onboarding boundary, and issue #62 implements its
+private registry/secret persistence foundation. The immediate dependent slice
+is the bounded direct Moonraker probe and lifecycle orchestration in
+[issue #63](https://github.com/tomlawesome/klove/issues/63), followed by dynamic
+runtime activation #64 and protected API #65. That chain unblocks the
+target-bound intake-through-completion proof in
 [issue #12](https://github.com/tomlawesome/klove/issues/12) without making Grove
 or the browser part of that internal safety proof.
 

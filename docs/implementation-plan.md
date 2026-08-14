@@ -34,10 +34,15 @@ Last updated: 2026-08-14
   [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)
   accepts that exception for setup/recovery only and retires the broad native
   provider programme.
-- [Secure registry #58](https://github.com/tomlawesome/klove/issues/58),
-  [embedded setup/recovery #59](https://github.com/tomlawesome/klove/issues/59),
-  and [minimal Grove contribution #60](https://github.com/tomlawesome/klove/issues/60)
-  record the accepted product-onboarding delivery chain under epic #32.
+- [Secure-registry epic #58](https://github.com/tomlawesome/klove/issues/58)
+  is split into independently reviewable foundation
+  [#62](https://github.com/tomlawesome/klove/issues/62), direct-probe lifecycle
+  [#63](https://github.com/tomlawesome/klove/issues/63), dynamic runtime
+  [#64](https://github.com/tomlawesome/klove/issues/64), and protected API
+  [#65](https://github.com/tomlawesome/klove/issues/65) slices. Embedded
+  setup/recovery [#59](https://github.com/tomlawesome/klove/issues/59) and the
+  minimal Grove contribution
+  [#60](https://github.com/tomlawesome/klove/issues/60) follow under epic #32.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
@@ -386,7 +391,9 @@ authorized by the decision.
 ## Next slices
 
 The completed authorized component slices are #5, #8 and #9. ADR 0006 makes the
-secure runtime registry in #58 the next implementation prerequisite; the
+secure runtime registry the next implementation chain. Its private persistence
+and secret-store foundation is implemented under #62; the direct
+probe/orchestration, dynamic fleet, and protected API remain #63–#65. The
 end-to-end lifecycle proof in #12 consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 and does not block focused
@@ -408,12 +415,14 @@ public dispatch workflow.
    is required before the Klove contract can run there; supported hardware
    remains the release-acceptance authority. This validation work authorizes no
    new actuator.
-2. Implement the one canonical runtime printer registry and external
-   owner-only secret boundary in
-   [#58](https://github.com/tomlawesome/klove/issues/58). It replaces
-   per-printer TOML as the normal product onboarding path and supplies exact
-   identity/profile evidence to later safety workflows; it adds no actuator or
-   dashboard.
+2. Complete the one canonical runtime printer registry chain under
+   [#58](https://github.com/tomlawesome/klove/issues/58). Foundation
+   [#62](https://github.com/tomlawesome/klove/issues/62) supplies the private
+   exact-schema database, external owner-only secrets, typed lifecycle journal,
+   reconciliation, and backup boundary. Then #63–#65 add the direct probe and
+   lifecycle service, dynamic fleet activation, and owner-protected API. The
+   chain replaces per-printer TOML as the normal product onboarding path and
+   adds no actuator or dashboard.
 3. Integrate exact target/safety-profile binding, verified upload, durable
    print start, and reconciliation from that onboarded registry entry. Each
    actuator remains limited to its accepted ADR; roadmap placement alone is not
