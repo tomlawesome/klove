@@ -1,9 +1,11 @@
 # RatOS v2.1.0 acceptance lane
 
-Status: supplemental exact-release emulation executed; conclusive acceptance
-still requires supported ARM hardware under the attended procedure below.
-Implementation and evidence are tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50).
+Status: supplemental exact-release service emulation executed and the
+controlled host-MCU contract lane implemented; its full atomic contract record
+is still pending, and conclusive acceptance still requires supported ARM
+hardware under the attended procedure below. Service emulation is tracked in
+[issue #50](https://github.com/tomlawesome/klove/issues/50) and the controlled
+contract in [issue #51](https://github.com/tomlawesome/klove/issues/51).
 
 RatOS acceptance is deliberately separate from Klove's native
 Klipper/Moonraker container test. The automated fixture proves the current
@@ -65,7 +67,8 @@ loopback forwards inside a networkless outer container:
 | Moonraker | `v0.9.1-0-g63578ae`, API `1.4.0` |
 | SSH | OpenSSH `8.4p1 Raspbian-5+deb11u5` |
 | Managed services | Klipper, Moonraker, and RatOS Configurator active/running |
-| Klippy | not ready; exploratory runs observed `startup` or `disconnected`, and `/printer/info` remained unavailable without a usable printer configuration/MCU |
+| Klippy, service-only run | not ready; exploratory runs observed `startup` or `disconnected`, and `/printer/info` remained unavailable without a usable printer configuration/MCU |
+| Controlled contract diagnostics | later reached `ready` with the exact `kinematics: none` configuration and Linux-process host MCU; full atomic contract evidence remains pending |
 
 The guest also exhibited expected emulation-only limitations around Raspberry
 Pi EEPROM, GPIO/firmware interfaces, and camera hardware. A raw firmware-style
@@ -76,25 +79,37 @@ service evidence—not a complete whole-disk boot claim. No CB1 experiment is
 planned because upstream QEMU has no matching Allwinner H616/CB1 machine.
 
 Run `scripts/test-ratos-emulation.sh` with the official asset path to reproduce
-the bounded lifecycle. It verifies all release identities, records the exact
-local tool-image and rootless daemon, permits only one evidenced first-boot
-restart, probes non-secret system/service identities, removes the exact
-container, and checks and archives the fresh run's derived COW disk with its
-digest. Each run also archives its prepared-input identities, tool-image/daemon
-origin, Git revision, and deterministic lane-source digest. Probe success uses
-a separate atomic marker rather than being inferred from evidence-file
-presence. Each run starts from a new overlay; no prior mutable guest state is
-reused. The tool image uses a fixed Debian package snapshot. Raw guest serial
-output is not retained. The lane is deliberately excluded from routine CI
-because the download and TCG boot are large and slow.
+the bounded lifecycle. It verifies all release identities, records exact local
+tool and production-image IDs plus the rootless daemon, permits one evidenced
+first-boot restart, probes non-secret system/service identities, installs the
+exact controlled configuration and finite job only into the disposable COW,
+then runs production Klove and the shared job-control contract. Exact teardown
+checks and destroys the secret-bearing COW and per-run credential volume while
+retaining their digests and bounded sanitized evidence. Each archive also binds
+the prepared inputs, Git revision, and deterministic lane-source digest. Probe
+and contract success use separate atomic markers rather than being inferred
+from partial evidence files. The tool image uses a fixed Debian package
+snapshot and raw guest serial output is not retained. The lane is deliberately
+excluded from routine CI because the download and ARM-on-x86 TCG boot are large
+and slow.
 
-This result does not exercise Klove's job-control contract. A faithful virtual
-printer still needs an explicitly controlled Klipper configuration and virtual
-MCU without modifying or misrepresenting the golden release. That work is
-tracked in
-[spike #51](https://github.com/tomlawesome/klove/issues/51). Physical RatOS,
-configured macro semantics, board peripherals, timing, USB MCU behavior, and
-safe printer action remain subject to the attended procedure. QEMU's TCG
+Bounded diagnostic runs of the implemented lane reached Klippy `ready` with the
+exact `kinematics: none` configuration and Linux-process MCU. Production Klove
+observed the exact RatOS-hosted job, and one run confirmed pause, same-key replay,
+stale-token denial, resume, and cancel with the production single-dispatch and
+post-action semantics. A later second-job attempt correctly failed closed while
+Moonraker's new immutable history job identity lagged the visible phase. The
+lost-response assertion therefore did not execute, and a later clean run did
+not obtain stock Moonraker's asynchronous service-state readiness within the
+fixed TCG deadline. No archive has an atomic `contract-passed` marker, so these
+observations do not satisfy issue #51 or constitute RatOS job-control
+acceptance. HUP/INT/TERM cleanup was corrected after an interrupted run and the
+exact teardown was verified to leave no container, credential volume, COW, or
+active runtime state.
+
+Physical RatOS, configured macro semantics, board peripherals, timing, USB MCU
+behavior, and safe printer action remain subject to the attended procedure.
+QEMU's TCG
 [security policy](https://www.qemu.org/docs/master/system/security.html) also
 provides no supported guest-isolation guarantee; the rootless, capability-free
 outer container remains the host confinement boundary. The relevant upstream

@@ -1,0 +1,16 @@
+*
+!tests/
+!tests/integration/
+!tests/integration/ratos-emulation/
+!tests/integration/ratos-emulation/Dockerfile
+!tests/integration/ratos-emulation/SHA256SUMS
+!tests/integration/ratos-emulation/contract/
+!tests/integration/ratos-emulation/contract/klove.toml
+!tests/integration/ratos-emulation/contract/printer.cfg
+!tests/integration/ratos-emulation/debian.sources
+!tests/integration/ratos-emulation/tool.py
+!tests/integration/moonraker-sim/
+!tests/integration/moonraker-sim/fixture/
+!tests/integration/moonraker-sim/fixture/contract.gcode
+!tests/integration/moonraker-sim/fixture/exercise_contract.py
+!tests/integration/moonraker-sim/fixture/proxy.py

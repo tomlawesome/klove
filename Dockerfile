@@ -14,9 +14,11 @@ FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1
 
 ARG VCS_REF=unknown
 ARG SOURCE_BRANCH=unknown
+ARG SOURCE_DIGEST=unknown
 LABEL org.opencontainers.image.source="https://github.com/tomlawesome/klove" \
     org.opencontainers.image.revision="${VCS_REF}" \
-    io.github.tomlawesome.klove.source-branch="${SOURCE_BRANCH}"
+    io.github.tomlawesome.klove.source-branch="${SOURCE_BRANCH}" \
+    io.github.tomlawesome.klove.source-digest="${SOURCE_DIGEST}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

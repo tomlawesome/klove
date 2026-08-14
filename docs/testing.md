@@ -72,17 +72,43 @@ Pi archive, preserves its expanded raw disk read-only, direct-loads the matching
 release kernel and DTB into QEMU's Pi 3B model, and writes only to a private COW
 overlay created fresh for each evidence run. Its fixed-snapshot tool image and
 unprivileged QEMU process receive the release inputs as separate read-only
-mounts; only the run COW is writable. The rootless outer container is
+mounts; the run COW is the only writable guest disk. One separately writable,
+exact-labelled volume carries only per-run credentials and configuration to the
+unprivileged processes. The rootless outer container is
 networkless, capability-free, resource-bounded, and exposes guest services only
-to its own loopback. The lane records bounded non-secret
-RatOS/Moonraker/service identities and performs exact teardown, overlay checking,
-and derived-COW digesting without retaining raw guest serial output. Every
-archived run carries its own prepared-input, tool-image, daemon, Git-revision,
-and deterministic lane-source provenance, plus an atomic probe-success marker.
+to its own loopback. After the identity probe, a test-only helper places one exact
+controlled `kinematics: none` configuration and finite-dwell job into the fresh
+COW through Moonraker, verifies their bytes, and uses RatOS's supported
+Linux-process host MCU. The exact production Klove image then runs behind the
+shared fault proxy and exercises the existing pause/resume/cancel contract,
+including invalid Klove bearer authentication, stale and duplicate requests,
+single dispatch, and lost-response fencing. Stock RatOS treats the isolated
+slirp/loopback path as a trusted Moonraker client; this lane requires that exact
+behavior and does not claim invalid downstream API-key rejection. The native
+simulation retains that negative southbound test on an untrusted transport.
+This does not add production upload, print-start, or generic G-code behavior.
+
+The lane records bounded non-secret RatOS/Moonraker/Klipper/MCU and contract
+identities. Exact teardown checks the overlay, removes only source-bound
+containers, destroys the per-run credential volume and secret-bearing COW, and
+retains only their digests plus sanitized evidence. Every archived run carries
+its own prepared-input, tool-image, production-image, daemon, Git-revision, and
+deterministic lane-source provenance, plus atomic probe and contract markers.
+Probe and contract execution require an exact current source match. Teardown
+intentionally uses the recorded origin and exact target identities instead, so a
+later local edit cannot strand the credential volume or COW; any cleanup failure
+is printed and retained for explicit recovery.
 It requires x86-64 Linux, GNU coreutils, rootless Docker, and at least 16 GB free
 for a fresh preparation. It is not in CI because the input is about 2.1 GB and
-ARM-on-x86 TCG boot is slow. It does not emulate a printer MCU, prove macro
-semantics, or replace attended hardware acceptance.
+ARM-on-x86 TCG boot is slow. It does not prove configured macro semantics,
+physical MCU behavior, motion, or attended hardware acceptance.
+
+Treat a RatOS cold boot as a scarce acceptance operation. After a failure,
+archive or inspect only the bounded evidence, reproduce the defect in the
+native fixture or focused tests, and verify the fix there first. Do not repeat
+an unchanged boot. Run another fresh COW only when a deterministic change needs
+the exact-release boundary or when one final complete acceptance record is
+required.
 
 Pytest prepends `src` to its import path, and a repository-policy assertion
 verifies that the suite imported Klove from the working tree. This prevents a

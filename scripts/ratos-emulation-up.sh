@@ -20,17 +20,33 @@ ratos_firstboot_required="$ratos_runtime_dir/firstboot-required"
 ratos_firstboot_restarted="$ratos_runtime_dir/firstboot-restarted"
 ratos_probe="$ratos_runtime_dir/probe.json"
 ratos_probe_succeeded="$ratos_runtime_dir/probe-succeeded"
+ratos_contract_prepared="$ratos_runtime_dir/contract-prepared.json"
+ratos_contract_evidence="$ratos_runtime_dir/contract.json"
+ratos_contract_succeeded="$ratos_runtime_dir/contract-succeeded"
 
 ratos_require_origin "$ratos_origin"
 ratos_require_prepared_inputs
 for ratos_runtime_path in \
     "$ratos_active" "$ratos_overlay" "$ratos_firstboot_required" \
-    "$ratos_firstboot_restarted" "$ratos_probe" "$ratos_probe_succeeded"
+    "$ratos_firstboot_restarted" "$ratos_probe" "$ratos_probe_succeeded" \
+    "$ratos_contract_prepared" "$ratos_contract_evidence" "$ratos_contract_succeeded"
 do
     ratos_require_absent "$ratos_runtime_path"
 done
 if timeout 15 docker container inspect "$ratos_container" >/dev/null 2>&1; then
     echo "an unbound container already uses the guarded RatOS emulator name" >&2
+    exit 1
+fi
+for ratos_contract_name in \
+    "$ratos_proxy_container" "$ratos_klove_container" "$ratos_contract_container"
+do
+    if timeout 15 docker container inspect "$ratos_contract_name" >/dev/null 2>&1; then
+        echo "an unbound container already uses a guarded RatOS contract name" >&2
+        exit 1
+    fi
+done
+if timeout 15 docker volume inspect "$ratos_secret_volume" >/dev/null 2>&1; then
+    echo "an unbound volume already uses the guarded RatOS contract secret name" >&2
     exit 1
 fi
 
@@ -42,11 +58,13 @@ active_partial=$(mktemp "$ratos_runtime_dir/active.XXXXXX")
 cleanup_state_partials() {
     rm -f -- "$firstboot_partial" "$active_partial"
 }
-trap cleanup_state_partials EXIT HUP INT TERM
+trap cleanup_state_partials EXIT
+trap 'exit 1' HUP INT TERM
 chmod 0600 "$firstboot_partial" "$active_partial"
 mv -- "$firstboot_partial" "$ratos_firstboot_required"
-printf '%s\n%s\n%s\n' \
-    "$ratos_container" "$ratos_tool_image_id" "$ratos_state_dir" > "$active_partial"
+printf '%s\n%s\n%s\n%s\n%s\n' \
+    "$ratos_container" "$ratos_tool_image_id" "$ratos_klove_image_id" \
+    "$ratos_state_dir" "$ratos_secret_volume" > "$active_partial"
 mv -- "$active_partial" "$ratos_active"
 trap - EXIT HUP INT TERM
 
@@ -75,7 +93,23 @@ cleanup_failed_start() {
     else
         cleanup_complete=1
     fi
-    if [ "$cleanup_complete" -eq 1 ] \
+    cleanup_volume=0
+    if timeout 15 docker volume inspect "$ratos_secret_volume" >/dev/null 2>&1; then
+        cleanup_volume_state=$(timeout 15 docker volume inspect \
+            --format '{{index .Labels "io.klove.ratos.state"}}' \
+            "$ratos_secret_volume" 2>/dev/null || true)
+        cleanup_volume_source=$(timeout 15 docker volume inspect \
+            --format '{{index .Labels "io.klove.ratos.source-digest"}}' \
+            "$ratos_secret_volume" 2>/dev/null || true)
+        if [ "$cleanup_volume_state" = "$ratos_state_dir" ] \
+            && [ "$cleanup_volume_source" = "$ratos_stored_source_digest" ] \
+            && timeout 20 docker volume rm "$ratos_secret_volume" >/dev/null 2>&1; then
+            cleanup_volume=1
+        fi
+    else
+        cleanup_volume=1
+    fi
+    if [ "$cleanup_complete" -eq 1 ] && [ "$cleanup_volume" -eq 1 ] \
         && ratos_run_overlay_tool check-overlay >/dev/null 2>&1 \
         && ratos_archive_runtime startup-failed; then
         echo "RatOS emulator startup failed; retained a guarded aborted run" >&2
@@ -83,7 +117,32 @@ cleanup_failed_start() {
         echo "RatOS emulator cleanup failed; retained guarded runtime state" >&2
     fi
 }
-trap cleanup_failed_start EXIT HUP INT TERM
+trap cleanup_failed_start EXIT
+trap 'exit 1' HUP INT TERM
+
+created_volume=$(timeout 30 docker volume create \
+    --label "io.klove.ratos.state=$ratos_state_dir" \
+    --label "io.klove.ratos.source-digest=$ratos_stored_source_digest" \
+    --label "io.klove.ratos.purpose=contract-secrets" \
+    "$ratos_secret_volume")
+if [ "$created_volume" != "$ratos_secret_volume" ]; then
+    echo "Docker returned an unexpected RatOS contract secret volume" >&2
+    exit 1
+fi
+ratos_require_secret_volume
+timeout 30 docker run --rm \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --pids-limit 16 \
+    --memory 64m \
+    --cpus 0.25 \
+    --tmpfs /tmp:rw,noexec,nosuid,size=1m \
+    --user 10001:10001 \
+    --mount "type=volume,source=$ratos_secret_volume,target=/run/klove-secrets" \
+    "$ratos_tool_image_id" \
+    /usr/local/bin/python /opt/klove-ratos/tool.py init-secrets >/dev/null
 
 timeout 30 docker run \
     --name "$ratos_container" \
@@ -93,7 +152,7 @@ timeout 30 docker run \
     --cap-drop ALL \
     --security-opt no-new-privileges \
     --pids-limit 256 \
-    --memory 2g \
+    --memory 3g \
     --cpus 4 \
     --log-driver local \
     --log-opt max-size=1m \
@@ -101,10 +160,12 @@ timeout 30 docker run \
     --tmpfs /tmp:rw,noexec,nosuid,size=128m \
     --label "io.klove.ratos.state=$ratos_state_dir" \
     --label "io.klove.ratos.tool-image=$ratos_tool_image_id" \
+    --label "io.klove.ratos.source-digest=$ratos_stored_source_digest" \
     --mount "type=bind,source=$ratos_state_dir/$ratos_raw_name,target=/inputs/$ratos_raw_name,readonly" \
     --mount "type=bind,source=$ratos_state_dir/extracted/kernel8.Image,target=/inputs/kernel8.Image,readonly" \
     --mount "type=bind,source=$ratos_state_dir/extracted/bcm2710-rpi-3-b.dtb,target=/inputs/bcm2710-rpi-3-b.dtb,readonly" \
     --mount "type=bind,source=$ratos_overlay,target=/run-state/$ratos_overlay_name" \
+    --mount "type=volume,source=$ratos_secret_volume,target=/run/klove-secrets" \
     "$ratos_tool_image_id" \
     /usr/bin/qemu-system-aarch64 \
         -machine raspi3b \

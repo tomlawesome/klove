@@ -76,13 +76,26 @@ path. The native stack is not RatOS; RatOS acceptance uses the separate pinned
 ARM hardware procedure in `docs/ratos-acceptance.md`.
 
 Use `scripts/test-ratos-emulation.sh` only for the opt-in supplemental RatOS
-v2.1.0 host/service lane. It must remain rootless, outer-networkless,
-capability-free, resource-bounded, digest-verified, COW-backed, and absent from
-routine CI and release artifacts. Each evidence run must start with a fresh COW
-over the immutable verified base; QEMU receives only that COW writable, and raw
-guest serial output is not retained. Direct-loading the exact kernel and device
-tree bypasses the physical Pi firmware path; never describe the result as board,
-MCU, configured-macro, job-control, or physical acceptance.
+v2.1.0 host/service and controlled job-control contract lane. It must remain
+rootless, outer-networkless, capability-free, resource-bounded, digest-verified,
+COW-backed, and absent from routine CI and release artifacts. Each evidence run
+must start with a fresh COW over the immutable verified base; that COW is the
+only writable guest disk, and raw guest serial output is not retained. The outer
+container also receives one separately writable, exact-labelled credential
+volume. The test-only fixture may use Moonraker to place the exact controlled
+configuration and harmless finite-dwell job in that COW, but production Klove
+still exposes no upload, print-start, or generic G-code path. Per-run credentials
+live only in an exact labelled volume; teardown destroys that volume and the
+secret-bearing COW while retaining bounded sanitized evidence.
+Direct-loading the exact kernel and device tree bypasses the physical Pi firmware
+path. The lane may be described only as exact-release Linux-process host-MCU and
+dedicated job-control contract evidence—not board, configured-macro, motion,
+physical-MCU, or physical acceptance.
+
+Treat each ARM-on-x86 TCG cold boot as a scarce acceptance run. After a failure,
+diagnose from bounded evidence and reproduce the defect with focused or native
+tests before changing the lane. Never repeat an unchanged boot; use a new fresh
+COW only for an exact-boundary fix or one final complete acceptance record.
 
 Never commit credentials. Configuration names secret files; secret values live
 only in untracked, narrowly mounted files.

@@ -1,0 +1,19 @@
+[api]
+listen_host = "127.0.0.1"
+listen_port = 8080
+token_file = "/run/klove-secrets/klove-token"
+
+[control]
+enabled = true
+request_timeout_seconds = 20.0
+confirmation_timeout_seconds = 12.0
+poll_interval_seconds = 0.1
+idempotency_capacity = 32
+
+[[printers]]
+id = "simulated-printer"
+endpoint = "http://127.0.0.1:27125"
+api_key_file = "/run/klove-secrets/moonraker-api-key"
+allow_insecure_http = true
+verify_tls = false
+control_enabled = true

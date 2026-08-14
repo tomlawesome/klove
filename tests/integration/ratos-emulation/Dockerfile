@@ -4,7 +4,7 @@ FROM python:3.12.13-slim-bookworm@sha256:6e13e65c55e33adf203d77ee371cf8bf5d81bd4
 ARG KLOVE_SOURCE_REVISION=unknown
 ARG KLOVE_SOURCE_DIGEST=unknown
 
-COPY debian.sources /etc/apt/sources.list.d/debian.sources
+COPY tests/integration/ratos-emulation/debian.sources /etc/apt/sources.list.d/debian.sources
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -14,9 +14,22 @@ RUN apt-get update \
         xz-utils=5.4.1-1+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0555 tool.py /opt/klove-ratos/tool.py
+COPY --chmod=0555 tests/integration/ratos-emulation/tool.py /opt/klove-ratos/tool.py
+COPY --chmod=0555 tests/integration/moonraker-sim/fixture/proxy.py \
+    /opt/klove-ratos/contract/proxy.py
+COPY --chmod=0555 tests/integration/moonraker-sim/fixture/exercise_contract.py \
+    /opt/klove-ratos/contract/exercise_contract.py
+COPY --chmod=0444 tests/integration/moonraker-sim/fixture/contract.gcode \
+    /opt/klove-ratos/contract/contract.gcode
+COPY --chmod=0444 tests/integration/ratos-emulation/contract/printer.cfg \
+    /opt/klove-ratos/contract/printer.cfg
+COPY --chmod=0444 tests/integration/ratos-emulation/contract/klove.toml \
+    /opt/klove-ratos/contract/klove.toml
+COPY --chmod=0444 tests/integration/ratos-emulation/SHA256SUMS \
+    /opt/klove-ratos/contract/SHA256SUMS
 
 RUN install -d -m 0555 /inputs /run-state \
+    && install -d -o 10001 -g 10001 -m 0700 /run/klove-secrets \
     && install -m 0444 /dev/null \
         /inputs/2026-03-04-RatOS-2.1.0-raspberry-rpi32.img \
     && install -m 0444 /dev/null /inputs/kernel8.Image \
@@ -25,6 +38,8 @@ RUN install -d -m 0555 /inputs /run-state \
     && /usr/bin/qemu-system-aarch64 -machine help \
         | grep -Eq '(^|[[:space:]])raspi3b([[:space:]]|$)' \
     && /usr/bin/qemu-system-aarch64 --version | grep -F 'QEMU emulator version 7.2.22' \
+    && cd / \
+    && sha256sum --check /opt/klove-ratos/contract/SHA256SUMS \
     && /usr/local/bin/python -m py_compile /opt/klove-ratos/tool.py
 
 LABEL io.klove.test-purpose="supplemental-ratos-v2.1.0-emulation" \
