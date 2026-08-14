@@ -43,6 +43,7 @@ def monitor() -> MoonrakerMonitor:
     return MoonrakerMonitor(
         PrinterConfig(
             id="voron",
+            uuid="11111111-1111-4111-8111-111111111111",
             endpoint="http://127.0.0.1:7125",
             api_key_file=Path("unused"),
         ),

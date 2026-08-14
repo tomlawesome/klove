@@ -11,18 +11,45 @@ from klove.config import (
     load_config,
     read_secret,
 )
-from klove.domain.artifacts import ArtifactLimits
+from klove.domain.artifacts import (
+    ArtifactCompatibility,
+    ArtifactLimits,
+    BuildVolume,
+    GcodeFlavor,
+    SafetyProfile,
+)
 from klove.errors import ConfigurationError
 
 
 def printer(**overrides: object) -> PrinterConfig:
     values: dict[str, object] = {
         "id": "voron-24",
+        "uuid": "11111111-1111-4111-8111-111111111111",
         "endpoint": "https://printer.example.invalid:7125",
         "api_key_file": Path("moonraker.key"),
     }
     values.update(overrides)
     return PrinterConfig.model_validate(values)
+
+
+def safety_profile(**overrides: object) -> SafetyProfile:
+    values: dict[str, object] = {
+        "printer_uuid": "11111111-1111-4111-8111-111111111111",
+        "generation": 1,
+        "slicer_profile_id": "klipper-voron-24-0.4",
+        "compatibility": ArtifactCompatibility(
+            gcode_flavor=GcodeFlavor.KLIPPER,
+            nozzle_diameter_micrometres=400,
+            build_volume=BuildVolume(
+                x_micrometres=350_000,
+                y_micrometres=350_000,
+                z_micrometres=350_000,
+            ),
+            build_plate_id="textured-pei",
+        ),
+    }
+    values.update(overrides)
+    return SafetyProfile.model_validate(values)
 
 
 def test_valid_configuration_loads_and_forbids_unknown_fields(tmp_path: Path) -> None:
@@ -45,8 +72,25 @@ metadata_wait_seconds = 20.0
 
 [[printers]]
 id = "voron-24"
+uuid = "11111111-1111-4111-8111-111111111111"
 endpoint = "http://127.0.0.1:7125"
 api_key_file = "moonraker.key"
+
+[[printers.safety_profiles]]
+profile_version = "1"
+printer_uuid = "11111111-1111-4111-8111-111111111111"
+generation = 1
+slicer_profile_id = "klipper-voron-24-0.4"
+
+[printers.safety_profiles.compatibility]
+gcode_flavor = "klipper"
+nozzle_diameter_micrometres = 400
+build_plate_id = "textured-pei"
+
+[printers.safety_profiles.compatibility.build_volume]
+x_micrometres = 350000
+y_micrometres = 350000
+z_micrometres = 350000
 """.strip(),
         encoding="utf-8",
     )
@@ -61,6 +105,7 @@ api_key_file = "moonraker.key"
     assert result.artifacts.max_gcode_line_bytes == 4096
     assert result.artifacts.metadata_wait_seconds == 20.0
     assert result.printers[0].id == "voron-24"
+    assert result.printers[0].safety_profiles == (safety_profile(),)
 
     with pytest.raises(ValidationError):
         ApiConfig(token_file=Path("token"), mystery=True)  # type: ignore[call-arg]
@@ -89,9 +134,39 @@ def test_insecure_remote_http_requires_explicit_consent() -> None:
     assert printer(endpoint="http://[::1]:7125")
 
 
+def test_printer_uuid_is_required_and_canonical() -> None:
+    with pytest.raises(ValidationError):
+        PrinterConfig(
+            id="voron-24",
+            endpoint="https://printer.example.invalid:7125",
+            api_key_file=Path("moonraker.key"),
+        )  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        printer(uuid="11111111-1111-4111-8111-11111111111A")
+
+
 def test_duplicate_printer_ids_are_rejected() -> None:
     with pytest.raises(ValidationError, match="must be unique"):
         AppConfig(api=ApiConfig(token_file=Path("token")), printers=(printer(), printer()))
+
+
+def test_duplicate_printer_uuids_are_rejected_even_when_routes_differ() -> None:
+    with pytest.raises(ValidationError, match="UUIDs must be unique"):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            printers=(printer(), printer(id="other-route")),
+        )
+
+
+def test_safety_profiles_must_match_the_printer_and_be_unique() -> None:
+    other = safety_profile(printer_uuid="66666666-6666-4666-8666-666666666666")
+    with pytest.raises(ValidationError, match="must match its printer"):
+        printer(safety_profiles=(other,))
+
+    current = safety_profile()
+    duplicate = current.model_copy(update={"generation": 2})
+    with pytest.raises(ValidationError, match="profile ids must be unique"):
+        printer(safety_profiles=(current, duplicate))
 
 
 def test_control_is_explicit_per_installation_and_printer() -> None:

@@ -19,9 +19,11 @@ that the protocol model is complete. The suite therefore also includes:
   idempotency conflicts and exhaustion, postcondition binding, and every
   post-dispatch ambiguity;
 - accepted and rejected artifact-contract fixtures plus negative tests for
-  canonical identities, exact target/profile binding, unknown, missing, stale,
-  contradictory and ambiguous evidence, internally inconsistent metrics, and
-  every configured intake limit;
+  canonical identities, separate inspection and trusted approval, exact
+  UUID/profile/generation/fingerprint binding, every nozzle/volume/plate/dialect
+  mismatch, config invalidation, manual-override denial, unknown, missing,
+  stale, contradictory and ambiguous evidence, internally inconsistent metrics,
+  and every configured intake limit;
 - hostile ZIP/ZIP64 tests for traversal and aliases, duplicates, links,
   encryption, unsupported features, malformed local/central records, count,
   metadata, expanded-byte and exact ratio limits, missing exact selection, and

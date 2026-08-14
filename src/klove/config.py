@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from klove.domain.artifacts import ArtifactLimits
+from klove.domain.artifacts import ArtifactLimits, CanonicalUuid4, SafetyProfile
 from klove.errors import ConfigurationError
 
 Identifier = Annotated[
@@ -32,11 +32,13 @@ class PrinterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: Identifier
+    uuid: CanonicalUuid4
     endpoint: str
     api_key_file: Path
     allow_insecure_http: bool = False
     verify_tls: bool = True
     control_enabled: bool = False
+    safety_profiles: tuple[SafetyProfile, ...] = ()
 
     @model_validator(mode="after")
     def validate_endpoint(self) -> PrinterConfig:
@@ -54,6 +56,11 @@ class PrinterConfig(BaseModel):
             and not _is_loopback(parsed.hostname)
         ):
             raise ValueError("non-loopback HTTP requires allow_insecure_http=true")
+        if any(profile.printer_uuid != self.uuid for profile in self.safety_profiles):
+            raise ValueError("safety profile printer_uuid must match its printer")
+        profile_ids = [profile.slicer_profile_id for profile in self.safety_profiles]
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("slicer profile ids must be unique per printer")
         return self
 
 
@@ -102,6 +109,9 @@ class AppConfig(BaseModel):
         ids = [printer.id for printer in self.printers]
         if len(ids) != len(set(ids)):
             raise ValueError("printer ids must be unique")
+        uuids = [printer.uuid for printer in self.printers]
+        if len(uuids) != len(set(uuids)):
+            raise ValueError("printer UUIDs must be unique")
         if not self.control.enabled and any(printer.control_enabled for printer in self.printers):
             raise ValueError("per-printer control requires control.enabled=true")
         return self

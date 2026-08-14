@@ -37,6 +37,9 @@ Last updated: 2026-08-14
 - [Hostile artifact issue #6](https://github.com/tomlawesome/klove/issues/6)
   and [PR #47](https://github.com/tomlawesome/klove/pull/47) record the completed
   non-actuating validation slice.
+- [Target-qualification issue #5](https://github.com/tomlawesome/klove/issues/5)
+  records the v3 exact printer UUID and safety-profile approval boundary; it
+  remains non-actuating and is the prerequisite for bounded upload.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
   are complete on protected `develop`.
@@ -251,14 +254,45 @@ Exit criterion: hostile input becomes either one byte-exact, bounded selected
 G-code candidate tied to its immutable source or a structured denial, without
 filesystem, network, printer, or actuation effects.
 
+## Completed implementation: exact target and safety-profile qualification
+
+- [x] Supersede the unexposed v2 artifact contract with v3, separating hostile
+  byte inspection from independently trusted target approval.
+- [x] Give every configured printer a canonical UUID distinct from its route
+  slug and reject duplicate UUIDs. Register zero or more explicit current
+  safety profiles per printer without inventing compatibility from a model name.
+- [x] Bind each profile to an exact slicer-profile id, positive generation,
+  Klipper dialect, nozzle diameter, build volume, and plate identity using
+  bounded integer micrometres and a canonical SHA-256 fingerprint.
+- [x] Require exactly one approval binding its authority to the operation,
+  idempotency key, immutable archive, selected path and G-code digest, exact
+  target, and all safety fields. Missing, unknown, multiple, stale,
+  contradictory, and every field mismatch fail closed with bounded denials.
+- [x] Emit one immutable non-actuating qualification only after the inspection,
+  approval, intent, and current configuration agree exactly.
+- [x] Define an explicit per-file manual review record with actor, time, and
+  reason while fixing automatic authority to false and denying every override
+  from the automatic qualification path.
+- [x] Record the trust boundary and config-invalidation rule in ADR 0003, the
+  threat model, testing policy, examples, and repository engineering rules.
+- [x] Retain 100% statement and branch coverage for the expanded configuration
+  and artifact policy without adding upload, print start, generic G-code, or a
+  user interface.
+
+Exit criterion: one exact inspected artifact can become a target-bound,
+non-actuating qualification only through independent current controller/slicer
+approval; no human or inferred compatibility path can authorize automation.
+
 ## Next slices
 
-The active authorized delivery chain is #51, then #5, #8, and #9. Each
-safety-critical prerequisite is delivered through its own protected `develop`
-pull request and must merge with required checks green before work begins on
-the next dependent implementation. Upload remains non-actuating in #8. Print
-start remains prohibited until #9 has its own accepted ADR, durable at-most-once
-journal, and restart reconciliation design.
+The active authorized delivery chain is #5, then #8 and #9. The implemented
+RatOS contract fixture remains a separate incomplete exact-release acceptance
+follow-up under #51 and does not block focused development. Each safety-critical
+prerequisite is delivered through its own protected `develop` pull request and
+must merge with required checks green before work begins on the next dependent
+implementation. Upload remains non-actuating in #8. Print start remains
+prohibited until #9 has its own accepted ADR, durable at-most-once journal, and
+restart reconciliation design.
 
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable

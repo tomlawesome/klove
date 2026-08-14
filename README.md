@@ -15,20 +15,29 @@ opt-in control slice exposes only typed pause, resume, and cancel operations.
 This is pre-release software. It cannot start a print, execute arbitrary G-code,
 or provide any other motion, heating, fan, light, or macro control.
 
-Klove defines a strict v2 contract and non-actuating validator for
-`.gcode.3mf` intake, one exact selected plate path, printer/profile binding,
-validation evidence, and structured denials. The `[artifacts]` configuration
+Klove defines a strict v3 contract and non-actuating validator for
+`.gcode.3mf` intake, one exact selected plate path, target approval,
+qualification evidence, and structured denials. The `[artifacts]` configuration
 bounds the central directory, entry and byte counts, compression ratio, selected
 G-code, header, line length, and future metadata waits. Validation operates on
 one immutable byte snapshot, rejects unsafe ZIP structure and known Bambu-only
 G-code signatures, and streams only the selected member through integrity and
-syntax checks. It does not establish target compatibility, upload a file, or
-authorize print start.
+syntax checks.
+
+Qualification then requires a separate trusted approval for those exact bytes
+and an exact current configured safety profile. Printer UUID, registered slicer
+profile, generation, canonical fingerprint, Klipper dialect, nozzle, build
+volume, and plate must all match. Model names and near matches are ignored.
+Manual review records are per-file audit evidence and are always denied by the
+automatic path. Qualification still does not upload a file or authorize print
+start. See ADR 0003 and the safety-profile example in `config.example.toml`.
 
 ## Run the service
 
-1. Copy `config.example.toml` to `config.toml` and use an explicit Moonraker URL
-   for each printer.
+1. Copy `config.example.toml` to `config.toml`, replace every example printer
+   UUID with a generated stable UUIDv4, and use an explicit Moonraker URL for
+   each printer. Advance a safety profile's generation on every change,
+   including a later reversion.
 2. Create the configured secret files. Each must contain exactly one token of
    at least 32 characters. Do not put credentials in TOML or Compose files.
 3. Install the hash-pinned dependencies and package, then start Klove:

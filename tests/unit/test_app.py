@@ -31,6 +31,7 @@ def write_config(tmp_path: Path, port: int, *, printer: bool, control: bool = Fa
 
 [[printers]]
 id = "voron"
+uuid = "11111111-1111-4111-8111-111111111111"
 endpoint = "http://127.0.0.1:7125"
 api_key_file = "{moonraker_token.as_posix()}"
 control_enabled = {str(control).lower()}

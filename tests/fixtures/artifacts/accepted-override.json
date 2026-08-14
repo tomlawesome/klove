@@ -1,5 +1,6 @@
 {
   "contract_version": "3",
+  "override_id": "55555555-5555-4555-8555-555555555555",
   "operation_id": "22222222-2222-4222-8222-222222222222",
   "idempotency_key": "33333333-3333-4333-8333-333333333333",
   "artifact": {
@@ -10,7 +11,9 @@
   },
   "selected_plate": {
     "plate_id": "plate-1",
-    "archive_path": "Metadata/plate_1.gcode"
+    "archive_path": "Metadata/plate_1.gcode",
+    "gcode_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "gcode_size_bytes": 1048576
   },
   "target": {
     "printer_uuid": "11111111-1111-4111-8111-111111111111",
@@ -18,5 +21,8 @@
     "safety_profile_generation": 7,
     "safety_profile_fingerprint": "dc188fe71b16d85b19acf7b7ec3a5f4c4381850347cf6c6aa98b257d09264481"
   },
-  "dispatch": true
+  "actor_id": "operator-17",
+  "recorded_at_epoch_ms": 1786665600000,
+  "reason": "missing_proof",
+  "automatic_dispatch_allowed": false
 }
