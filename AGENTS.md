@@ -21,6 +21,16 @@ native-provider programme or create a persistent Grove fork without a new
 accepted decision. Any Grove contribution is developed in a fork and proposed
 upstream normally.
 
+Issue #62's registry foundation is the only canonical product printer store.
+Keep secret values outside SQLite in its owner-only opaque-reference store, keep
+all lifecycle mutations typed and revision-bound, and preserve its two-phase
+create/rotate/remove recovery protocol. Reconciliation must prove that cleanup
+references are disjoint from all active and disabled records before deletion.
+A recoverable snapshot comprises the registry database, complete secret
+directory and HMAC key, and every separate durable actuator fence from one
+quiesced state; never restore or document any subset as sufficient. See
+`docs/registry-storage.md`.
+
 ## Safety invariant
 
 Klove fails closed. A command is permitted only when every required piece of
