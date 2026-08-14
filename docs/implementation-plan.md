@@ -38,8 +38,13 @@ Last updated: 2026-08-14
   and [PR #47](https://github.com/tomlawesome/klove/pull/47) record the completed
   non-actuating validation slice.
 - [Target-qualification issue #5](https://github.com/tomlawesome/klove/issues/5)
-  records the v3 exact printer UUID and safety-profile approval boundary; it
-  remains non-actuating and is the prerequisite for bounded upload.
+  records the v3 exact printer UUID and safety-profile approval boundary.
+- [Bounded upload issue #8](https://github.com/tomlawesome/klove/issues/8) and
+  [PR #55](https://github.com/tomlawesome/klove/pull/55) are complete on
+  protected `develop`.
+- [Durable print-start issue #9](https://github.com/tomlawesome/klove/issues/9)
+  is implemented under accepted ADR 0005 with no northbound route; issue #12
+  remains the end-to-end lifecycle slice.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
   are complete on protected `develop`.
@@ -123,8 +128,9 @@ denied or classified without reaching an actuator.
   fails closed rather than permitting replay.
 - [x] Post-action polling binds the target phase to the preflight filename and
   monotonic evidence. Any ambiguity becomes `outcome_unknown` with no retry.
-- [x] Repository policy permits only the three dedicated actuator RPCs in one
-  adapter and rejects generic G-code, print start, and other actuators.
+- [x] Repository policy confines the three dedicated control RPCs to one
+  adapter and rejects generic G-code, print start, and other actuators in this
+  completed slice.
 - [x] Complete documentation review and the full local gate.
 - [x] Obtain clean GitHub PR CI and merge through the protected workflow into
   `develop`.
@@ -313,17 +319,52 @@ Exit criterion: one exact qualified selected G-code can be placed on one exact
 Moonraker host and independently verified without starting it; no ambiguous
 upload can become start authority.
 
+## Completed implementation: durable at-most-once Moonraker print start
+
+- [x] Accept ADR 0005's stock-Moonraker `printer.print.start` boundary without
+  generic G-code, a host-installed component, a northbound route, or a user
+  interface.
+- [x] Require both installation-wide and per-printer opt-in, then recheck the
+  exact printer UUID, current safety-profile generation/fingerprint and the
+  complete ADR-0004 verified-upload identity under one per-printer lock.
+- [x] Bracket the exact remote file's bounded size/SHA-256 stream with identical
+  metadata reads and require a coherent idle history/object/history sample
+  immediately before reservation.
+- [x] Commit the operation id, idempotency key, complete verified file, target
+  and idle preflight as `dispatching` before any network action. Validate an
+  owner-only SQLite `STRICT` database, exact keys/schema, WAL mode and
+  `synchronous=FULL`; persist it on the container state volume.
+- [x] Send one authenticated typed start RPC for only the operation-derived
+  filename. Treat a committed reservation as possibly dispatched across every
+  timeout, cancellation, disconnect, malformed response, internal failure and
+  process crash; never retry it.
+- [x] Ignore the RPC response as success evidence. Confirm only from a strictly
+  later event time and exact operation path plus a new immutable history
+  identity and compatible live or terminal phase. Contradiction or bounded
+  timeout is durably `outcome_unknown`.
+- [x] Close the dispatch gate during startup/reconnect read-only reconciliation.
+  Exact duplicates reuse the durable result, identity collisions deny, and any
+  unresolved row atomically fences only that printer across all new keys and
+  service instances.
+- [x] Fail closed on missing, public, symlinked, corrupt, weakened-schema or
+  unavailable storage and cover the domain, adapter, orchestration, restart and
+  persistence policy at 100% statement and branch coverage.
+
+Exit criterion: one exact verified upload can produce at most one typed
+Moonraker start request and is reported confirmed only from later exact
+history/live evidence. Every unresolved outcome survives Klove restart and
+prevents another start on that printer without a blind retry.
+
 ## Next slices
 
-The completed authorized prerequisites are #5 and #8; the next delivery slice
-is #9. The implemented
+The completed authorized component slices are #5, #8 and #9; the next dependent
+delivery slice is the end-to-end lifecycle proof in #12. The implemented
 RatOS contract fixture remains a separate incomplete exact-release acceptance
 follow-up under #51 and does not block focused development. Each safety-critical
 prerequisite is delivered through its own protected `develop` pull request and
 must merge with required checks green before work begins on the next dependent
-implementation. Upload is non-actuating under ADR 0004. Print start remains
-prohibited until #9 has its own accepted ADR, durable at-most-once journal, and
-restart reconciliation design.
+implementation. ADR 0004 upload remains non-actuating by itself; ADR 0005 print
+start is internal and is not a public dispatch workflow.
 
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
@@ -339,8 +380,8 @@ restart reconciliation design.
    new actuator.
 2. Exact target/safety-profile binding, then separately decided safe upload,
    metadata verification, idempotent print start, and durable reconciliation.
-   Print-start implementation and transport are blocked until a dedicated ADR
-   is accepted; roadmap placement is not authorization. Track the slices in
+   Each actuator remains limited to its accepted ADR; roadmap placement alone
+   is not authorization. Track the slices in
    [#5](https://github.com/tomlawesome/klove/issues/5),
    [#8](https://github.com/tomlawesome/klove/issues/8),
    [#9](https://github.com/tomlawesome/klove/issues/9), and

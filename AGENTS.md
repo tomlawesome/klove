@@ -18,14 +18,15 @@ positive, current, internally consistent, and unambiguous. Unknown or missing
 evidence is a denial. Never infer printer capabilities from names, models, or
 near matches.
 
-Actuation is limited to the accepted job-control contract in ADR 0001:
-Moonraker's dedicated pause, resume, and cancel RPCs behind explicit global and
-per-printer opt-in. Every request requires exact authenticated scope, printer
-route, state token, job identity, phase, capability, a direct pre-action poll,
-per-printer serialization, single-dispatch idempotency, and post-action
-reconciliation. The exact token is required both before and after the direct
-poll; every live poll is bound to Moonraker's immutable history job id and
-start time. Once dispatch may have occurred, uncertainty is
+Actuation is limited to ADR 0001's dedicated pause, resume, and cancel RPCs and
+ADR 0005's one exact `printer.print.start` RPC. Both require explicit global and
+per-printer opt-in, exact target and current evidence, a direct pre-action poll,
+per-printer serialization, single dispatch, and post-action reconciliation.
+Job control additionally requires the exact authenticated scope, printer route,
+state token, job identity, phase and capability; the token is checked both
+before and after the direct poll, and every live poll is bound to Moonraker's
+immutable history job id and start time. Once control dispatch may have
+occurred, uncertainty is
 `outcome_unknown`; the exact printer and state token remain fenced across all
 idempotency keys until changed control evidence supplies a new token. Ordinary
 telemetry and forward print progress do not rotate the token or cross that
@@ -33,8 +34,19 @@ fence. Printer owners are
 responsible for the semantics and safety of their configured `PAUSE`, `RESUME`,
 and `CANCEL_PRINT` macros.
 
-No generic G-code execution path or print-start transport is permitted. Any new
-actuator requires its own accepted architecture decision, narrow typed
+Print start may consume only an exact ADR-0004 `VerifiedUpload`. It rechecks the
+current target profile and brackets the remote size/SHA-256 with identical
+metadata reads, then requires a coherent idle history/object/history preflight.
+The complete operation is committed to the private SQLite/WAL journal before
+one typed start request. A committed `dispatching` row always means the call may
+have happened. Confirmation requires the exact operation path, a new immutable
+history identity and strictly later monotonic evidence. Startup and reconnect
+perform read-only reconciliation before opening the dispatch gate; unresolved
+evidence fences that printer across all keys. After reservation there is never
+a blind retry, including across process restart.
+
+No generic G-code execution path or other print-start transport is permitted.
+Any new actuator requires its own accepted architecture decision, narrow typed
 interface, negative tests, and 100% statement and branch coverage across
 authentication, authorization, control, decoding, translation, and policy.
 
@@ -56,9 +68,9 @@ apply. Returned identity, metadata, configured nozzle, byte count and remote
 SHA-256 must agree, with identical metadata reads bracketing the remote-file
 download. Once the upload request may have begun, every ambiguity is
 `outcome_unknown` and must never cause a blind retry or uncertain-path deletion.
-Verified upload evidence grants no print-start authority. Print start remains
-prohibited until its own accepted decision and durable safety slice are
-complete.
+Verified upload evidence grants no authority by itself. Only ADR 0005 may
+consume it after repeating exact target, file and live-state checks and making
+its durable pre-dispatch reservation.
 
 ## Delivery lanes
 
@@ -81,15 +93,16 @@ Install `requirements-dev.lock` with `--require-hashes`, then run
 `scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere. Keep CI
 actions, base images, and scanner images pinned to reviewed immutable digests.
 
-Run `scripts/test-moonraker-sim.sh` after changing Moonraker
-protocol/control, preflight or reconciliation behavior, the integration
-fixture, its container pins, or restart/fault handling. Local execution requires
-rootless Docker. Use only the unique run-id lifecycle scripts so cleanup stays
-bound to the recorded Docker context, daemon, and exact Compose project. The
-fixture may prepare its private harmless virtual-SD job, but that test mechanism
-must never become a production Klove upload, print-start, or generic G-code
-path. The native stack is not RatOS; RatOS acceptance uses the separate pinned
-ARM hardware procedure in `docs/ratos-acceptance.md`.
+Run `scripts/test-moonraker-sim.sh` after changing Moonraker protocol/control,
+print-start, preflight or reconciliation behavior, the integration fixture, its
+container pins, or restart/fault handling. Local execution requires rootless
+Docker. Use only the unique run-id lifecycle scripts so cleanup stays bound to
+the recorded Docker context, daemon, and exact Compose project. The fixture may
+prepare its private harmless virtual-SD job, but that test mechanism
+must never become a production Klove upload or generic G-code path and must not
+bypass ADR 0005's journal when testing production print start. The native stack
+is not RatOS; RatOS acceptance uses the separate pinned ARM hardware procedure
+in `docs/ratos-acceptance.md`.
 
 Use `scripts/test-ratos-emulation.sh` only for the opt-in supplemental RatOS
 v2.1.0 host/service and controlled job-control contract lane. It must remain
@@ -99,8 +112,9 @@ must start with a fresh COW over the immutable verified base; that COW is the
 only writable guest disk, and raw guest serial output is not retained. The outer
 container also receives one separately writable, exact-labelled credential
 volume. The test-only fixture may use Moonraker to place the exact controlled
-configuration and harmless finite-dwell job in that COW, but production Klove
-still exposes no upload, print-start, or generic G-code path. Per-run credentials
+configuration and harmless finite-dwell job in that COW, but the lane does not
+invoke production upload or print start and production Klove exposes no generic
+G-code path. Per-run credentials
 live only in an exact labelled volume; teardown destroys that volume and the
 secret-bearing COW while retaining bounded sanitized evidence.
 Direct-loading the exact kernel and device tree bypasses the physical Pi firmware

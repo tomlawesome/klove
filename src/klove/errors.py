@@ -23,3 +23,11 @@ class ControlTransportError(KloveError):
 
 class UploadTransportError(KloveError):
     """An upload transport failed without exposing remote or artifact material."""
+
+
+class StartTransportError(KloveError):
+    """A print-start transport failed without exposing remote or artifact material."""
+
+
+class JournalError(KloveError):
+    """The durable operation journal is unavailable, invalid, or contradictory."""

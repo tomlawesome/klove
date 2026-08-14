@@ -37,9 +37,19 @@ that the protocol model is complete. The suite therefore also includes:
   serialization, operation/key collisions, journal exhaustion, exact duplicate
   single dispatch, stale profile/source denial, every malformed response and
   every post-request ambiguity without retry;
+- durable print-start tests for both opt-in gates, exact target/profile and
+  remote metadata/digest rechecks, coherent idle history/object/history
+  preflight, operation/key collisions, per-printer serialization, a committed
+  pre-dispatch SQLite/WAL reservation, one exact authenticated
+  `printer.print.start` request, strictly later event/history confirmation,
+  terminal-state reconciliation, every lost-response and contradiction path,
+  restart/reconnect gating, cross-key and cross-service printer fences, corrupt
+  or weakened schemas, unsafe storage permissions, and every journal failure
+  boundary;
 - repository policy tests that reject the enumerated prohibited RPC literals,
-  confine the three accepted job-control RPC literals to one adapter, constrain
-  the native mutating route count, and reject unpinned CI actions;
+  confine the three accepted job-control RPC literals and the one accepted
+  print-start literal to their separate typed adapters, constrain the native
+  mutating route count, and reject unpinned CI actions;
 - a preview-container contract assertion, vulnerability scan, SBOM, and
   provenance attestation.
 
@@ -69,8 +79,11 @@ network, generated ephemeral credentials, unique project identity, exact
 context/daemon-bound cleanup, and finite Docker timeouts.
 
 Only the private fixture prepares its harmless virtual-SD dwell job. That
-preparation does not authorize an upload, print-start, or generic G-code path in
-`src/klove`. The native amd64 stack also does not claim RatOS coverage. RatOS
+preparation is not the production upload or ADR-0005 durable start path and
+does not authorize generic G-code in `src/klove`. The new start adapter and
+journal are covered by deterministic protocol/fault tests; issue #12 owns the
+complete real-process intake-through-completion contract. The native amd64
+stack also does not claim RatOS coverage. RatOS
 v2.1.0 acceptance separately records the exact ARM release asset checksum,
 supported board, running software identities, controlled configuration and
 macro hashes, and attended physical results under `docs/ratos-acceptance.md`.
@@ -96,8 +109,8 @@ slirp/loopback path as a trusted Moonraker client; this lane requires that exact
 behavior and does not claim invalid downstream API-key rejection. The native
 simulation retains that negative southbound test on an untrusted transport.
 The test-only RatOS preparation is not production upload authority. ADR 0004's
-production file transport remains non-actuating and is not exercised by this
-lane; no print-start or generic G-code behavior is added.
+production file transport and ADR 0005's durable start service are not
+exercised by this lane; no generic G-code behavior is added.
 
 The lane records bounded non-secret RatOS/Moonraker/Klipper/MCU and contract
 identities. Exact teardown checks the overlay, removes only source-bound

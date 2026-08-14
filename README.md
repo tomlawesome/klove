@@ -10,11 +10,13 @@ Web UI—is a last resort for a separately justified, irreducible interaction.
 
 Klove discovers Moonraker capabilities, maintains a canonical printer state,
 authenticates native API clients, and classifies Grove commands. Its first
-opt-in control slice exposes only typed pause, resume, and cancel operations.
+opt-in northbound control slice exposes only typed pause, resume, and cancel
+operations.
 
-This is pre-release software. It cannot start a print, execute arbitrary G-code,
-or provide any other motion, heating, fan, light, or macro control. Its bounded
-file transport is not exposed through a northbound route.
+This is pre-release software. Its native API cannot submit an artifact, upload
+or start a print, execute arbitrary G-code, or provide any other motion,
+heating, fan, light, or macro control. The separately accepted upload and
+durable print-start domain services are not exposed through a northbound route.
 
 Klove defines a strict v3 contract and non-actuating validator for
 `.gcode.3mf` intake, one exact selected plate path, target approval,
@@ -36,8 +38,18 @@ writes only `klove/<operation-id>.gcode` once with Moonraker checksum validation
 and `print=false`, polls bounded metadata, downloads and hashes the remote file
 between identical metadata reads, and emits non-actuating `VerifiedUpload`
 evidence. Any ambiguity after the request begins is retained as
-`outcome_unknown` without retry. See ADRs 0003 and 0004 and the safety-profile
-example in `config.example.toml`.
+`outcome_unknown` without retry.
+
+ADR 0005 accepts one further internal boundary: after both dispatch gates opt
+in, the print-start service rechecks the exact current target and remote
+metadata/SHA-256, requires a coherent idle preflight, commits a `dispatching`
+reservation to an owner-only SQLite/WAL journal, and sends the exact
+`printer.print.start(filename)` RPC no more than once. A response never proves
+success. Only a new immutable Moonraker history identity for that exact path,
+strictly later monotonic evidence, and a compatible live phase can confirm it.
+Every unresolved outcome survives restart and fences that printer without a
+blind retry. No generic G-code path exists. See ADRs 0003–0005 and the
+safety-profile example in `config.example.toml`.
 
 ## Run the service
 
@@ -87,7 +99,9 @@ macros that replace those commands; Klove does not inspect or approve their
 contents.
 
 For containers, copy `compose.example.yml`, replace its image placeholder with
-an accepted immutable digest, and mount configuration and secrets read-only.
+an accepted immutable digest, mount configuration and secrets read-only, and
+retain the `klove-state` volume. Losing or rolling back that volume can remove
+an unresolved print-start fence.
 
 ## Development
 
@@ -99,14 +113,15 @@ branch coverage. Pytest is configured to import Klove from `src`, so the gate
 exercises the working tree even when the environment also contains a
 non-editable or older package installation.
 
-Changes to Moonraker protocol/control, reconciliation, or its container fixture
-must also run `scripts/test-moonraker-sim.sh`. On Linux this builds a confined,
-rootless, revision-pinned native Klipper/Moonraker stack with Klipper's
-Linux-process MCU and exercises real authentication, monitoring, typed
-pause/resume/cancel, lost-response fencing, and restarts. The private fixture
-starts only a finite dwell job to establish test state; the fixture does not
-exercise the production upload service, and Klove still exposes no print-start
-or generic G-code capability. See the
+Changes to Moonraker protocol/control/start, reconciliation, or its container
+fixture must also run `scripts/test-moonraker-sim.sh`. On Linux this builds a
+confined, rootless, revision-pinned native Klipper/Moonraker stack with
+Klipper's Linux-process MCU and exercises real authentication, monitoring,
+typed pause/resume/cancel, lost-response fencing, and restarts. The private fixture
+starts only a finite dwell job to establish control-test state; that fixture
+preparation is not the production upload or durable start service. End-to-end
+production upload/start evidence is issue #12; no generic G-code capability is
+exposed. See the
 [integration fixture](tests/integration/moonraker-sim/README.md).
 
 That automated amd64 stack is not RatOS. RatOS host and physical-printer

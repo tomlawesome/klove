@@ -7,6 +7,7 @@ from klove.config import (
     ApiConfig,
     AppConfig,
     ControlConfig,
+    DispatchConfig,
     PrinterConfig,
     load_config,
     read_secret,
@@ -59,6 +60,13 @@ def test_valid_configuration_loads_and_forbids_unknown_fields(tmp_path: Path) ->
 [api]
 token_file = "api.token"
 
+[dispatch]
+enabled = true
+journal_file = "/var/lib/klove/start-journal.sqlite3"
+request_timeout_seconds = 9.0
+confirmation_timeout_seconds = 8.0
+poll_interval_seconds = 0.2
+
 [artifacts]
 max_zip_entries = 64
 max_zip_metadata_bytes = 131072
@@ -78,6 +86,7 @@ id = "voron-24"
 uuid = "11111111-1111-4111-8111-111111111111"
 endpoint = "http://127.0.0.1:7125"
 api_key_file = "moonraker.key"
+dispatch_enabled = true
 
 [[printers.safety_profiles]]
 profile_version = "1"
@@ -110,7 +119,12 @@ z_micrometres = 350000
     assert result.artifacts.metadata_wait_seconds == 20.0
     assert result.artifacts.metadata_poll_interval_seconds == 0.25
     assert result.artifacts.upload_idempotency_capacity == 512
+    assert result.dispatch.enabled is True
+    assert result.dispatch.request_timeout_seconds == 9.0
+    assert result.dispatch.confirmation_timeout_seconds == 8.0
+    assert result.dispatch.poll_interval_seconds == 0.2
     assert result.printers[0].id == "voron-24"
+    assert result.printers[0].dispatch_enabled is True
     assert result.printers[0].safety_profiles == (safety_profile(),)
 
     with pytest.raises(ValidationError):
@@ -186,6 +200,34 @@ def test_control_is_explicit_per_installation_and_printer() -> None:
         control=ControlConfig(enabled=True),
         printers=(printer(control_enabled=True),),
     )
+
+
+def test_dispatch_is_explicit_per_installation_and_printer() -> None:
+    with pytest.raises(ValidationError, match=r"requires dispatch\.enabled"):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            printers=(printer(dispatch_enabled=True),),
+        )
+    assert AppConfig(
+        api=ApiConfig(token_file=Path("token")),
+        dispatch=DispatchConfig(enabled=True),
+        printers=(printer(dispatch_enabled=True),),
+    )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"journal_file": Path("relative.sqlite3")},
+        {"request_timeout_seconds": float("nan")},
+        {"confirmation_timeout_seconds": float("nan")},
+        {"poll_interval_seconds": float("nan")},
+        {"confirmation_timeout_seconds": 1, "poll_interval_seconds": 2},
+    ],
+)
+def test_dispatch_timing_and_journal_path_are_strict(values: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        DispatchConfig(**values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

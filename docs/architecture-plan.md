@@ -115,7 +115,7 @@ Canonical printer domain
   v
 Moonraker adapter (one session per printer)
   -> WebSocket JSON-RPC subscriptions and commands
-  -> HTTP file upload, metadata, history, and webcams
+  -> HTTP file upload, metadata, history, typed start, and webcams
   v
 Moonraker -> Klipper -> MCU
 
@@ -162,9 +162,12 @@ For every configured printer Klove should:
    `printer.print.pause`, `.resume`, and `.cancel`.
 6. ADR 0004 accepts HTTP `/server/files/upload` only for bounded,
    operation-unique, checksum-verified placement with `print=false`, remote
-   digest verification, and no northbound route. `printer.print.start` remains
-   prohibited until its own accepted decision and durable dispatch slice.
-7. Use Moonraker metadata and history to estimate remaining time and reconcile
+   digest verification, and no northbound route.
+7. ADR 0005 accepts one exact `printer.print.start` JSON-RPC only after current
+   target/file checks, coherent idle preflight and durable SQLite/WAL
+   reservation. Startup/reconnect reconciliation is read-only and unresolved
+   rows fence their printer without retry.
+8. Use Moonraker metadata and history to estimate remaining time and reconcile
    jobs after either side restarts when the relevant slice is authorized.
 
 Minimum required Klipper objects for farm dispatch are `virtual_sdcard`,
@@ -310,8 +313,9 @@ file sliced for a Bambu machine is not made safe for a Klipper printer by
 renaming it or extracting it from a 3MF. Klove must not rewrite a foreign start
 G-code dialect or silently ignore commands.
 
-Artifact policy is staged; validation is implemented but transport and print
-start remain unauthorized:
+Artifact policy is staged. Its validation, qualification, upload and durable
+start components are implemented behind separate evidence boundaries, but no
+northbound intake-to-completion workflow is yet authorized:
 
 1. Accept Grove's `.gcode.3mf` container only when its selected plate contains
    G-code sliced for the target Klipper profile. Never support unsliced geometry
@@ -329,13 +333,15 @@ start remain unauthorized:
    through Moonraker with the selected digest and `print=false`; wait for
    metadata processing, bracket a bounded remote-file digest with identical
    metadata reads, and retain every post-request ambiguity without retry.
-   A separate later decision must revalidate that evidence before issuing one
-   durable idempotent start request.
-6. Observe the expected Moonraker filename/state transition before reporting a
+6. Under ADR 0005, revalidate that exact target, metadata and remote digest,
+   require a coherent idle preflight, durably reserve the complete operation,
+   and issue at most one typed start request. A response never authorizes a
+   retry or proves success.
+7. Observe the expected Moonraker filename/state transition before reporting a
    successful start to Grove. If the response is lost, reconcile current state
    and history instead of retrying blindly.
 
-The implemented dispatch prerequisite remains deliberately non-actuating. Its strict v3 contract
+The implemented artifact prerequisite remains deliberately non-actuating. Its strict v3 contract
 keeps hostile byte inspection separate from independently trusted target
 approval. The validator accepts one immutable byte snapshot, bounds and
 validates hostile ZIP/ZIP64 metadata before parsing, and streams only the exact
@@ -349,7 +355,11 @@ itself writes nothing. ADR 0004 may consume only that exact qualification,
 recheck the current profile and immutable source, upload the selected G-code
 once with Moonraker checksum verification and `print=false`, and emit verified
 remote-file evidence only after bounded metadata and byte-digest reconciliation.
-It exposes no print start.
+ADR 0005 may consume only that `VerifiedUpload`, repeat current target/file/live
+checks, commit a durable pre-dispatch reservation, send one typed start, and
+confirm only from later exact history and monotonic state evidence. These
+components expose no northbound dispatch workflow; issue #12 owns that
+integration.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
@@ -417,9 +427,11 @@ system of record; Moonraker/Klipper remains the execution state of record.
 On startup or reconnect:
 
 1. query Klippy and current `print_stats`/`virtual_sdcard` state;
-2. associate a running `klove/<operation-id>.gcode` with the journal;
-3. consult Moonraker history for recently terminal jobs;
-4. publish the reconciled snapshot before accepting new dispatches.
+2. load only existing exact durable operation rows; never infer authority from
+   an operation-looking filename;
+3. reconcile each unresolved start through coherent live/history reads only;
+4. retain every unproven row as a per-printer fence and never retry its action;
+5. publish the reconciled snapshot before accepting new dispatches.
 
 Use bounded exponential backoff with jitter, periodic full-state resync, atomic
 artifact writes, graceful shutdown that never cancels an active printer job,
@@ -468,11 +480,13 @@ every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
 ### Phase 3: safe file dispatch
 
-- ADRs 0003 and 0004 now accept exact qualification and non-actuating Moonraker
-  upload. Print start remains blocked on its separate decision.
+- ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
+  durable at-most-once typed print start as separate internal components.
 - Implement hostile-3MF validation, target manifest/profile checks, Moonraker
   upload/metadata/start, dedupe, acknowledgement, and restart reconciliation in
   separately gated slices.
+- Complete their authenticated intake-through-completion integration under
+  issue #12 before claiming this phase's exit criterion.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
 Exit: one target-tagged job can be queued, started, paused, resumed, cancelled,
@@ -531,9 +545,10 @@ hidden as well as rejected.
   against a deterministic fake Moonraker WebSocket/HTTP server.
 - A native real-process Klipper/Moonraker integration test for authentication,
   typed controls, lost responses, exact single dispatch, and process restarts.
-- Later integration tests for authorized uploads, metadata delays, history
-  reconciliation, and concurrent printers; roadmap placement does not
-  authorize those transports.
+- Issue #12 integration tests for authorized intake/upload/start, metadata
+  delays, lost acknowledgements, history reconciliation, cancellation,
+  completion, substitution, restart and concurrent printers; component ADRs do
+  not authorize a public workflow by themselves.
 - Scripted Grove browser tests for status, capability-driven controls, queue
   state, structured errors, and authentication/privacy boundaries.
 - Hardware-in-the-loop release-candidate tests on a dedicated printer with a
@@ -553,13 +568,13 @@ The artifact-contract prerequisite in
 and exact target qualification in
 [issue #5](https://github.com/tomlawesome/klove/issues/5) are complete. The
 separately decided bounded upload and metadata-verification slice in
-[issue #8](https://github.com/tomlawesome/klove/issues/8) is also implemented
-without print start. The immediate next slice is one idempotent print start and
-durable restart reconciliation in
-[issue #9](https://github.com/tomlawesome/klove/issues/9).
-MQTT/FTPS compatibility work follows that safety boundary. Print start remains
-blocked until a dedicated ADR is accepted; this sequencing statement authorizes
-no new actuator. Track the programme in
+[issue #8](https://github.com/tomlawesome/klove/issues/8) and durable typed
+print start under accepted ADR 0005 in
+[issue #9](https://github.com/tomlawesome/klove/issues/9) are also implemented
+as internal components. The immediate next dependent slice is the target-bound
+intake-through-completion proof in
+[issue #12](https://github.com/tomlawesome/klove/issues/12).
+MQTT/FTPS compatibility follows that safety boundary. Track the programme in
 [GitHub roadmap #38](https://github.com/tomlawesome/klove/issues/38) and artifact
 dispatch under [epic #33](https://github.com/tomlawesome/klove/issues/33).
 

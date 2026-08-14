@@ -14,6 +14,7 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -38,6 +39,7 @@ class PrinterConfig(BaseModel):
     allow_insecure_http: bool = False
     verify_tls: bool = True
     control_enabled: bool = False
+    dispatch_enabled: bool = False
     safety_profiles: tuple[SafetyProfile, ...] = ()
 
     @model_validator(mode="after")
@@ -93,6 +95,33 @@ class ControlConfig(BaseModel):
         return self
 
 
+class DispatchConfig(BaseModel):
+    """Explicit durable print-start settings; disabled until both gates opt in."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    journal_file: Path = Path("/var/lib/klove/start-journal.sqlite3")
+    request_timeout_seconds: float = Field(default=10.0, gt=0, le=30, allow_inf_nan=False)
+    confirmation_timeout_seconds: float = Field(default=10.0, gt=0, le=60, allow_inf_nan=False)
+    poll_interval_seconds: float = Field(default=0.1, gt=0, le=5, allow_inf_nan=False)
+
+    @field_validator("journal_file")
+    @classmethod
+    def journal_path_is_absolute(cls, value: Path) -> Path:
+        """Keep durable state on one explicit non-relative operator path."""
+        if not value.is_absolute():
+            raise ValueError("dispatch journal_file must be absolute")
+        return value
+
+    @model_validator(mode="after")
+    def finite_consistent_timing(self) -> DispatchConfig:
+        """Reject polling slower than the complete confirmation window."""
+        if self.poll_interval_seconds > self.confirmation_timeout_seconds:
+            raise ValueError("dispatch poll interval must not exceed confirmation timeout")
+        return self
+
+
 class AppConfig(BaseModel):
     """Complete Klove configuration."""
 
@@ -100,6 +129,7 @@ class AppConfig(BaseModel):
 
     api: ApiConfig
     control: ControlConfig = ControlConfig()
+    dispatch: DispatchConfig = DispatchConfig()
     artifacts: ArtifactLimits = ArtifactLimits()
     printers: tuple[PrinterConfig, ...] = ()
 
@@ -114,6 +144,8 @@ class AppConfig(BaseModel):
             raise ValueError("printer UUIDs must be unique")
         if not self.control.enabled and any(printer.control_enabled for printer in self.printers):
             raise ValueError("per-printer control requires control.enabled=true")
+        if not self.dispatch.enabled and any(printer.dispatch_enabled for printer in self.printers):
+            raise ValueError("per-printer dispatch requires dispatch.enabled=true")
         return self
 
 

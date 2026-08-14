@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through exact artifact target qualification
+Status: active through durable typed print start
 
 ## Protected assets
 
@@ -69,9 +69,9 @@ not prove that live state is current.
 - Dispatched and uncertain idempotency entries are never evicted. Capacity
   exhaustion denies new keys, and process restart invalidates all old state
   tokens.
-- Repository policy permits only the three dedicated Moonraker job-control
-  methods in one adapter. Generic G-code, print start, and other actuators remain
-  absent.
+- Repository policy confines the three dedicated Moonraker job-control methods
+  to one adapter and the one accepted typed print-start method to another.
+  Generic G-code and every other actuator remain absent.
 
 ## Accepted residual risk
 
@@ -153,13 +153,64 @@ to later evidence for the same job, and reports ambiguity without retrying. See
   identity or file processors, and match the configured nozzle. Klove streams
   the remote file within the exact selected size and digest while equal
   metadata reads bracket that download.
-- `VerifiedUpload` carries only remote-file evidence. It cannot start a print,
-  and generic G-code remains absent. A later durable start slice must recheck
-  current evidence immediately before its separate one-time action.
+- `VerifiedUpload` carries only remote-file evidence. It grants no authority by
+  itself, and generic G-code remains absent. Only ADR 0005 may consume it after
+  rechecking current evidence immediately before its separate one-time action.
 
-## Required controls before print start and later actuators
+## Durable print-start controls
 
-Uploaded 3MF/G-code validation, target binding, and durable dispatch
-reconciliation must be complete before print start exists. Every later actuator
-requires its own typed parameters, positive capability and policy evidence, and
-an accepted decision; the absence of any one item is denial.
+- Installation-wide and per-printer dispatch gates must both opt in. The
+  internal service consumes one exact `VerifiedUpload`; this slice adds no
+  northbound route or user interface.
+- Under one per-printer lock, Klove rechecks the exact current printer UUID,
+  slicer-profile id, safety-profile generation and fingerprint. Exact metadata
+  reads bracket a bounded remote-file size/SHA-256 stream and must still equal
+  the non-started verified upload.
+- An immediate direct preflight brackets the printer object sample with equal
+  newest-history reads. The printer must be idle, and its newest history row
+  must not already name the operation-unique path. Missing, changing,
+  malformed, active or contradictory evidence denies before reservation.
+- Before network actuation, Klove commits the complete operation, key, target,
+  verified file and idle preflight as `dispatching` in an owner-only SQLite
+  `STRICT` database. The exact schema, operation primary key, idempotency unique
+  index, WAL mode and `synchronous=FULL` are verified fail closed. The container
+  stores it on a dedicated persistent state volume. The reservation transaction
+  atomically rejects another unresolved operation for that printer, including
+  from another service instance.
+- A `dispatching` row always means the one start RPC may have occurred. Klove
+  never retries it after a timeout, lost or malformed response, cancellation,
+  internal failure, Klove restart, or Moonraker reconnect. A crash before the
+  network call can therefore leave a conservative unresolved fence.
+- Confirmation ignores the RPC response and requires a strictly later
+  Moonraker event time and an immutable history identity for the exact operation
+  path. When preflight had a prior history job, the confirming id must differ
+  and its start time must be later. A non-idle live filename and phase must
+  agree with that history; an exact fast terminal history row may prove the
+  start after the printer has returned to idle.
+- Startup and reconnect close the dispatch gate while unresolved rows are
+  reconciled through reads only. Contradiction, transport failure or timeout is
+  durably `outcome_unknown`. An unresolved row fences only its exact printer
+  across all new keys; ordinary telemetry cannot clear it.
+- The journal contains operational evidence, not credentials, but its integrity
+  is safety-critical. Missing, public, symlinked, wrong-schema, corrupt or
+  unavailable storage prevents dispatch. Rollback, backup, recovery and
+  migration procedures remain required fleet-hardening work.
+
+## Accepted print-start residual risk
+
+Stock Moonraker cannot atomically combine Klove's final file/state reads with
+`printer.print.start`. Another authorized client can replace or start the path
+inside that interval. Printer owners accept responsibility for coordinating
+other clients. Klove binds any claimed outcome to later exact evidence and
+never retries an ambiguity. A host component is not justified for the accepted
+boundary; any future atomic host primitive requires its own decision and tests.
+See `docs/decisions/0005-durable-moonraker-print-start.md`.
+
+## Required controls before end-to-end dispatch and later actuators
+
+The accepted component boundaries are not yet a public intake-to-completion
+workflow. Issue #12 must integrate their exact evidence, authentication,
+duplicate delivery, restart, cancellation, completion and substitution tests
+before target-bound dispatch is complete. Every later actuator requires its own
+typed parameters, positive capability and policy evidence, and an accepted
+decision; the absence of any one item is denial.
