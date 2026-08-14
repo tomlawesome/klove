@@ -84,3 +84,9 @@ client-side contract is:
 
 - [GitHub slice #8](https://github.com/tomlawesome/klove/issues/8)
 - [Dispatch epic #33](https://github.com/tomlawesome/klove/issues/33)
+
+## Subsequent decision
+
+ADR 0005 now permits its durable typed start service to consume
+`VerifiedUpload` after repeating the exact target, remote-file and live-state
+checks. This does not change ADR 0004's non-actuating upload boundary.

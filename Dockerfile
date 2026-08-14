@@ -24,7 +24,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 RUN addgroup --system --gid 10001 klove \
     && adduser --system --disabled-password --no-create-home --uid 10001 \
-        --ingroup klove --shell /sbin/nologin klove
+        --ingroup klove --shell /sbin/nologin klove \
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove
 COPY --from=build /install /usr/local
 USER 10001:10001
 EXPOSE 8080

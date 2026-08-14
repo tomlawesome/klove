@@ -10,6 +10,14 @@ confirmation_timeout_seconds = 5
 poll_interval_seconds = 0.1
 idempotency_capacity = 1024
 
+[dispatch]
+# The internal start service remains disabled unless this and one printer opt in.
+enabled = false
+journal_file = "/var/lib/klove/start-journal.sqlite3"
+request_timeout_seconds = 10.0
+confirmation_timeout_seconds = 10.0
+poll_interval_seconds = 0.1
+
 [artifacts]
 max_zip_entries = 512
 max_zip_metadata_bytes = 16777216
@@ -33,6 +41,7 @@ api_key_file = "/run/secrets/voron_24_moonraker_api_key"
 allow_insecure_http = true
 verify_tls = true
 control_enabled = true
+dispatch_enabled = false
 
 [[printers.safety_profiles]]
 profile_version = "1"

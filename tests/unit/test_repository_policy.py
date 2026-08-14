@@ -13,13 +13,12 @@ def test_suite_imports_the_working_tree_package() -> None:
     assert package_file.is_relative_to((ROOT / "src" / "klove").resolve())
 
 
-def test_control_slice_contains_only_dedicated_job_actuators() -> None:
+def test_actuators_are_exactly_confined_to_typed_adapters() -> None:
     forbidden_methods = {
         "machine.reboot",
         "machine.shutdown",
         "printer.emergency_stop",
         "printer.gcode.script",
-        "printer.print.start",
     }
     production_files = sorted((ROOT / "src" / "klove").rglob("*.py"))
     package_text = "\n".join(path.read_text(encoding="utf-8") for path in production_files)
@@ -37,6 +36,12 @@ def test_control_slice_contains_only_dedicated_job_actuators() -> None:
         )
     }
     assert actuator_files == {"src/klove/adapters/moonraker/control.py"}
+    start_files = {
+        path.relative_to(ROOT).as_posix()
+        for path in production_files
+        if "printer.print.start" in path.read_text(encoding="utf-8")
+    }
+    assert start_files == {"src/klove/adapters/moonraker/start.py"}
 
 
 def test_artifact_contract_and_validation_slices_contain_no_transport_or_extraction() -> None:
@@ -125,6 +130,7 @@ def test_container_and_compose_preserve_runtime_confinement() -> None:
     assert len(from_lines) == 2
     assert all(re.search(r"@sha256:[0-9a-f]{64}(?:\s|$)", line) for line in from_lines)
     assert "USER 10001:10001" in dockerfile
+    assert "install -d -o 10001 -g 10001 -m 0700 /var/lib/klove" in dockerfile
     assert dockerignore.startswith("*\n")
     assert "!Dockerfile" in dockerignore
     assert "!requirements.lock" in dockerignore
@@ -133,6 +139,8 @@ def test_container_and_compose_preserve_runtime_confinement() -> None:
     assert "read_only: true" in compose
     assert "no-new-privileges:true" in compose
     assert "cap_drop:\n      - ALL" in compose
+    assert "klove-state:/var/lib/klove" in compose
+    assert "volumes:\n  klove-state:" in compose
 
 
 def test_native_moonraker_simulation_is_confined_and_test_only() -> None:

@@ -59,8 +59,10 @@ with the generated API key.
 
 The isolated contract runner starts a benign virtual-SD print, after Moonraker
 initialization, to establish a controllable state with a coherent history row.
-That private preparation is not a Klove capability: production code still
-contains no upload, print-start, or generic G-code path.
+That private preparation is not Klove's ADR-0004 upload or ADR-0005 durable
+start capability and does not bypass either contract. Production code contains
+no generic G-code path. The complete production intake/upload/start lifecycle
+belongs to issue #12 rather than this control-focused fixture.
 
 The contract verifies:
 

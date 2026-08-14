@@ -14,3 +14,7 @@ services:
     volumes:
       - ./config.toml:/etc/klove/config.toml:ro
       - ./secrets:/run/secrets:ro
+      - klove-state:/var/lib/klove
+
+volumes:
+  klove-state:
