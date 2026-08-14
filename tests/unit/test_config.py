@@ -68,7 +68,10 @@ max_compression_ratio = 10
 max_gcode_bytes = 2097152
 max_gcode_header_bytes = 32768
 max_gcode_line_bytes = 4096
+upload_timeout_seconds = 120.0
 metadata_wait_seconds = 20.0
+metadata_poll_interval_seconds = 0.25
+upload_idempotency_capacity = 512
 
 [[printers]]
 id = "voron-24"
@@ -103,7 +106,10 @@ z_micrometres = 350000
     assert result.artifacts.max_compression_ratio == 10
     assert result.artifacts.max_gcode_header_bytes == 32768
     assert result.artifacts.max_gcode_line_bytes == 4096
+    assert result.artifacts.upload_timeout_seconds == 120.0
     assert result.artifacts.metadata_wait_seconds == 20.0
+    assert result.artifacts.metadata_poll_interval_seconds == 0.25
+    assert result.artifacts.upload_idempotency_capacity == 512
     assert result.printers[0].id == "voron-24"
     assert result.printers[0].safety_profiles == (safety_profile(),)
 
@@ -210,8 +216,13 @@ def test_control_timing_is_finite_positive_and_consistent(values: dict[str, floa
         {"max_gcode_bytes": 0},
         {"max_gcode_header_bytes": 63},
         {"max_gcode_line_bytes": 0},
+        {"upload_timeout_seconds": float("nan")},
+        {"upload_timeout_seconds": 3601.0},
         {"metadata_wait_seconds": float("nan")},
         {"metadata_wait_seconds": 301.0},
+        {"metadata_poll_interval_seconds": 0.0},
+        {"metadata_wait_seconds": 1.0, "metadata_poll_interval_seconds": 2.0},
+        {"upload_idempotency_capacity": 0},
         {"max_archive_expanded_bytes": 1024, "max_gcode_bytes": 1025},
         {"max_gcode_bytes": 64, "max_gcode_header_bytes": 65},
         {

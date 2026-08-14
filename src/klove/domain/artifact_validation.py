@@ -7,6 +7,8 @@ import hmac
 import re
 import stat
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import BinaryIO, cast
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
@@ -141,6 +143,29 @@ def inspect_gcode_3mf(
         ),
     )
     return ValidatedGcodeCandidate(inspection=inspection, source_archive=archive)
+
+
+@contextmanager
+def open_selected_gcode(candidate: ValidatedGcodeCandidate) -> Iterator[BinaryIO]:
+    """Open the exact selected member from a previously re-inspected candidate."""
+    try:
+        source = _ImmutableBytesReader(candidate.source_archive)
+        bundle = ZipFile(cast(BinaryIO, source), mode="r", allowZip64=True)
+    except (BadZipFile, LargeZipFile, OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("selected member is unavailable") from exc
+    try:
+        info = bundle.getinfo(candidate.inspection.selected_plate.archive_path)
+        if info.is_dir() or info.file_size != candidate.inspection.selected_plate.gcode_size_bytes:
+            raise ValueError("selected member no longer matches inspection")
+        selected = cast(BinaryIO, bundle.open(info, mode="r"))
+    except (BadZipFile, KeyError, LargeZipFile, OSError, RuntimeError, ValueError) as exc:
+        bundle.close()
+        raise ValueError("selected member is unavailable") from exc
+    try:
+        yield selected
+    finally:
+        selected.close()
+        bundle.close()
 
 
 def _verify_intake(intent: ArtifactIntent, archive: bytes, limits: ArtifactLimits) -> None:

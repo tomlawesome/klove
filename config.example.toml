@@ -19,7 +19,10 @@ max_compression_ratio = 100
 max_gcode_bytes = 1073741824
 max_gcode_header_bytes = 65536
 max_gcode_line_bytes = 8192
+upload_timeout_seconds = 300.0
 metadata_wait_seconds = 30.0
+metadata_poll_interval_seconds = 0.1
+upload_idempotency_capacity = 1024
 
 [[printers]]
 id = "voron-24"

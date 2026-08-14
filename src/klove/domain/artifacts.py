@@ -123,7 +123,10 @@ class ArtifactLimits(BaseModel):
     )
     max_gcode_header_bytes: int = Field(default=64 * 1024, ge=64, le=16 * 1024 * 1024)
     max_gcode_line_bytes: int = Field(default=8 * 1024, ge=1, le=1024 * 1024)
+    upload_timeout_seconds: float = Field(default=300.0, gt=0, le=3_600, allow_inf_nan=False)
     metadata_wait_seconds: float = Field(default=30.0, gt=0, le=300, allow_inf_nan=False)
+    metadata_poll_interval_seconds: float = Field(default=0.1, gt=0, le=5, allow_inf_nan=False)
+    upload_idempotency_capacity: int = Field(default=1024, ge=1, le=100_000)
 
     @model_validator(mode="after")
     def gcode_fits_expanded_archive(self) -> ArtifactLimits:
@@ -134,6 +137,8 @@ class ArtifactLimits(BaseModel):
             raise ValueError("max_gcode_header_bytes must not exceed max_gcode_bytes")
         if self.max_gcode_line_bytes > self.max_gcode_bytes:
             raise ValueError("max_gcode_line_bytes must not exceed max_gcode_bytes")
+        if self.metadata_poll_interval_seconds > self.metadata_wait_seconds:
+            raise ValueError("metadata poll interval must not exceed metadata wait")
         return self
 
 

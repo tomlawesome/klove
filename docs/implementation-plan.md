@@ -283,14 +283,45 @@ Exit criterion: one exact inspected artifact can become a target-bound,
 non-actuating qualification only through independent current controller/slicer
 approval; no human or inferred compatibility path can authorize automation.
 
+## Completed implementation: bounded non-actuating Moonraker upload
+
+- [x] Accept ADR 0004's stock-Moonraker file boundary without a host-installed
+  Klove component, print-start method, generic G-code path, or user interface.
+- [x] Recheck the exact current printer UUID/profile generation/fingerprint and
+  re-inspect the retained immutable archive immediately before opening its exact
+  selected member.
+- [x] Serialize per printer and dispatch one checksum-verified multipart upload
+  to `gcodes/klove/<operation-id>.gcode` with literal `print=false`.
+- [x] Deduplicate exact operation/idempotency identities through one shared
+  task, deny collisions and bounded-journal exhaustion, and retain every
+  terminal result without a blind retry.
+- [x] Require the exact HTTP 201 location and non-starting response identity,
+  poll metadata immediately within bounded policy, and require exact path,
+  timestamp, byte size, metadata UUID, command offsets, empty processor list,
+  no prior job identity, and the configured nozzle diameter.
+- [x] Stream the remote file back through exact size and SHA-256 verification
+  between two identical metadata reads. Emit immutable `VerifiedUpload`
+  evidence only after the whole bracket agrees.
+- [x] Map every lost response, disconnect, timeout, mismatch, cancellation,
+  metadata delay, and substitution after request start to `outcome_unknown` and
+  never retry or delete an uncertain path.
+- [x] Cover authentication headers, transport decoding, policy, idempotency,
+  serialization, source/target rechecks, success, and every failure class with
+  deterministic tests at 100% statement and branch coverage.
+
+Exit criterion: one exact qualified selected G-code can be placed on one exact
+Moonraker host and independently verified without starting it; no ambiguous
+upload can become start authority.
+
 ## Next slices
 
-The active authorized delivery chain is #5, then #8 and #9. The implemented
+The completed authorized prerequisites are #5 and #8; the next delivery slice
+is #9. The implemented
 RatOS contract fixture remains a separate incomplete exact-release acceptance
 follow-up under #51 and does not block focused development. Each safety-critical
 prerequisite is delivered through its own protected `develop` pull request and
 must merge with required checks green before work begins on the next dependent
-implementation. Upload remains non-actuating in #8. Print start remains
+implementation. Upload is non-actuating under ADR 0004. Print start remains
 prohibited until #9 has its own accepted ADR, durable at-most-once journal, and
 restart reconciliation design.
 

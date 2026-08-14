@@ -45,8 +45,20 @@ independently trusted approval bound to the exact inspected bytes, operation,
 canonical printer UUID, current safety-profile generation and fingerprint,
 registered slicer profile, nozzle, build volume, plate, and Klipper dialect.
 Names, models, near matches, self-asserted archive text, and manual overrides
-never authorize automation. Upload and print start remain prohibited until
-their own accepted decision and later safety slices are complete.
+never authorize automation.
+
+The accepted ADR-0004 upload boundary is file-only and non-actuating. It may
+consume only an exact current qualification, re-inspect the retained immutable
+archive immediately before its request, and write once to the operation-unique
+`gcodes/klove/<operation-id>.gcode` path with Moonraker checksum verification
+and literal `print=false`. Per-printer serialization and bounded idempotency
+apply. Returned identity, metadata, configured nozzle, byte count and remote
+SHA-256 must agree, with identical metadata reads bracketing the remote-file
+download. Once the upload request may have begun, every ambiguity is
+`outcome_unknown` and must never cause a blind retry or uncertain-path deletion.
+Verified upload evidence grants no print-start authority. Print start remains
+prohibited until its own accepted decision and durable safety slice are
+complete.
 
 ## Delivery lanes
 

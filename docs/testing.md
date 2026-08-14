@@ -30,6 +30,13 @@ that the protocol model is complete. The suite therefore also includes:
   selected-member CRC; bounded G-code tests cover controls, line endings,
   header/line limits, slicer structure, motion, comment handling, and known
   Bambu-only signatures, with property tests over arbitrary ZIP-like bytes;
+- deterministic Moonraker upload tests for exact authenticated multipart
+  fields, checksum and `print=false`, strict response/location decoding,
+  immediate bounded metadata polling, metadata identity and nozzle checks,
+  remote download size/digest, substitution bracketing, per-printer
+  serialization, operation/key collisions, journal exhaustion, exact duplicate
+  single dispatch, stale profile/source denial, every malformed response and
+  every post-request ambiguity without retry;
 - repository policy tests that reject the enumerated prohibited RPC literals,
   confine the three accepted job-control RPC literals to one adapter, constrain
   the native mutating route count, and reject unpinned CI actions;
@@ -88,7 +95,9 @@ single dispatch, and lost-response fencing. Stock RatOS treats the isolated
 slirp/loopback path as a trusted Moonraker client; this lane requires that exact
 behavior and does not claim invalid downstream API-key rejection. The native
 simulation retains that negative southbound test on an untrusted transport.
-This does not add production upload, print-start, or generic G-code behavior.
+The test-only RatOS preparation is not production upload authority. ADR 0004's
+production file transport remains non-actuating and is not exercised by this
+lane; no print-start or generic G-code behavior is added.
 
 The lane records bounded non-secret RatOS/Moonraker/Klipper/MCU and contract
 identities. Exact teardown checks the overlay, removes only source-bound

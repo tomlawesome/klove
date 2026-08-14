@@ -19,3 +19,7 @@ class StateEvidenceError(KloveError):
 
 class ControlTransportError(KloveError):
     """A control transport failed without exposing remote or secret material."""
+
+
+class UploadTransportError(KloveError):
+    """An upload transport failed without exposing remote or artifact material."""
