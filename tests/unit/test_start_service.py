@@ -979,7 +979,7 @@ async def test_defensive_impossible_confirmation_and_unexpected_error_are_unknow
 
     monkeypatch.setattr(broken_transport, "metadata", broken_metadata)
     broken_service = make_service(tmp_path / "other", broken_transport)
-    (tmp_path / "other").mkdir()
+    (tmp_path / "other").mkdir(mode=0o700)
     await broken_service.initialize()
     unexpected = await broken_service.execute(other)
     assert_failure(
