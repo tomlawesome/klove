@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through durable typed print start
+Status: active through durable typed print start and accepted onboarding boundary
 
 ## Protected assets
 
@@ -8,14 +8,18 @@ Status: active through durable typed print start
 - printer firmware, configuration, files, and job state;
 - Grove queue integrity and printer identity;
 - Moonraker and Klove credentials;
+- onboarding owner credentials, setup sessions, compatibility access codes, and
+  runtime registry integrity;
 - uploaded manufacturing artifacts and operational metadata.
 
 ## Trust boundaries
 
 Grove payloads, MQTT delivery, uploaded archives, Moonraker responses,
-WebSocket notifications, printer configuration, filenames, metadata, logs, and
-network peers are untrusted. Configuration proves only operator intent; it does
-not prove that live state is current.
+WebSocket notifications, printer configuration, filenames, metadata, browser
+input, frame/parent messages, origins, setup sessions, logs, and network peers
+are untrusted. Configuration proves only operator intent; it does not prove that
+live state is current. A Grove login and a private-network address are not
+Klove owner authorization.
 
 ## Monitoring and identity controls
 
@@ -40,6 +44,58 @@ not prove that live state is current.
   Klove restarts. Event time and forward file position remain separately
   checked ordering evidence rather than token inputs.
 - Duplicate authentication header instances are denied rather than combined.
+
+## Required embedded-onboarding controls
+
+ADR 0006 accepts the boundary below; issues #58 and #59 must implement and test
+it before Klove claims product onboarding.
+
+- Klove independently authenticates an owner over HTTPS before issuing a
+  server-side setup session. The owner credential is never sent to Grove,
+  `postMessage`, a URL, browser storage, telemetry, or logs. Loopback HTTP is an
+  explicit development-only exception.
+- Each setup session has one exact configured Grove origin, one unguessable flow
+  nonce, one operation class, an inactivity limit of 15 minutes and an absolute
+  limit of 30 minutes. Completion, cancellation, replay, concurrent use, origin
+  change, or privilege mismatch invalidates or denies it. It cannot authorize a
+  runtime printer action.
+- The supported frame uses a distinct same-site Klove origin, a `Secure`,
+  `HttpOnly`, path-scoped, `SameSite=Strict` cookie, exact-Origin and CSRF checks,
+  and a route-specific CSP whose `frame-ancestors` contains only configured
+  exact Grove origins. It does not rely on third-party cookies or wildcard
+  origins.
+- The frame sandbox grants only its required scripts, forms, and distinct
+  origin. Klove self-hosts its bounded assets and denies popups, downloads, top
+  navigation, parent DOM access, external scripts, inline script, analytics,
+  telemetry, and service workers. Responses are no-store, no-referrer,
+  no-sniff, and contain redacted bounded errors.
+- Parent and frame verify exact origins and window references. Their
+  ready/nonce/completion state machine uses exact `targetOrigin` values and
+  strict versioned schemas; unknown, missing, duplicate, malformed, oversized,
+  replayed, or out-of-order messages are denied.
+- The completion bundle contains only the flow nonce, a bounded display name,
+  stable `KLOVE-<UUID>` serial, Klove compatibility host/IP, and one freshly
+  generated 20-character Base64url access code. Grove fixes the model to
+  `KLOVE`. Moonraker endpoints, credentials, probes, profiles, and Klipper data
+  never cross this boundary.
+- The access code is necessarily exposed once to the authorized Grove parent
+  because its existing MQTT/FTPS client requires that secret. It is bound to one
+  exact registry printer, cleared from transient UI state immediately after the
+  authorized create request, never returned to read-only Grove callers, and
+  rotated or disabled only through authenticated Klove recovery.
+- Registry changes are typed, bounded, transactional, auditable, idempotent,
+  and fail closed across restart. SQLite stores opaque secret references rather
+  than values. Secret creation, registry commit, rotation, disable/removal,
+  backup, and restore cannot discard unresolved control or dispatch fences.
+- Discovery grants no authority. A direct bounded Moonraker probe, exact
+  identity, fresh capability evidence, exact profile binding, and operator
+  intent must all agree. Names, model strings, discovery advertisements, near
+  matches, stale probes, collisions, and ambiguous endpoints cannot authorize
+  onboarding or an actuator.
+- Grove's explicit `KLOVE` type suppresses model-derived scheduling and every
+  unsupported Bambu feature. Exact-printer routing is required, and Klove's
+  server-side policy still rejects commands that a stale or modified Grove UI
+  exposes.
 
 ## Typed job-control controls
 
@@ -209,8 +265,10 @@ See `docs/decisions/0005-durable-moonraker-print-start.md`.
 ## Required controls before end-to-end dispatch and later actuators
 
 The accepted component boundaries are not yet a public intake-to-completion
-workflow. Issue #12 must integrate their exact evidence, authentication,
-duplicate delivery, restart, cancellation, completion and substitution tests
-before target-bound dispatch is complete. Every later actuator requires its own
-typed parameters, positive capability and policy evidence, and an accepted
-decision; the absence of any one item is denial.
+workflow. Issue #58 must first provide the canonical onboarded printer and
+external secret boundary. Issue #12 must then integrate exact evidence,
+authentication, duplicate delivery, restart, cancellation, completion and
+substitution tests before target-bound dispatch is complete. Grove embedding is
+not dispatch authority. Every later actuator requires its own typed parameters,
+positive capability and policy evidence, and an accepted decision; the absence
+of any one item is denial.

@@ -31,6 +31,13 @@ Last updated: 2026-08-14
   candidate has not been promoted to `main`, a version tag, or `latest`.
 - [Headless-boundary decision #40](https://github.com/tomlawesome/klove/issues/40)
   records that Grove owns normal interaction and a Klove UI is a last resort.
+  [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)
+  accepts that exception for setup/recovery only and retires the broad native
+  provider programme.
+- [Secure registry #58](https://github.com/tomlawesome/klove/issues/58),
+  [embedded setup/recovery #59](https://github.com/tomlawesome/klove/issues/59),
+  and [minimal Grove contribution #60](https://github.com/tomlawesome/klove/issues/60)
+  record the accepted product-onboarding delivery chain under epic #32.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
@@ -355,16 +362,39 @@ Moonraker start request and is reported confirmed only from later exact
 history/live evidence. Every unresolved outcome survives Klove restart and
 prevents another start on that printer without a blind retry.
 
+## Accepted decision: embedded onboarding and minimal Grove KLOVE type
+
+- [x] Confirm from current Grove source that serial and access-code limits fit a
+  stable `KLOVE-<UUID>` proxy identity and a 20-character high-entropy access
+  code, while model values affect scheduling and hardware feature visibility.
+- [x] Keep Moonraker discovery, credentials, identity/capability probes,
+  safety-profile binding, runtime registry, secrets, and setup/recovery in
+  Klove.
+- [x] Limit Grove changes to an explicit conservative `KLOVE` type, **Klipper
+  via Klove** Add Printer path, sandboxed frame, strict versioned completion
+  handoff, and unsupported-feature gates.
+- [x] Freeze independent Klove owner authentication, bounded server-side setup
+  sessions, CSRF/exact-origin policy, browser privacy rules, completion fields,
+  upstream fork workflow, and exact-revision compatibility testing in ADR 0006.
+- [x] Retire the broad native Grove provider epic and its slices as not planned;
+  do not replace them with a persistent private Grove fork.
+
+Exit criterion: the repository and GitHub roadmap agree on the smallest secure
+onboarding boundary, with no new actuator or unauthenticated setup path
+authorized by the decision.
+
 ## Next slices
 
-The completed authorized component slices are #5, #8 and #9; the next dependent
-delivery slice is the end-to-end lifecycle proof in #12. The implemented
-RatOS contract fixture remains a separate incomplete exact-release acceptance
-follow-up under #51 and does not block focused development. Each safety-critical
-prerequisite is delivered through its own protected `develop` pull request and
-must merge with required checks green before work begins on the next dependent
-implementation. ADR 0004 upload remains non-actuating by itself; ADR 0005 print
-start is internal and is not a public dispatch workflow.
+The completed authorized component slices are #5, #8 and #9. ADR 0006 makes the
+secure runtime registry in #58 the next implementation prerequisite; the
+end-to-end lifecycle proof in #12 consumes that canonical onboarded printer.
+The implemented RatOS contract fixture remains a separate incomplete
+exact-release acceptance follow-up under #51 and does not block focused
+development. Each safety-critical prerequisite is delivered through its own
+protected `develop` pull request and must merge with required checks green
+before work begins on the next dependent implementation. ADR 0004 upload
+remains non-actuating by itself; ADR 0005 print start is internal and is not a
+public dispatch workflow.
 
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
@@ -378,28 +408,32 @@ start is internal and is not a public dispatch workflow.
    is required before the Klove contract can run there; supported hardware
    remains the release-acceptance authority. This validation work authorizes no
    new actuator.
-2. Exact target/safety-profile binding, then separately decided safe upload,
-   metadata verification, idempotent print start, and durable reconciliation.
-   Each actuator remains limited to its accepted ADR; roadmap placement alone
-   is not authorization. Track the slices in
-   [#5](https://github.com/tomlawesome/klove/issues/5),
-   [#8](https://github.com/tomlawesome/klove/issues/8),
-   [#9](https://github.com/tomlawesome/klove/issues/9), and
+2. Implement the one canonical runtime printer registry and external
+   owner-only secret boundary in
+   [#58](https://github.com/tomlawesome/klove/issues/58). It replaces
+   per-printer TOML as the normal product onboarding path and supplies exact
+   identity/profile evidence to later safety workflows; it adds no actuator or
+   dashboard.
+3. Integrate exact target/safety-profile binding, verified upload, durable
+   print start, and reconciliation from that onboarded registry entry. Each
+   actuator remains limited to its accepted ADR; roadmap placement alone is not
+   authorization. Track the lifecycle proof in
    [#12](https://github.com/tomlawesome/klove/issues/12) under
    [artifact-dispatch epic #33](https://github.com/tomlawesome/klove/issues/33).
-3. Current-Grove MQTT/TLS and FTPS compatibility facade with conservative state
-   projection and specific-printer queueing, tracked under
+4. Complete the current-Grove bridge in dependency order: licence/provenance
+   [#11](https://github.com/tomlawesome/klove/issues/11), embedded setup/recovery
+   [#59](https://github.com/tomlawesome/klove/issues/59), conservative MQTT/TLS
+   and FTPS facade issues #10/#14, minimal upstream `KLOVE` contribution
+   [#60](https://github.com/tomlawesome/klove/issues/60), and operations guidance
+   #13. Track the full order under
    [Grove-bridge epic #32](https://github.com/tomlawesome/klove/issues/32).
-4. Separately decided and tested bounded temperature/speed plus explicitly
+5. Separately decide and test bounded temperature/speed plus explicitly
    mapped fan/light controls. Keep jog and extrusion disabled until proven;
    [decision #15](https://github.com/tomlawesome/klove/issues/15) gates
    [live-control epic #37](https://github.com/tomlawesome/klove/issues/37).
-5. Fleet hardening: durable journal, multi-printer fault isolation, cameras,
+6. Fleet hardening: durable journal, multi-printer fault isolation, cameras,
    metrics, backup/restore, migrations, and restart/fault/soak tests, tracked in
    [fleet epic #34](https://github.com/tomlawesome/klove/issues/34).
-6. Native Grove provider integration with provider-neutral capabilities,
-   structured errors, and target-profile scheduling, tracked in
-   [native-provider epic #36](https://github.com/tomlawesome/klove/issues/36).
 7. Later adapters: exclude-object, richer cameras, MMU/toolchanger support,
    optional outbound host agent, and additional printer stacks, tracked in
    [adapter epic #35](https://github.com/tomlawesome/klove/issues/35).
