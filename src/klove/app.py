@@ -13,6 +13,7 @@ from klove.adapters.moonraker.client import MoonrakerMonitor
 from klove.adapters.moonraker.control import MoonrakerControlTransport
 from klove.config import load_config, read_secret
 from klove.northbound.api import create_api, ready_key
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.control import ControlService, ControlTransport
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
@@ -25,10 +26,12 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
     config = load_config(config_path)
     stop_event = stop or asyncio.Event()
     registry = PrinterRegistry(printer.id for printer in config.printers)
+    admissions = PrinterAdmissionGates()
     timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=50)
     monitor_tasks: list[asyncio.Task[None]] = []
     async with aiohttp.ClientSession(timeout=timeout) as session:
         transports: dict[str, ControlTransport] = {}
+        control_admission_ids: dict[str, str] = {}
         monitors: list[tuple[str, MoonrakerMonitor]] = []
         for printer in config.printers:
             api_key = read_secret(printer.api_key_file)
@@ -40,12 +43,15 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
                     session,
                     request_timeout_seconds=config.control.request_timeout_seconds,
                 )
+                control_admission_ids[printer.id] = str(printer.uuid)
         controls = ControlService(
             registry,
             transports,
             confirmation_timeout_seconds=config.control.confirmation_timeout_seconds,
             poll_interval_seconds=config.control.poll_interval_seconds,
             idempotency_capacity=config.control.idempotency_capacity,
+            admissions=admissions,
+            admission_ids=control_admission_ids,
         )
         scopes = {"printers:read"}
         if config.control.enabled:

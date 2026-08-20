@@ -31,6 +31,7 @@ from klove.domain.onboarding_requests import (
     RotateMoonrakerCredentialRequest,
     UpdatePrinterRequest,
 )
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.onboarding import (
     CompositeActuatorFenceInspector,
     FenceInspectionError,
@@ -131,13 +132,14 @@ def entropy_sequence() -> Callable[[int], bytes]:
     return generate
 
 
-def make_service(
+def make_service(  # noqa: PLR0913 -- compact explicit service fixture.
     tmp_path: Path,
     *,
     probe: FakeProbe | BlockingProbe | None = None,
     fences: FakeFences | None = None,
     random_bytes: Callable[[int], bytes] | None = None,
     clock_ms: Callable[[], int] | None = None,
+    admissions: PrinterAdmissionGates | None = None,
 ) -> tuple[
     PrinterLifecycleService, SecretStore, PrinterStore, FakeProbe | BlockingProbe, FakeFences
 ]:
@@ -150,6 +152,7 @@ def make_service(
         secrets,
         selected_probe,
         selected_fences,
+        admissions=admissions or PrinterAdmissionGates(),
         random_bytes=random_bytes or entropy_sequence(),
         clock_ms=clock_ms or (lambda: next(ticks)),
     )
@@ -238,6 +241,29 @@ def rotate_compatibility_request(
         request_origin="https://grove.example.test",
         expected_revision=revision,
     )
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_proof_and_commit_wait_for_the_shared_printer_gate(
+    tmp_path: Path,
+) -> None:
+    admissions = PrinterAdmissionGates()
+    service, _secrets, store, _probe, fences = make_service(
+        tmp_path,
+        admissions=admissions,
+    )
+    current = await service.create(create_request())
+    request = disable_request(current.revision, 90)
+
+    async with admissions.hold(PRINTER_UUID):
+        task = asyncio.create_task(service.disable(request))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert fences.calls == []
+        assert store.get(PRINTER_UUID) == current
+    disabled = await task
+    assert disabled.lifecycle is PrinterLifecycle.DISABLED
+    assert fences.calls == [PRINTER_UUID]
 
 
 @pytest.mark.asyncio
@@ -350,6 +376,7 @@ async def test_preparing_duplicate_is_busy_and_cancellation_aborts_for_exact_ret
         secrets,
         probe,
         FakeFences(),
+        admissions=PrinterAdmissionGates(),
         random_bytes=entropy_sequence(),
         clock_ms=lambda: 2_000,
     )
@@ -547,6 +574,7 @@ async def test_post_commit_cleanup_ambiguity_is_reconciled_without_repeating_pro
         secrets,
         probe,
         FakeFences(),
+        admissions=PrinterAdmissionGates(),
         random_bytes=entropy_sequence(),
         clock_ms=lambda: 2_000,
     )

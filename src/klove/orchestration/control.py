@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Protocol
 
 from klove.domain.control import (
@@ -19,6 +20,7 @@ from klove.domain.control import (
     validate_live_preflight,
 )
 from klove.errors import ControlTransportError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.registry import PrinterRegistry
 
 
@@ -33,7 +35,7 @@ class ControlTransport(Protocol):
 class ControlService:
     """Serialize controls per printer and deduplicate them per process epoch."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- explicit policy and shared admission dependencies.
         self,
         registry: PrinterRegistry,
         transports: dict[str, ControlTransport],
@@ -41,9 +43,16 @@ class ControlService:
         confirmation_timeout_seconds: float,
         poll_interval_seconds: float,
         idempotency_capacity: int,
+        admissions: PrinterAdmissionGates,
+        admission_ids: Mapping[str, str],
     ) -> None:
+        if admission_ids.keys() != transports.keys() or any(
+            not value for value in admission_ids.values()
+        ):
+            raise ValueError("control admission ids must exactly match configured transports")
         self._registry = registry
         self._transports = dict(transports)
+        self._admission_ids = dict(admission_ids)
         self._confirmation_timeout = confirmation_timeout_seconds
         self._poll_interval = poll_interval_seconds
         self._capacity = idempotency_capacity
@@ -51,7 +60,7 @@ class ControlService:
             OrderedDict()
         )
         self._journal_lock = asyncio.Lock()
-        self._printer_locks = {printer_id: asyncio.Lock() for printer_id in transports}
+        self._admissions = admissions
         self._uncertain_tokens: set[tuple[str, str]] = set()
 
     async def execute(self, intent: ControlIntent) -> ControlResult:
@@ -102,9 +111,10 @@ class ControlService:
         self, intent: ControlIntent
     ) -> ControlResult:
         transport = self._transports.get(intent.printer_id)
-        if transport is None:
+        admission_id = self._admission_ids.get(intent.printer_id)
+        if transport is None or admission_id is None:
             return _denied(intent.operation, "control_disabled")
-        async with self._printer_locks[intent.printer_id]:
+        async with self._admissions.hold(admission_id):
             uncertainty_key = (intent.printer_id, intent.state_token)
             if uncertainty_key in self._uncertain_tokens:
                 return _unknown(intent.operation)

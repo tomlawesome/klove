@@ -1,9 +1,9 @@
 # Registry storage and recovery contract
 
 Status: registry foundation, direct-probe lifecycle orchestration, and the
-dynamic monitor supervisor are implemented. Shared admission, startup wiring,
-and the protected API remain tracked in issue #64 — runtime fleet and issue
-#65 — protected onboarding API.
+dynamic monitor supervisor are implemented. Issue #69 — shared runtime gate is
+implemented. Startup wiring and the protected API remain tracked in issue #70
+— runtime bootstrap and issue #65 — protected onboarding API.
 
 ## Boundary
 
@@ -27,9 +27,9 @@ lifecycle orchestration over this store, as specified in
 `docs/onboarding-core.md`; it still adds no route, printer runtime, UI, upload,
 print start, or generic G-code capability. Issue #68 — runtime supervisor adds
 fail-closed dynamic monitor activation from complete active records. Issue #69
-— shared admission and issue #70 — runtime bootstrap own shared
-lifecycle/actuator admission and startup wiring, and issue #65 — protected
-onboarding API owns the route.
+— shared runtime gate supplies canonical per-printer lifecycle, actuator, and
+runtime admission. Issue #70 — runtime bootstrap owns startup wiring, and issue
+#65 — protected onboarding API owns the route.
 
 ## Mutation and recovery protocol
 

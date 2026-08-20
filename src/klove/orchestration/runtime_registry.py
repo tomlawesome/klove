@@ -16,6 +16,7 @@ import aiohttp
 from klove.adapters.moonraker.client import MoonrakerMonitor, MoonrakerMonitorConfig
 from klove.domain.onboarding import PrinterLifecycle, RegisteredPrinter
 from klove.errors import KloveError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
 from klove.registry import PrinterRegistry
@@ -63,13 +64,14 @@ class _ActiveMonitor:
 class RegistryRuntimeSupervisor:
     """Reconcile exact active registry records into isolated monitor tasks."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- explicit runtime and shared admission dependencies.
         self,
         store: PrinterStore,
         secrets: SecretStore,
         registry: PrinterRegistry,
         session: aiohttp.ClientSession,
         *,
+        admissions: PrinterAdmissionGates,
         monitor_factory: MonitorFactory = MoonrakerMonitor,
     ) -> None:
         self._store = store
@@ -77,6 +79,7 @@ class RegistryRuntimeSupervisor:
         self._registry = registry
         self._session = session
         self._monitor_factory = monitor_factory
+        self._admissions = admissions
         self._active: dict[str, _ActiveMonitor] = {}
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
@@ -114,19 +117,23 @@ class RegistryRuntimeSupervisor:
                 raise RegistryRuntimeError from exc
             desired = self._desired(records)
             for printer_id in tuple(self._active):
-                active = self._active[printer_id]
-                replacement = desired.get(printer_id)
-                if (
-                    replacement is None
-                    or active.task.done()
-                    or active.record != replacement.record
-                    or active.api_key != replacement.api_key
-                ):
-                    await self._deactivate(printer_id)
+                async with self._admissions.hold(printer_id):
+                    active = self._active[printer_id]
+                    replacement = desired.get(printer_id)
+                    if replacement is not None and not self._candidate_is_current(replacement):
+                        replacement = None
+                    if (
+                        replacement is None
+                        or active.task.done()
+                        or active.record != replacement.record
+                        or active.api_key != replacement.api_key
+                    ):
+                        await self._deactivate(printer_id)
             await self._remove_unmanaged_routes()
             for printer_id, candidate in desired.items():
-                if printer_id not in self._active:
-                    await self._activate(candidate)
+                async with self._admissions.hold(printer_id):
+                    if printer_id not in self._active and self._candidate_is_current(candidate):
+                        await self._activate(candidate)
             return tuple(sorted(self._active))
 
     async def _shutdown(self) -> None:
@@ -202,12 +209,20 @@ class RegistryRuntimeSupervisor:
 
     async def _deactivate_all(self) -> None:
         for printer_id in tuple(self._active):
-            await self._deactivate(printer_id)
+            async with self._admissions.hold(printer_id):
+                await self._deactivate(printer_id)
 
     async def _remove_unmanaged_routes(self) -> None:
         for snapshot in await self._registry.list():
-            if snapshot.printer_id not in self._active:
-                await self._registry.unregister(snapshot.printer_id)
+            async with self._admissions.hold(snapshot.printer_id):
+                if snapshot.printer_id not in self._active:
+                    await self._registry.unregister(snapshot.printer_id)
+
+    def _candidate_is_current(self, candidate: _DesiredMonitor) -> bool:
+        try:
+            return self._store.get(candidate.record.printer_uuid) == candidate.record
+        except Exception:
+            return False
 
     async def _run_monitor(
         self,
@@ -235,7 +250,7 @@ class RegistryRuntimeSupervisor:
         printer_id: str,
         completed: asyncio.Task[None],
     ) -> None:
-        async with self._lock:
+        async with self._lock, self._admissions.hold(printer_id):
             active = self._active.get(printer_id)
             if active is None or active.task is not completed:
                 return

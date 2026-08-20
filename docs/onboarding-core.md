@@ -113,9 +113,9 @@ branch coverage. Changes to this protocol boundary also run the existing native
 Moonraker simulation as a regression gate.
 
 - Issue #68 — runtime supervisor consumes complete active records through a
-  fail-closed dynamic monitor supervisor. Issue #69 — shared admission adds the
-  per-printer lifecycle/actuator gate, and issue #70 — runtime bootstrap owns
-  startup reconciliation and bootstrap wiring.
+  fail-closed dynamic monitor supervisor. Issue #69 — shared runtime gate adds
+  canonical per-printer lifecycle, actuator, and runtime admission. Issue #70
+  — runtime bootstrap owns startup reconciliation and bootstrap wiring.
 - Issue #65 — protected onboarding API adds the separately authenticated,
   authorized, bounded API.
 - Issue #59 may add the accepted setup/recovery browser flow only after those

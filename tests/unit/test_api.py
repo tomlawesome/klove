@@ -7,6 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from klove.domain.control import ControlIntent, ControlOperation, ControlResult, ControlStatus
 from klove.northbound.api import create_api, ready_key
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.control import ControlService
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
@@ -24,6 +25,8 @@ async def client() -> AsyncIterator[TestClient[Any, Any]]:
         confirmation_timeout_seconds=1,
         poll_interval_seconds=0.1,
         idempotency_capacity=10,
+        admissions=PrinterAdmissionGates(),
+        admission_ids={},
     )
     app = create_api(registry, BearerAuthenticator(TOKEN), controls)
     async with TestClient(TestServer(app)) as result:

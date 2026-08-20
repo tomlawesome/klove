@@ -33,6 +33,7 @@ from klove.domain.onboarding_requests import (
     UpdatePrinterRequest,
 )
 from klove.errors import KloveError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.persistence.printer_registry import (
     PrinterStore,
     RegistryBusyError,
@@ -141,6 +142,7 @@ class PrinterLifecycleService:
         probe: IdentityProbe,
         fences: ActuatorFenceInspector,
         *,
+        admissions: PrinterAdmissionGates,
         random_bytes: Callable[[int], bytes] = secrets_module.token_bytes,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
@@ -150,6 +152,7 @@ class PrinterLifecycleService:
         self._fences = fences
         self._random_bytes = random_bytes
         self._clock_ms = clock_ms or _unix_time_ms
+        self._admissions = admissions
 
     async def create(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Create one registration only after direct current Moonraker evidence."""
@@ -395,7 +398,8 @@ class PrinterLifecycleService:
         if not created:
             return self._durable_result(prepared)
         try:
-            return await complete(prepared)
+            async with self._admissions.hold(operation.printer_uuid):
+                return await complete(prepared)
         except asyncio.CancelledError:
             self._abort_if_preparing(prepared)
             raise
