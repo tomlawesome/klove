@@ -188,6 +188,15 @@ Minimum required Klipper objects for farm dispatch are `virtual_sdcard`,
 `print_stats`, and `pause_resume`. A printer missing one should remain visible
 for monitoring but be marked dispatch-ineligible with a concrete diagnostic.
 
+The onboarding probe is a separate one-shot HTTP boundary, not the long-lived
+runtime client. It accepts only a canonical origin and an exact deployment CIDR
+allowlist, rejects the whole resolution if any DNS answer is disallowed, pins
+one deterministic peer address, and requires two equal bounded
+`server.info`/`printer.info`/`printer.objects.list` snapshots. Its result is
+committed only through the revisioned lifecycle service described in
+`docs/onboarding-core.md`. Discovery names and advertisements never select or
+authorize that endpoint.
+
 Subscribe as available to:
 
 - `webhooks`: Klippy health and failure message
@@ -473,7 +482,9 @@ production system of record; Moonraker/Klipper remains the execution state of
 record. Per-printer TOML is a temporary bootstrap path, not a parallel product
 registry. The implemented persistence foundation, two-phase credential
 protocol, and inseparable backup/restore set are specified in
-`docs/registry-storage.md`.
+`docs/registry-storage.md`. The implemented address-pinned direct probe,
+revisioned lifecycle transitions, composite actuator-fence requirement, and
+failure/restart semantics are specified in `docs/onboarding-core.md`.
 
 On startup or reconnect:
 
@@ -535,9 +546,10 @@ every post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 - Complete ADR 0006's one canonical runtime printer registry chain under issue
   #58. Issue #62 implements its exact-schema SQLite/WAL foundation, external
   owner-only secret store, typed lifecycle journal, crash reconciliation, and
-  backup boundary. Issues #63–#65 add direct probing/orchestration, dynamic
-  runtime activation, and the protected API without adding an actuator or
-  dashboard.
+  backup boundary. Issue #63 implements direct probing and lifecycle
+  orchestration. Issues #64–#65 add dynamic runtime activation with shared
+  lifecycle/actuator admission and the protected API without adding an actuator
+  or dashboard.
 - ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
   durable at-most-once typed print start as separate internal components.
 - Implement hostile-3MF validation, target manifest/profile checks, Moonraker
@@ -634,10 +646,12 @@ fail closed.
 The artifact contract, hostile validator, exact target qualification, bounded
 upload, and durable print-start components are complete under issues #5–#9.
 ADR 0006 freezes the product-onboarding boundary, and issue #62 implements its
-private registry/secret persistence foundation. The immediate dependent slice
-is the bounded direct Moonraker probe and lifecycle orchestration in
-[issue #63](https://github.com/tomlawesome/klove/issues/63), followed by dynamic
-runtime activation #64 and protected API #65. That chain unblocks the
+private registry/secret persistence foundation. Issue #63 implements the
+bounded direct Moonraker probe and lifecycle orchestration. The immediate
+dependent slice is dynamic runtime activation with shared per-printer
+lifecycle/actuator admission in
+[issue #64](https://github.com/tomlawesome/klove/issues/64), followed by the
+protected API in #65. That chain unblocks the
 target-bound intake-through-completion proof in
 [issue #12](https://github.com/tomlawesome/klove/issues/12) without making Grove
 or the browser part of that internal safety proof.

@@ -39,7 +39,9 @@ Last updated: 2026-08-14
   [#62](https://github.com/tomlawesome/klove/issues/62), direct-probe lifecycle
   [#63](https://github.com/tomlawesome/klove/issues/63), dynamic runtime
   [#64](https://github.com/tomlawesome/klove/issues/64), and protected API
-  [#65](https://github.com/tomlawesome/klove/issues/65) slices. Embedded
+  [#65](https://github.com/tomlawesome/klove/issues/65) slices. Foundation #62
+  is merged and #63's probe/lifecycle library boundary is implemented; #64 is
+  the next dependent slice. Embedded
   setup/recovery [#59](https://github.com/tomlawesome/klove/issues/59) and the
   minimal Grove contribution
   [#60](https://github.com/tomlawesome/klove/issues/60) follow under epic #32.
@@ -388,13 +390,41 @@ Exit criterion: the repository and GitHub roadmap agree on the smallest secure
 onboarding boundary, with no new actuator or unauthenticated setup path
 authorized by the decision.
 
+## Implemented slice: direct probe and lifecycle orchestration
+
+- [x] Accept only canonical HTTP(S) origins and deployment-allowed DNS/IP
+  answers; validate every answer and pin one exact address for the complete
+  bounded probe.
+- [x] Authenticate only through `X-Api-Key`, bound time and response bytes, and
+  require two equal strict `server.info`, `printer.info`, and
+  `printer.objects.list` snapshots before deriving capabilities.
+- [x] Bind typed create, update, both credential rotations, disable, and removal
+  to exact UUIDs, endpoints, profile sets, revisions, actor/origin evidence,
+  keyed request fingerprints, and durable idempotency reservations.
+- [x] Re-probe immediately before every create/update/Moonraker-credential
+  commit; require composite control/print-start fence evidence for every
+  existing-printer mutation; preserve disable-before-remove tombstones.
+- [x] Generate compatibility credentials from exactly 15 random bytes, keep
+  their values out of service results, reject no-op rotations, and reconcile
+  pre-commit and post-commit secret failures without repeating a probe.
+- [x] Cover endpoint/SSRF, transport, decoding, drift, concurrency, restart,
+  redaction, lifecycle, persistence, and fault paths at 100% statement and
+  branch coverage without adding a route, UI, or actuator.
+
+Exit criterion: issue #63's library boundary can transact one exact canonical
+printer lifecycle from fresh direct evidence, while #64–#65 remain required
+before any product caller can reach it. The complete contract is
+`docs/onboarding-core.md`.
+
 ## Next slices
 
-The completed authorized component slices are #5, #8 and #9. ADR 0006 makes the
-secure runtime registry the next implementation chain. Its private persistence
-and secret-store foundation is implemented under #62; the direct
-probe/orchestration, dynamic fleet, and protected API remain #63–#65. The
-end-to-end lifecycle proof in #12 consumes that canonical onboarded printer.
+The completed authorized component slices are #5, #8, #9, #62, and #63. ADR
+0006 makes the secure runtime registry the current implementation chain. Its
+private persistence
+and secret-store foundation is implemented under #62, and the direct
+probe/orchestration library is implemented under #63. Dynamic fleet and
+protected API work remain #64–#65. The end-to-end lifecycle proof in #12
+consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 and does not block focused
 development. Each safety-critical prerequisite is delivered through its own
@@ -419,8 +449,9 @@ public dispatch workflow.
    [#58](https://github.com/tomlawesome/klove/issues/58). Foundation
    [#62](https://github.com/tomlawesome/klove/issues/62) supplies the private
    exact-schema database, external owner-only secrets, typed lifecycle journal,
-   reconciliation, and backup boundary. Then #63–#65 add the direct probe and
-   lifecycle service, dynamic fleet activation, and owner-protected API. The
+   reconciliation, and backup boundary. #63 supplies the direct probe and typed
+   lifecycle service. Then #64–#65 add dynamic fleet activation with shared
+   lifecycle/actuator admission and the owner-protected API. The
    chain replaces per-printer TOML as the normal product onboarding path and
    adds no actuator or dashboard.
 3. Integrate exact target/safety-profile binding, verified upload, durable

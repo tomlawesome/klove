@@ -1,6 +1,6 @@
 # Klove threat model
 
-Status: active through durable typed print start and accepted onboarding boundary
+Status: active through durable typed print start and implemented onboarding core
 
 ## Protected assets
 
@@ -47,11 +47,11 @@ Klove owner authorization.
 
 ## Required embedded-onboarding controls
 
-ADR 0006 accepts the boundary below. Issue #62 implements the private registry,
-secret, lifecycle-journal, reconciliation, and snapshot foundation. Issues
-#63–#65 and #59 must add the direct probe/orchestration, dynamic runtime,
-protected API/authentication, and embedded flow before Klove claims product
-onboarding.
+ADR 0006 accepts the boundary below. Issues #62–#63 implement the private
+registry, secret, lifecycle-journal, reconciliation, snapshot, direct probe, and
+typed lifecycle foundation. Issues #64–#65 and #59 must still add dynamic
+runtime activation, protected API/authentication, and the embedded flow before
+Klove claims product onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,
@@ -90,15 +90,22 @@ onboarding.
   and fail closed across restart. SQLite stores opaque secret references rather
   than values. Secret creation, registry commit, rotation, disable/removal,
   backup, and restore cannot discard unresolved control or dispatch fences.
+  Every existing-printer mutation requires a current composite fence proof;
+  issue #64 must serialize that proof and commit with all new actuator admission
+  through one shared per-printer runtime gate.
   Interrupted cleanup proves its target references are disjoint from every
   active or disabled printer before deleting anything. The database snapshot,
   complete secret directory and HMAC key, and separate durable actuator journals
   are restored only as one quiesced recovery set.
 - Discovery grants no authority. A direct bounded Moonraker probe, exact
   identity, fresh capability evidence, exact profile binding, and operator
-  intent must all agree. Names, model strings, discovery advertisements, near
-  matches, stale probes, collisions, and ambiguous endpoints cannot authorize
-  onboarding or an actuator.
+  intent must all agree. The probe accepts one canonical origin and an exact
+  CIDR allowlist, validates every DNS answer, pins one address, disables ambient
+  proxies and redirects, sends the key only in `X-Api-Key`, bounds time and
+  bytes, and requires two equal strict identity/capability snapshots. Names,
+  model strings, discovery advertisements, near matches, stale or changing
+  probes, mixed DNS answers, collisions, and ambiguous endpoints cannot
+  authorize onboarding or an actuator.
 - Grove's explicit `KLOVE` type suppresses model-derived scheduling and every
   unsupported Bambu feature. Exact-printer routing is required, and Klove's
   server-side policy still rejects commands that a stale or modified Grove UI

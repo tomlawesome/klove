@@ -76,6 +76,8 @@ class MoonrakerEndpoint(BaseModel):
     def exact_http_origin(self) -> MoonrakerEndpoint:
         """Reject credentials, paths, aliases, and implicit remote cleartext consent."""
         _exact_text(self.url)
+        if not self.url.isascii():
+            raise ValueError("endpoint URL must be ASCII")
         try:
             parsed = urlsplit(self.url)
             hostname = parsed.hostname
@@ -85,7 +87,7 @@ class MoonrakerEndpoint(BaseModel):
             raise ValueError("endpoint must be an absolute HTTP or HTTPS URL")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("endpoint must not contain credentials, a query, or a fragment")
-        if parsed.path not in {"", "/"}:
+        if parsed.path:
             raise ValueError("endpoint must not contain a path")
         try:
             port = parsed.port
@@ -93,10 +95,19 @@ class MoonrakerEndpoint(BaseModel):
             raise ValueError("endpoint port is invalid") from exc
         if port is not None and not 1 <= port <= 65535:
             raise ValueError("endpoint port is invalid")
+        canonical_host = _canonical_hostname(hostname)
+        if port in {80 if parsed.scheme == "http" else 443}:
+            raise ValueError("endpoint must omit its default port")
+        rendered_host = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
+        rendered_port = "" if port is None else f":{port}"
+        if self.url != f"{parsed.scheme}://{rendered_host}{rendered_port}":
+            raise ValueError("endpoint URL must use one canonical origin spelling")
         if parsed.scheme == "http" and not self.allow_insecure_http and not _is_loopback(hostname):
             raise ValueError("non-loopback HTTP requires allow_insecure_http=true")
         if parsed.scheme == "http" and self.verify_tls:
             raise ValueError("HTTP endpoints cannot enable TLS verification")
+        if parsed.scheme == "https" and self.allow_insecure_http:
+            raise ValueError("HTTPS endpoints cannot enable the HTTP risk acknowledgement")
         return self
 
 
@@ -323,3 +334,30 @@ def _is_loopback(hostname: str) -> bool:
         return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
         return False
+
+
+def _canonical_hostname(hostname: str) -> str:
+    if "%" in hostname:
+        raise ValueError("endpoint host must not contain an IPv6 scope")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if hostname != hostname.casefold() or hostname.endswith(".") or len(hostname) > 253:
+            raise ValueError("endpoint DNS name must be canonical") from None
+        labels = hostname.split(".")
+        if any(
+            not label
+            or len(label) > 63
+            or label[0] == "-"
+            or label[-1] == "-"
+            or any(
+                not (character.isascii() and (character.isalnum() or character == "-"))
+                for character in label
+            )
+            for label in labels
+        ):
+            raise ValueError("endpoint DNS name is invalid") from None
+        return hostname
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        raise ValueError("endpoint IPv4-mapped IPv6 aliases are prohibited")
+    return str(address)

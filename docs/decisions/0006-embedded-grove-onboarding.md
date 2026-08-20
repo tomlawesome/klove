@@ -213,6 +213,7 @@ an unauthenticated setup endpoint.
 
 - [Decision #57](https://github.com/tomlawesome/klove/issues/57)
 - [Secure registry #58](https://github.com/tomlawesome/klove/issues/58)
+- [Direct probe and lifecycle #63](https://github.com/tomlawesome/klove/issues/63)
 - [Embedded setup and recovery #59](https://github.com/tomlawesome/klove/issues/59)
 - [Minimal Grove contribution #60](https://github.com/tomlawesome/klove/issues/60)
 - [Current-Grove epic #32](https://github.com/tomlawesome/klove/issues/32)
