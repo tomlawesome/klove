@@ -6,14 +6,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
 from klove import __version__
 from klove.adapters.moonraker.history import decode_history_list, decode_history_notification
-from klove.config import PrinterConfig
 from klove.domain.discovery import discover_capabilities
 from klove.domain.models import JobIdentitySnapshot, PrinterSnapshot, initial_snapshot
 from klove.domain.reducer import (
@@ -51,12 +50,28 @@ _SUBSCRIPTION_FIELDS: dict[str, list[str]] = {
 }
 
 
+class MoonrakerMonitorConfig(Protocol):
+    """Minimal immutable connection settings required by the monitor."""
+
+    @property
+    def id(self) -> str:
+        """Return the stable runtime route identifier."""
+
+    @property
+    def endpoint(self) -> str:
+        """Return the exact Moonraker HTTP(S) origin."""
+
+    @property
+    def verify_tls(self) -> bool:
+        """Return whether TLS certificates must be verified."""
+
+
 class MoonrakerMonitor:
     """Maintain one conservative view of a configured Moonraker printer."""
 
     def __init__(
         self,
-        config: PrinterConfig,
+        config: MoonrakerMonitorConfig,
         api_key: str,
         registry: PrinterRegistry,
         session: aiohttp.ClientSession,

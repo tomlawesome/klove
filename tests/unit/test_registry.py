@@ -46,6 +46,31 @@ async def test_registry_is_ordered_and_requires_advancing_known_snapshots() -> N
     assert clock.calls == 3
 
 
+@pytest.mark.asyncio
+async def test_registry_registers_and_unregisters_dynamic_routes() -> None:
+    registry = PrinterRegistry([], clock=FakeClock(1.0))
+
+    await registry.register("alpha")
+    assert await registry.get("alpha") == initial_snapshot("alpha")
+    with pytest.raises(KeyError, match="already configured"):
+        await registry.register("alpha")
+    assert await registry.unregister("alpha") is True
+    assert await registry.unregister("alpha") is False
+    assert await registry.get("alpha") is None
+
+
+@pytest.mark.asyncio
+async def test_registry_removal_wakes_waiters_with_unknown_printer() -> None:
+    registry = PrinterRegistry(["alpha"])
+    waiter = asyncio.create_task(registry.wait_for_revision("alpha", 0, timeout=1))
+    await asyncio.sleep(0)
+
+    await registry.unregister("alpha")
+
+    with pytest.raises(KeyError, match="not configured"):
+        await waiter
+
+
 def test_observation_record_is_immutable() -> None:
     observation = PrinterObservation(initial_snapshot("alpha"), 1.0)
 

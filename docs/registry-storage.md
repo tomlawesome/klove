@@ -1,7 +1,9 @@
 # Registry storage and recovery contract
 
-Status: registry foundation and direct-probe lifecycle orchestration implemented;
-dynamic runtime and protected API wiring remain tracked in issues #64–#65.
+Status: registry foundation, direct-probe lifecycle orchestration, and the
+dynamic monitor supervisor are implemented. Shared admission, startup wiring,
+and the protected API remain tracked in issue #64 — runtime fleet and issue
+#65 — protected onboarding API.
 
 ## Boundary
 
@@ -19,13 +21,15 @@ material can be tested offline. Active Moonraker credentials must be visible
 ASCII tokens of at least 32 characters; compatibility copies must be exactly 20
 Base64url characters as frozen in ADR 0006.
 
-The persistence layer is not a listener or product setup path. Issue #63's
-implemented onboarding core adds a bounded read-only Moonraker probe and typed
+The persistence layer is not a listener or product setup path. Issue #63 —
+onboarding core adds a bounded read-only Moonraker probe and typed
 lifecycle orchestration over this store, as specified in
 `docs/onboarding-core.md`; it still adds no route, printer runtime, UI, upload,
-print start, or generic G-code capability. Issue #64 owns dynamic runtime
-activation and shared lifecycle/actuator admission, and #65 owns the protected
-onboarding API.
+print start, or generic G-code capability. Issue #68 — runtime supervisor adds
+fail-closed dynamic monitor activation from complete active records. Issue #69
+— shared admission and issue #70 — runtime bootstrap own shared
+lifecycle/actuator admission and startup wiring, and issue #65 — protected
+onboarding API owns the route.
 
 ## Mutation and recovery protocol
 
