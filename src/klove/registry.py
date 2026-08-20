@@ -40,6 +40,25 @@ class PrinterRegistry:
         self._lock = asyncio.Lock()
         self._changed = asyncio.Condition(self._lock)
 
+    async def register(self, printer_id: str) -> None:
+        """Add one new offline route and reject ambiguous replacement."""
+        async with self._changed:
+            if printer_id in self._observations:
+                raise KeyError("printer is already configured")
+            self._observations[printer_id] = PrinterObservation(
+                snapshot=initial_snapshot(printer_id),
+                received_monotonic=self._clock(),
+            )
+            self._changed.notify_all()
+
+    async def unregister(self, printer_id: str) -> bool:
+        """Remove one route and wake callers waiting on its evidence."""
+        async with self._changed:
+            if self._observations.pop(printer_id, None) is None:
+                return False
+            self._changed.notify_all()
+            return True
+
     async def replace(self, snapshot: PrinterSnapshot) -> None:
         """Replace an entry only when its revision advances monotonically."""
         async with self._changed:
@@ -78,7 +97,9 @@ class PrinterRegistry:
 
             async with asyncio.timeout(timeout):
                 while True:
-                    observation = self._observations[printer_id]
+                    observation = self._observations.get(printer_id)
+                    if observation is None:
+                        raise KeyError("printer is not configured")
                     if observation.snapshot.revision > after_revision:
                         return observation
                     await self._changed.wait()

@@ -1,7 +1,8 @@
 # Moonraker onboarding core contract
 
-Status: implemented library boundary under issue #63; no API, browser route, or
-runtime activation is exposed yet.
+Status: onboarding is implemented under issue #63 — onboarding core, and issue
+#68 — runtime supervisor adds registry-backed monitoring. Startup wiring, the
+shared actuator gate, API, and browser route remain later slices.
 
 ## Direct probe
 
@@ -111,8 +112,11 @@ restart/cleanup, redaction, and storage-failure behavior at 100% statement and
 branch coverage. Changes to this protocol boundary also run the existing native
 Moonraker simulation as a regression gate.
 
-- Issue #64 consumes committed records to add dynamic runtime activation and
-  the shared per-printer lifecycle/actuator admission gate.
-- Issue #65 adds the separately authenticated, authorized, bounded API.
+- Issue #68 — runtime supervisor consumes complete active records through a
+  fail-closed dynamic monitor supervisor. Issue #69 — shared admission adds the
+  per-printer lifecycle/actuator gate, and issue #70 — runtime bootstrap owns
+  startup reconciliation and bootstrap wiring.
+- Issue #65 — protected onboarding API adds the separately authenticated,
+  authorized, bounded API.
 - Issue #59 may add the accepted setup/recovery browser flow only after those
   machine boundaries are complete.

@@ -421,10 +421,13 @@ before any product caller can reach it. The complete contract is
 The completed authorized component slices are #5, #8, #9, #62, and #63. ADR
 0006 makes the secure runtime registry the current implementation chain. Its
 private persistence
-and secret-store foundation is implemented under #62, and the direct
-probe/orchestration library is implemented under #63. Dynamic fleet and
-protected API work remain #64–#65. The end-to-end lifecycle proof in #12
-consumes that canonical onboarded printer.
+and secret-store foundation is implemented under #62 — registry storage, the direct
+probe/orchestration library is implemented under #63 — onboarding core, and
+registry-backed monitor activation is implemented under #68 — runtime
+supervisor. Shared admission remains #69 — shared runtime gate, startup wiring
+remains #70 — runtime bootstrap, and protected API work remains #65 — protected
+onboarding API. The end-to-end lifecycle proof in #12 — onboarded lifecycle
+proof consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 and does not block focused
 development. Each safety-critical prerequisite is delivered through its own
