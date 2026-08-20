@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 import aiohttp
 
@@ -17,6 +17,7 @@ from klove.adapters.moonraker.client import MoonrakerMonitor, MoonrakerMonitorCo
 from klove.domain.onboarding import PrinterLifecycle, RegisteredPrinter
 from klove.errors import KloveError
 from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.control import ControlService, ControlTransport
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
 from klove.registry import PrinterRegistry
@@ -37,6 +38,9 @@ class _Monitor(Protocol):
 MonitorFactory = Callable[
     [MoonrakerMonitorConfig, str, PrinterRegistry, aiohttp.ClientSession],
     _Monitor,
+]
+ControlTransportFactory = Callable[
+    [RegisteredPrinter, str, aiohttp.ClientSession], ControlTransport
 ]
 
 
@@ -73,12 +77,18 @@ class RegistryRuntimeSupervisor:
         *,
         admissions: PrinterAdmissionGates,
         monitor_factory: MonitorFactory = MoonrakerMonitor,
+        controls: ControlService | None = None,
+        control_transport_factory: ControlTransportFactory | None = None,
     ) -> None:
+        if (controls is None) is not (control_transport_factory is None):
+            raise ValueError("control routes and their factory must be configured together")
         self._store = store
         self._secrets = secrets
         self._registry = registry
         self._session = session
         self._monitor_factory = monitor_factory
+        self._controls = controls
+        self._control_transport_factory = control_transport_factory
         self._admissions = admissions
         self._active: dict[str, _ActiveMonitor] = {}
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
@@ -175,7 +185,8 @@ class RegistryRuntimeSupervisor:
             endpoint=candidate.record.endpoint.url,
             verify_tls=candidate.record.endpoint.verify_tls,
         )
-        await self._registry.register(printer_id)
+        registered = False
+        control_attempted = False
         try:
             monitor = self._monitor_factory(
                 config,
@@ -183,13 +194,31 @@ class RegistryRuntimeSupervisor:
                 self._registry,
                 self._session,
             )
+            control_transport = None
+            if self._controls is not None and candidate.record.control_enabled:
+                control_factory = cast(ControlTransportFactory, self._control_transport_factory)
+                control_transport = control_factory(
+                    candidate.record,
+                    candidate.api_key,
+                    self._session,
+                )
+            await self._registry.register(printer_id)
+            registered = True
+            if control_transport is not None:
+                control_attempted = True
+                cast(ControlService, self._controls).register_transport(
+                    printer_id, control_transport
+                )
             stop = asyncio.Event()
             task = asyncio.create_task(
                 self._run_monitor(printer_id, monitor, stop),
                 name=f"moonraker:{printer_id}",
             )
         except Exception:
-            await self._registry.unregister(printer_id)
+            if control_attempted and self._controls is not None:
+                self._controls.unregister_transport(printer_id)
+            if registered:
+                await self._registry.unregister(printer_id)
             LOGGER.error("registry runtime could not activate printer=%s", printer_id)
             return
         self._active[printer_id] = _ActiveMonitor(
@@ -202,6 +231,8 @@ class RegistryRuntimeSupervisor:
 
     async def _deactivate(self, printer_id: str) -> None:
         active = self._active.pop(printer_id)
+        if self._controls is not None:
+            self._controls.unregister_transport(printer_id)
         active.stop.set()
         active.task.cancel()
         await asyncio.gather(active.task, return_exceptions=True)
@@ -216,6 +247,8 @@ class RegistryRuntimeSupervisor:
         for snapshot in await self._registry.list():
             async with self._admissions.hold(snapshot.printer_id):
                 if snapshot.printer_id not in self._active:
+                    if self._controls is not None:
+                        self._controls.unregister_transport(snapshot.printer_id)
                     await self._registry.unregister(snapshot.printer_id)
 
     def _candidate_is_current(self, candidate: _DesiredMonitor) -> bool:
@@ -255,6 +288,8 @@ class RegistryRuntimeSupervisor:
             if active is None or active.task is not completed:
                 return
             self._active.pop(printer_id)
+            if self._controls is not None:
+                self._controls.unregister_transport(printer_id)
             await self._registry.unregister(printer_id)
 
 

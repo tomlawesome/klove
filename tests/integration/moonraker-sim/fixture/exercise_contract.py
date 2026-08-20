@@ -82,7 +82,7 @@ MOONRAKER_HOST_HEADER = _environment_host_header("KLOVE_TEST_MOONRAKER_HOST_HEAD
 MOONRAKER_AUTH_EXPECTATION = _environment_choice(
     "KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION", "rejected", {"rejected", "trusted"}
 )
-PRINTER_ID = "simulated-printer"
+PRINTER_ID = "11111111-1111-4111-8111-111111111111"
 TOKEN_PATH = Path("/run/klove-secrets/klove-token")
 MOONRAKER_KEY_PATH = Path("/run/klove-secrets/moonraker-api-key")
 STATE_TOKEN_PATH = Path("/run/test-state/state-token")

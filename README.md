@@ -20,14 +20,17 @@ or start a print, execute arbitrary G-code, or provide any other motion,
 heating, fan, light, or macro control. The separately accepted upload and
 durable print-start domain services are not exposed through a northbound route.
 
-The product onboarding path is accepted but not complete. Issues #62–#63
-implement its private versioned registry, external credential store, exact
+The product onboarding path is accepted but not complete. Issue #62 — registry
+storage and issue #63 — onboarding core implement its private versioned
+registry, external credential store, exact
 lifecycle journal, crash reconciliation, bounded address-pinned Moonraker
-probe, and typed create/update/rotate/disable/remove orchestration. These are
-library boundaries only: issues #64–#65 still have to add dynamic runtime
-activation with shared lifecycle/actuator admission and the owner-authenticated
-API, followed by issue #59's embedded page. Once those and the runtime facade in
-issues #10/#14 ship, an authorized Grove user will select **Klipper via Klove**,
+probe, and typed create/update/rotate/disable/remove orchestration. Issue #64 —
+runtime fleet adds registry-backed startup, monitoring, control routing, shared
+admission, restart recovery, and one exact file-bootstrap import. Issue #65 —
+protected onboarding API still has to add the owner-authenticated lifecycle API,
+followed by issue #59 — embedded setup/recovery. Once those and issue #10 — MQTT
+facade and issue #14 — FTPS facade ship, an authorized Grove user will select
+**Klipper via Klove**,
 complete Moonraker setup inside the embedded Klove page, review direct identity
 and safety-profile evidence, and return only Klove's proxy host, stable serial,
 display name, and generated compatibility access code to Grove's existing

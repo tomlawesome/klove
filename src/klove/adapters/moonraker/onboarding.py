@@ -279,13 +279,16 @@ async def _resolve_endpoint(
 
 
 def _decode_resolve_result(result: ResolveResult, hostname: str, port: int) -> IpAddress:
+    flags = result.get("flags")
     if (
         set(result) != _RESOLVE_FIELDS
         or result["hostname"] != hostname
         or result["port"] != port
         or result["family"] not in {socket.AF_INET, socket.AF_INET6}
         or result["proto"] not in {0, socket.IPPROTO_TCP}
-        or type(result["flags"]) is not int
+        or isinstance(flags, bool)
+        or not isinstance(flags, int)
+        or int(flags) not in {0, int(socket.AI_NUMERICHOST | socket.AI_NUMERICSERV)}
         or type(result["host"]) is not str
         or "%" in result["host"]
     ):

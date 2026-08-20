@@ -234,6 +234,8 @@ def test_address_policy_rejects_any_mixed_or_unsafe_answer_and_selects_canonical
         {"family": socket.AF_UNIX},
         {"proto": socket.IPPROTO_UDP},
         {"flags": "invalid"},
+        {"flags": True},
+        {"flags": 2},
         {"host": "127.0.0.01"},
         {"host": "::ffff:127.0.0.1", "family": socket.AF_INET6},
         {"host": "127.0.0.1", "family": socket.AF_INET6},
@@ -244,6 +246,13 @@ def test_resolver_results_must_be_exact_numeric_tcp_answers(updates: dict[str, o
     result.update(updates)
     with pytest.raises((MoonrakerProbeError, ValueError)):
         _decode_resolve_result(result, "moonraker.test", 7125)  # type: ignore[arg-type]
+
+
+def test_resolver_accepts_aiohttp_numeric_address_flags() -> None:
+    flags = socket.AI_NUMERICHOST | socket.AI_NUMERICSERV
+    assert _decode_resolve_result(
+        resolve_result(flags=flags), "moonraker.test", 7125
+    ) == ipaddress.ip_address("127.0.0.1")
 
 
 @pytest.mark.asyncio

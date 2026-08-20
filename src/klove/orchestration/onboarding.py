@@ -156,8 +156,19 @@ class PrinterLifecycleService:
 
     async def create(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Create one registration only after direct current Moonraker evidence."""
-        fingerprint = self._fingerprint(RegistryOperationKind.CREATE, request)
-        duplicate = self._existing_result(RegistryOperationKind.CREATE, request, fingerprint)
+        return await self._create(RegistryOperationKind.CREATE, request)
+
+    async def bootstrap_import(self, request: CreatePrinterRequest) -> RegisteredPrinter:
+        """Import one file-configured printer through the exact create contract."""
+        return await self._create(RegistryOperationKind.BOOTSTRAP_IMPORT, request)
+
+    async def _create(
+        self,
+        kind: RegistryOperationKind,
+        request: CreatePrinterRequest,
+    ) -> RegisteredPrinter:
+        fingerprint = self._fingerprint(kind, request)
+        duplicate = self._existing_result(kind, request, fingerprint)
         if duplicate is not None:
             return duplicate
         if self._get_printer(request.printer_uuid) is not None:
@@ -168,7 +179,7 @@ class PrinterLifecycleService:
             raise LifecycleServiceError(LifecycleFailureCode.STORAGE_UNAVAILABLE)
         compatibility_secret = self._new_compatibility_secret()
         operation = self._operation(
-            RegistryOperationKind.CREATE,
+            kind,
             request,
             fingerprint,
             new_refs=(moonraker_ref, compatibility_ref),
