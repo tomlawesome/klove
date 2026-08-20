@@ -47,6 +47,7 @@ from ..onboarding_helpers import (
     OTHER_MOONRAKER_REF,
     OTHER_PRINTER_UUID,
     PRINTER_UUID,
+    identity,
     make_stores,
     operation,
     printer,
@@ -124,11 +125,13 @@ def test_registry_executes_exact_full_lifecycle_and_survives_restart(  # noqa: P
     current = printer(
         display_name="Renamed Voron",
         moonraker_credential_ref=NEW_MOONRAKER_REF,
+        identity=identity().model_copy(update={"server_hostname": "192.0.2.10"}),
         revision=3,
         updated_at_unix_ms=1_500,
     )
     rotated = store.commit(rotate_moonraker, current, committed_at_unix_ms=1_500)
     assert rotated.retired_credential_refs == ()
+    assert current.identity.server_hostname == "192.0.2.10"
     assert not secrets.contains(MOONRAKER_REF)
 
     rotate_compatibility = next_operation(
@@ -142,6 +145,7 @@ def test_registry_executes_exact_full_lifecycle_and_survives_restart(  # noqa: P
     secrets.write(NEW_COMPATIBILITY_REF, "d" * 20, minimum_length=20)
     current = printer(
         display_name="Renamed Voron",
+        identity=current.identity,
         moonraker_credential_ref=NEW_MOONRAKER_REF,
         compatibility_credential_ref=NEW_COMPATIBILITY_REF,
         revision=4,
@@ -154,6 +158,7 @@ def test_registry_executes_exact_full_lifecycle_and_survives_restart(  # noqa: P
     store.reserve(disable)
     current = printer(
         display_name="Renamed Voron",
+        identity=current.identity,
         moonraker_credential_ref=NEW_MOONRAKER_REF,
         compatibility_credential_ref=NEW_COMPATIBILITY_REF,
         lifecycle=PrinterLifecycle.DISABLED,
@@ -168,6 +173,7 @@ def test_registry_executes_exact_full_lifecycle_and_survives_restart(  # noqa: P
     store.reserve(reenable)
     current = printer(
         display_name="Renamed Voron",
+        identity=current.identity,
         moonraker_credential_ref=NEW_MOONRAKER_REF,
         compatibility_credential_ref=NEW_COMPATIBILITY_REF,
         revision=6,

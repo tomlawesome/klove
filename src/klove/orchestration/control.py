@@ -70,6 +70,18 @@ class ControlService:
                 self._journal[intent.idempotency_key] = (intent, task)
         return await asyncio.shield(task)
 
+    async def has_unresolved(self, printer_id: str) -> bool:
+        """Report in-flight or outcome-unknown control evidence for one printer."""
+        async with self._journal_lock:
+            for intent, task in self._journal.values():
+                if intent.printer_id != printer_id:
+                    continue
+                if not task.done() or task.cancelled():
+                    return True
+                if task.result().status is ControlStatus.OUTCOME_UNKNOWN:
+                    return True
+            return any(candidate == printer_id for candidate, _token in self._uncertain_tokens)
+
     def _evict_one(self) -> bool:
         for key, (_intent, task) in self._journal.items():
             if not task.done() or task.cancelled():

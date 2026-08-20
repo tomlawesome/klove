@@ -56,18 +56,25 @@ def _snapshot() -> dict[str, Any]:
 
 def _wait_reconnected(old_token: str, timeout: float = 30) -> str:
     deadline = time.monotonic() + timeout
+    last_snapshot: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        snapshot = _snapshot()
-        current_token = snapshot.get("state_token")
+        last_snapshot = _snapshot()
+        current_token = last_snapshot.get("state_token")
         if (
-            snapshot.get("phase") == "idle"
-            and snapshot.get("reason") == "observed"
+            last_snapshot.get("phase") == "idle"
+            and last_snapshot.get("reason") == "observed"
             and isinstance(current_token, str)
             and current_token != old_token
         ):
             return current_token
         time.sleep(0.1)
-    raise RuntimeError("Klove did not reconnect with a new idle state token")
+    raise RuntimeError(
+        "Klove did not reconnect with a new idle state token: "
+        f"phase={last_snapshot.get('phase')!r} "
+        f"reason={last_snapshot.get('reason')!r} "
+        f"connected={last_snapshot.get('connected')!r} "
+        f"token_changed={last_snapshot.get('state_token') != old_token}"
+    )
 
 
 def _cancel_count() -> int:

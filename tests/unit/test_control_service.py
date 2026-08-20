@@ -459,3 +459,44 @@ async def test_unexpected_internal_failure_is_contained_as_unknown() -> None:
 
     assert result.status is ControlStatus.OUTCOME_UNKNOWN
     assert result.code == "outcome_unknown"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_inspection_tracks_inflight_confirmed_and_unknown_controls() -> None:
+    transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
+    transport.release_dispatch.clear()
+    service, intent, _registry = await setup(transport)
+    assert not await service.has_unresolved(intent.printer_id)
+    task = asyncio.create_task(service.execute(intent))
+    await transport.dispatch_entered.wait()
+    assert await service.has_unresolved(intent.printer_id)
+    assert not await service.has_unresolved("other-printer")
+    transport.release_dispatch.set()
+    assert (await task).status is ControlStatus.CONFIRMED
+    assert not await service.has_unresolved(intent.printer_id)
+
+    uncertain = FakeTransport([live()])
+    uncertain.dispatch_error = True
+    service, intent, _registry = await setup(uncertain)
+    assert (await service.execute(intent)).status is ControlStatus.OUTCOME_UNKNOWN
+    assert await service.has_unresolved(intent.printer_id)
+    service._journal.clear()
+    assert await service.has_unresolved(intent.printer_id)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_inspection_treats_cancelled_journal_tasks_as_fenced() -> None:
+    transport = FakeTransport([])
+    service, intent, _registry = await setup(transport)
+
+    async def wait_forever() -> ControlResult:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    cancelled = asyncio.create_task(wait_forever())
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    service._journal[intent.idempotency_key] = (intent, cancelled)
+
+    assert await service.has_unresolved(intent.printer_id)

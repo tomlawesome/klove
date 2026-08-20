@@ -1,5 +1,10 @@
 # Klove engineering rules
 
+## Session handoff
+
+If the user asks you to look at the handoff, it is located at
+`/home/codex/projects/klove/.agents/handoffs/current.md`.
+
 ## Product boundary
 
 Klove is a headless, automation-first security and translation layer. Grove
@@ -21,15 +26,24 @@ native-provider programme or create a persistent Grove fork without a new
 accepted decision. Any Grove contribution is developed in a fork and proposed
 upstream normally.
 
-Issue #62's registry foundation is the only canonical product printer store.
-Keep secret values outside SQLite in its owner-only opaque-reference store, keep
-all lifecycle mutations typed and revision-bound, and preserve its two-phase
-create/rotate/remove recovery protocol. Reconciliation must prove that cleanup
-references are disjoint from all active and disabled records before deletion.
+The registry and onboarding core implemented by issues #62–#63 are the only
+canonical product printer store and lifecycle boundary. Keep secret values
+outside SQLite in its owner-only opaque-reference store, keep all lifecycle mutations typed,
+revision-bound, idempotently reserved, and bound to fresh direct probe evidence
+where required, and preserve its two-phase create/rotate/remove recovery
+protocol. The probe accepts only a canonical origin and exact deployment CIDR
+allowlist, validates every DNS answer, pins one peer address, bounds time and
+bytes, and requires two equal strict identity/capability snapshots. Discovery
+advertisements never authorize a route. Every existing-printer mutation must
+prove the composite control/print-start fence clear; issue #64 runtime wiring
+must serialize that proof and commit with all new actuator admission through
+one shared per-printer gate. Reconciliation must prove that cleanup references
+are disjoint from all active and disabled records before deletion.
 A recoverable snapshot comprises the registry database, complete secret
 directory and HMAC key, and every separate durable actuator fence from one
 quiesced state; never restore or document any subset as sufficient. See
 `docs/registry-storage.md`.
+The probe and lifecycle transaction contract is `docs/onboarding-core.md`.
 
 ## Safety invariant
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from klove.domain.discovery import discover_capabilities
@@ -27,7 +29,7 @@ from ..onboarding_helpers import (
 
 def test_endpoint_accepts_explicit_secure_and_loopback_origins() -> None:
     secure = MoonrakerEndpoint(url="https://moonraker.example.test:7125")
-    loopback = MoonrakerEndpoint(url="http://localhost:7125/", verify_tls=False)
+    loopback = MoonrakerEndpoint(url="http://localhost:7125", verify_tls=False)
     insecure = MoonrakerEndpoint(
         url="http://192.0.2.10:7125",
         allow_insecure_http=True,
@@ -35,7 +37,7 @@ def test_endpoint_accepts_explicit_secure_and_loopback_origins() -> None:
     )
 
     assert secure.url == "https://moonraker.example.test:7125"
-    assert loopback.url == "http://localhost:7125/"
+    assert loopback.url == "http://localhost:7125"
     assert insecure.allow_insecure_http
 
 
@@ -47,6 +49,7 @@ def test_endpoint_accepts_explicit_secure_and_loopback_origins() -> None:
         ("https://", {}),
         ("https://owner@moonraker.example.test", {}),
         ("https://moonraker.example.test/path", {}),
+        ("https://moonraker.example.test/", {}),
         ("https://moonraker.example.test?query=1", {}),
         ("https://moonraker.example.test#fragment", {}),
         ("https://moonraker.example.test:0", {}),
@@ -56,6 +59,18 @@ def test_endpoint_accepts_explicit_secure_and_loopback_origins() -> None:
         ("https://moonraker.example.test\n", {}),
         ("http://moonraker.example.test:7125", {"verify_tls": False}),
         ("http://127.0.0.1:7125", {}),
+        ("HTTPS://moonraker.example.test", {}),
+        ("https://MOONRAKER.example.test", {}),
+        ("https://moonraker.example.test.", {}),
+        ("https://moon_raker.example.test", {}),
+        ("https://-moonraker.example.test", {}),
+        ("https://moonraker-.example.test", {}),
+        ("https://moonraker.example.test:443", {}),
+        ("http://localhost:80", {"verify_tls": False}),
+        ("https://møønraker.example.test", {}),
+        ("https://[::ffff:127.0.0.1]", {}),
+        ("https://[fe80::1%25eth0]", {}),
+        ("https://moonraker.example.test", {"allow_insecure_http": True}),
     ],
 )
 def test_endpoint_rejects_ambiguous_or_inconsistent_origins(
@@ -64,6 +79,23 @@ def test_endpoint_rejects_ambiguous_or_inconsistent_origins(
 ) -> None:
     with pytest.raises(ValidationError):
         MoonrakerEndpoint(url=url, **updates)  # type: ignore[arg-type]
+
+
+@settings(max_examples=200, deadline=None)
+@given(st.text(max_size=2_048))
+def test_endpoint_parser_fails_closed_for_arbitrary_unicode_text(url: str) -> None:
+    try:
+        endpoint = MoonrakerEndpoint(
+            url=url,
+            allow_insecure_http=url.startswith("http://"),
+            verify_tls=url.startswith("https://"),
+        )
+    except ValidationError:
+        return
+
+    assert endpoint.url == url
+    assert url.isascii()
+    assert MoonrakerEndpoint.model_validate(endpoint.model_dump(mode="python")) == endpoint
 
 
 def test_identity_requires_exact_text_and_canonical_capability_evidence() -> None:
