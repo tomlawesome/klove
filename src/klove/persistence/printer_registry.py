@@ -783,7 +783,12 @@ def _valid_moonraker_rotation(context: _TransitionContext) -> bool:
         and context.result.lifecycle is PrinterLifecycle.ACTIVE
         and _same_record_fields(
             context,
-            {"moonraker_credential_ref", "revision", "updated_at_unix_ms"},
+            {
+                "moonraker_credential_ref",
+                "identity",
+                "revision",
+                "updated_at_unix_ms",
+            },
         )
         and context.result.compatibility_credential_ref
         == context.current.compatibility_credential_ref

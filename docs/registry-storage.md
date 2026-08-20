@@ -1,7 +1,7 @@
 # Registry storage and recovery contract
 
-Status: registry foundation implemented; runtime and onboarding wiring remain
-tracked in issues #63–#65.
+Status: registry foundation and direct-probe lifecycle orchestration implemented;
+dynamic runtime and protected API wiring remain tracked in issues #64–#65.
 
 ## Boundary
 
@@ -19,11 +19,13 @@ material can be tested offline. Active Moonraker credentials must be visible
 ASCII tokens of at least 32 characters; compatibility copies must be exactly 20
 Base64url characters as frozen in ADR 0006.
 
-The foundation is a persistence interface, not a listener or product setup
-path. It adds no route, network probe, printer runtime, UI, upload, print start,
-or generic G-code capability. Issue #63 owns the bounded direct Moonraker probe
-and lifecycle orchestration, #64 owns dynamic runtime activation, and #65 owns
-the protected onboarding API.
+The persistence layer is not a listener or product setup path. Issue #63's
+implemented onboarding core adds a bounded read-only Moonraker probe and typed
+lifecycle orchestration over this store, as specified in
+`docs/onboarding-core.md`; it still adds no route, printer runtime, UI, upload,
+print start, or generic G-code capability. Issue #64 owns dynamic runtime
+activation and shared lifecycle/actuator admission, and #65 owns the protected
+onboarding API.
 
 ## Mutation and recovery protocol
 

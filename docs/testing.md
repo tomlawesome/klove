@@ -13,13 +13,16 @@ that the protocol model is complete. The suite therefore also includes:
 - a confined real-process lane using pinned native Klipper with its
   Linux-process MCU, pinned Moonraker, and the production Klove image;
 - API tests for missing, malformed, and insufficient credentials;
-- registry-foundation tests for exact UUID/endpoint/profile identity, keyed
-  operation collisions, external owner-only secret references, transactional
-  create/update/rotate/disable/remove, retry serialization, restart and partial
-  failure, canonical JSON, corrupt/future/weakened schema, quiesced
-  backup/restore, active-reference cleanup denial, orphan/missing secrets, and
-  credential redaction; later onboarding slices add direct-probe, runtime, API,
-  authentication, and browser coverage at their own boundaries;
+- registry and onboarding-core tests for exact UUID/endpoint/profile identity,
+  canonical-origin parsing, complete-answer CIDR policy and connection pinning,
+  bounded authenticated HTTP/JSON decoding, coherent direct probe snapshots,
+  keyed operation collisions, external owner-only secret references,
+  transactional create/update/rotate/disable/remove, composite actuator fences,
+  retry serialization, restart and partial failure, post-commit cleanup
+  ambiguity, canonical JSON, corrupt/future/weakened schema, quiesced
+  backup/restore, active-reference cleanup denial, orphan/missing secrets,
+  property inputs, and credential redaction; later runtime, API, authentication,
+  and browser slices add coverage at their own boundaries;
 - scripted browser tests for independent Klove owner authentication, session
   expiry/replay/concurrency, CSRF, exact Origin and CSP `frame-ancestors`, the
   sandboxed parent/frame ready-and-nonce state machine, strict versioned
@@ -157,8 +160,8 @@ verifies that the suite imported Klove from the working tree. This prevents a
 non-editable or stale environment installation from producing misleading
 coverage for code other than the source under review.
 
-The registry foundation adds no browser dependency or UI implementation. Issue
-#59 must introduce a repeatable Playwright entry point only after #63–#65's
-probe, runtime, and registry/authentication boundaries are merged. Browser
+The registry and onboarding core add no browser dependency or UI implementation.
+Issue #59 must introduce a repeatable Playwright entry point only after
+#64–#65's runtime and registry/authentication boundaries are merged. Browser
 results supplement—not replace—the package-wide 100% statement and branch gate
 for authentication, authorization, decoding, translation, control, and policy.
