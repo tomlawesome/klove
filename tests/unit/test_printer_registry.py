@@ -60,6 +60,15 @@ def key(index: int) -> str:
     return f"{index:08x}-0000-4000-8000-000000000000"
 
 
+def test_public_facade_wildcard_exports_remain_compatible() -> None:
+    assert set(registry_module.__all__) >= {
+        "PrinterStore",
+        "RegisteredPrinter",
+        "RegistryOperationRecord",
+        "RegistryOperationState",
+    }
+
+
 def create_printer(secrets: SecretStore, store: PrinterStore) -> RegisteredPrinter:
     pending = operation()
     assert store.reserve(pending) == (pending, True)
