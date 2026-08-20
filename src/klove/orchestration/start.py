@@ -27,6 +27,7 @@ from klove.domain.start import (
 )
 from klove.domain.upload import MoonrakerGcodeMetadata, RemoteFileDigest, VerifiedUpload
 from klove.errors import JournalError, StartTransportError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.persistence.start_journal import (
     JournalConflictError,
     JournalFenceError,
@@ -69,6 +70,7 @@ class StartService:
         enabled: bool,
         confirmation_timeout_seconds: float,
         poll_interval_seconds: float,
+        admissions: PrinterAdmissionGates,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -82,7 +84,7 @@ class StartService:
         self._sleep = sleep
         self._ready = False
         self._journal_available = True
-        self._printer_lock = asyncio.Lock()
+        self._admissions = admissions
         self._task_lock = asyncio.Lock()
         self._by_key: dict[str, _TaskEntry] = {}
         self._by_operation: dict[str, _TaskEntry] = {}
@@ -103,7 +105,7 @@ class StartService:
         self._ready = False
         if not self._journal_is_available():
             return
-        async with self._printer_lock:
+        async with self._admissions.hold(str(self._printer.uuid)):
             try:
                 records = self._journal.unresolved(self._printer.uuid)
             except JournalError:
@@ -161,7 +163,7 @@ class StartService:
         if not self._dispatch_ready():
             return _denied(verified, StartFailureCode.RECONCILIATION_PENDING)
 
-        async with self._printer_lock:
+        async with self._admissions.hold(str(self._printer.uuid)):
             if not self._dispatch_ready():
                 return _denied(verified, StartFailureCode.RECONCILIATION_PENDING)
             try:

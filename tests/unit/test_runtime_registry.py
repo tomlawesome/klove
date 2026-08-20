@@ -8,6 +8,7 @@ import pytest
 
 from klove.adapters.moonraker.client import MoonrakerMonitorConfig
 from klove.domain.onboarding import MoonrakerEndpoint, PrinterLifecycle, RegisteredPrinter
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.runtime_registry import RegistryRuntimeError, RegistryRuntimeSupervisor
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
@@ -29,6 +30,7 @@ class FakeStore:
     def __init__(self, records: tuple[object, ...]) -> None:
         self.records = records
         self.failure: Exception | None = None
+        self.get_failure: Exception | None = None
         self.calls: list[bool] = []
 
     def list(self, *, include_removed: bool = False) -> tuple[RegisteredPrinter, ...]:
@@ -36,6 +38,18 @@ class FakeStore:
         if self.failure is not None:
             raise self.failure
         return cast(tuple[RegisteredPrinter, ...], self.records)
+
+    def get(self, printer_uuid: str) -> RegisteredPrinter | None:
+        if self.get_failure is not None:
+            raise self.get_failure
+        if self.failure is not None:
+            raise self.failure
+        matches = [
+            record
+            for record in self.records
+            if type(record) is RegisteredPrinter and record.printer_uuid == printer_uuid
+        ]
+        return matches[0] if len(matches) == 1 else None
 
 
 class FakeSecrets:
@@ -142,14 +156,54 @@ def supervisor(
     secrets: FakeSecrets,
     registry: PrinterRegistry,
     factory: RecordingFactory,
+    admissions: PrinterAdmissionGates | None = None,
 ) -> RegistryRuntimeSupervisor:
     return RegistryRuntimeSupervisor(
         cast(PrinterStore, store),
         cast(SecretStore, secrets),
         registry,
         cast(aiohttp.ClientSession, object()),
+        admissions=admissions or PrinterAdmissionGates(),
         monitor_factory=factory,
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_replacement_waits_for_the_shared_printer_gate() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = PrinterRegistry([])
+    factory = RecordingFactory()
+    runtime = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        registry,
+        factory,
+        admissions,
+    )
+
+    async with admissions.hold(PRINTER_UUID):
+        task = asyncio.create_task(runtime.refresh())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert factory.calls == []
+        assert await registry.get(PRINTER_UUID) is None
+    assert await task == (PRINTER_UUID,)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_refresh_deactivates_when_current_record_cannot_be_reproved() -> None:
+    record = printer()
+    store = FakeStore((record,))
+    registry = PrinterRegistry([])
+    runtime = supervisor(store, FakeSecrets(secret_values()), registry, RecordingFactory())
+
+    assert await runtime.refresh() == (PRINTER_UUID,)
+    store.get_failure = RuntimeError()
+
+    assert await runtime.refresh() == ()
+    assert await registry.get(PRINTER_UUID) is None
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio

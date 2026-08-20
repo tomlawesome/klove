@@ -21,6 +21,7 @@ from klove.domain.start import (
 )
 from klove.domain.upload import MoonrakerGcodeMetadata, RemoteFileDigest, VerifiedUpload
 from klove.errors import JournalError, StartTransportError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.start import StartService
 from klove.persistence.start_journal import JournalConflictError, StartJournal
 
@@ -112,6 +113,7 @@ def make_service(  # noqa: PLR0913 -- compact explicit service fixture.
     enabled: bool = True,
     configured_printer: PrinterConfig | None = None,
     clock: FakeClock | None = None,
+    admissions: PrinterAdmissionGates | None = None,
 ) -> StartService:
     actual_clock = clock or FakeClock()
     return StartService(
@@ -121,6 +123,7 @@ def make_service(  # noqa: PLR0913 -- compact explicit service fixture.
         enabled=enabled,
         confirmation_timeout_seconds=0.2,
         poll_interval_seconds=0.1,
+        admissions=admissions or PrinterAdmissionGates(),
         clock=actual_clock,
         sleep=actual_clock.sleep,
     )
@@ -145,6 +148,22 @@ def assert_failure(
     assert result.state is state
     assert result.failure == StartFailure(boundary=boundary, code=code)
     assert result.confirmation is None
+
+
+@pytest.mark.asyncio
+async def test_start_admission_waits_for_the_shared_printer_gate(tmp_path: Path) -> None:
+    admissions = PrinterAdmissionGates()
+    transport = FakeTransport()
+    transport.query_values = [idle(), observation()]
+    service = make_service(tmp_path, transport, admissions=admissions)
+    await service.initialize()
+
+    async with admissions.hold(str(printer_config().uuid)):
+        task = asyncio.create_task(service.execute(verified_upload()))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not transport.query_entered.is_set()
+    assert (await task).state is StartState.CONFIRMED
 
 
 @pytest.mark.asyncio

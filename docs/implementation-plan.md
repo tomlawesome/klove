@@ -424,9 +424,9 @@ private persistence
 and secret-store foundation is implemented under #62 — registry storage, the direct
 probe/orchestration library is implemented under #63 — onboarding core, and
 registry-backed monitor activation is implemented under #68 — runtime
-supervisor. Shared admission remains #69 — shared runtime gate, startup wiring
-remains #70 — runtime bootstrap, and protected API work remains #65 — protected
-onboarding API. The end-to-end lifecycle proof in #12 — onboarded lifecycle
+supervisor, and shared admission is implemented under #69 — shared runtime
+gate. Startup wiring remains #70 — runtime bootstrap, and protected API work
+remains #65 — protected onboarding API. The end-to-end lifecycle proof in #12 — onboarded lifecycle
 proof consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 and does not block focused
