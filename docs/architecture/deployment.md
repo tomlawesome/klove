@@ -1,0 +1,174 @@
+# Deployment, delivery, and validation
+
+## Delivery sequence
+
+### Phase 0: contract and fixtures
+
+- Decide the Klove licence and whether Grove virtual-printer code may be reused.
+- Capture sanitized Bambu request/report fixtures from Grove and Moonraker
+  snapshots/notifications from representative Klipper configurations.
+- Freeze canonical state, capability, command, operation, and error schemas.
+- Write the threat model and artifact acceptance policy before enabling motion or
+  heating.
+
+Exit: mappings and rejected behaviours are executable tests, not only prose.
+
+### Phase 1: read-only Moonraker core
+
+- Bootstrap configuration/secrets, Moonraker authentication, discovery
+  primitives, WebSocket subscriptions, state reducer, capability probe,
+  reconnect, and health API. Product onboarding is completed by ADR 0006's
+  later runtime-registry and setup/recovery slices.
+- Support one and then multiple fake/real Moonraker endpoints.
+
+Exit: stable monitoring through Moonraker restarts and network partitions; no
+printer-changing command exists.
+
+### Phase 2: typed Moonraker job control
+
+- Deliver the [ADR-0001](../decisions/0001-typed-job-control.md) pause, resume,
+  and cancel contract through the typed native route.
+- Keep print start, generic G-code, temperature, speed, fan, light, motion, and
+  extrusion absent.
+
+Exit: one exact current job-control request is dispatched at most once, and every
+post-dispatch ambiguity is retained as `outcome_unknown` without retry.
+
+### Phase 3: runtime registry and safe file dispatch
+
+- Complete ADR 0006's one canonical runtime printer registry chain under issue
+  #58. Issue #62 implements its exact-schema SQLite/WAL foundation, external
+  owner-only secret store, typed lifecycle journal, crash reconciliation, and
+  backup boundary. Issue #63 implements direct probing and lifecycle
+  orchestration. Issues #64–#65 add dynamic runtime activation with shared
+  lifecycle/actuator admission and the protected API without adding an actuator
+  or dashboard.
+- ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
+  durable at-most-once typed print start as separate internal components.
+- Implement hostile-3MF validation, target manifest/profile checks, Moonraker
+  upload/metadata/start, dedupe, acknowledgement, and restart reconciliation in
+  separately gated slices.
+- Complete their authenticated intake-through-completion integration under
+  [issue #12](https://github.com/tomlawesome/klove/issues/12) before claiming
+  this phase's exit criterion.
+- Start with single-plate, single-extruder, no-MMU G-code.
+
+Exit: one canonically registered target-tagged job can be queued, started,
+paused, resumed, cancelled, completed, and reconciled without duplicate starts.
+
+### Phase 4: current-Grove compatibility bridge
+
+- Accept ADR 0006's Klove-owned runtime registry, embedded setup/recovery
+  surface, strict completion message, and minimal Grove `KLOVE` type boundary.
+- Decide compatibility-facade and Grove-theme licence and provenance.
+- Use the Phase 3 runtime registry for the product onboarding path; do not add a
+  second UI registry or return to per-printer TOML.
+- Add the minimal conservative MQTT/TLS state/control facade and bounded FTPS
+  spool, using only operations already accepted by their own ADRs.
+- Build the Grove-themed embedded setup/recovery flow and propose the tiny
+  `KLOVE` Add Printer contribution upstream through a fork.
+
+Exit: an authorized Grove user can onboard and monitor one exact Klove printer
+without entering Moonraker credentials into Grove or editing per-printer TOML,
+and can safely dispatch only through accepted Klove contracts. Unsupported
+commands are hidden, fail visibly if sent, and never reach a generic G-code
+path.
+
+### Phase 5: bounded live controls
+
+- Separately decide and test temperature/speed and explicitly mapped fan/light
+  operations. Keep jog and extrusion disabled until separately proven.
+
+Exit: every enabled control has a current, exact capability and state proof,
+bounded typed parameters, idempotency, reconciliation, and complete negative
+tests.
+
+### Phase 6: fleet hardening
+
+- Multi-printer routing, per-printer credentials/policies, job journal, cameras
+  via external URLs, metrics, backups, migration tests, and upgrade/rollback.
+- Docker Compose examples for bridge and host-network constraints.
+
+Exit: fault-injection and soak tests cover simultaneous printers, Klove/Grove/
+Moonraker restarts, lost acknowledgements, corrupt uploads, stale config, and
+credential rejection.
+
+### Later adapters
+
+- Exclude-object support, richer camera integration, explicitly supported
+  MMU/toolchanger adapters, optional outbound host agent, and other printer
+  stacks behind new southbound adapters.
+
+## Validation strategy
+
+The automated integration lane runs the production Klove image against pinned
+real Klipper and Moonraker processes with Klipper's Linux-process MCU. It tests
+authentication, status/control semantics, ambiguity, and restarts without
+hardware, host ports, devices, or privilege. It is not RatOS. The exact RatOS
+v2.1.0 ARM disk release, host services, configured macros, and physical effects
+remain a separate attended acceptance lane; full-system emulation may add
+evidence only if it faithfully boots the immutable release and does not weaken
+confinement.
+
+- Unit and property tests for state reduction, command policy, limit changes,
+  duplicate delivery, and every state-machine transition.
+- Fuzz MQTT/JSON, URL, filename, ZIP/3MF, metadata, and G-code-header parsers.
+- Contract tests that run Grove's real MQTT client against Klove and Klove
+  against a deterministic fake Moonraker WebSocket/HTTP server.
+- A native real-process Klipper/Moonraker integration test for authentication,
+  typed controls, lost responses, exact single dispatch, and process restarts.
+- Issue #12 integration tests for authorized intake/upload/start, metadata
+  delays, lost acknowledgements, history reconciliation, cancellation,
+  completion, substitution, restart and concurrent printers; component ADRs do
+  not authorize a public workflow by themselves.
+- Scripted browser tests for the real Grove parent/Klove frame handshake,
+  independent Klove owner authentication, CSRF and exact-origin rejection,
+  strict completion decoding, cancellation, responsive/accessibility behavior,
+  privacy boundaries, `KLOVE` feature suppression, exact-printer queueing, and
+  regression of existing Bambu types.
+- Hardware-in-the-loop release-candidate tests on a dedicated printer with a
+  known safe low-risk file. Heating, motion, and cancellation tests require an
+  attended checklist and must never be part of routine CI.
+
+Release only after negative tests demonstrate that mismatched G-code, unknown
+macros, over-temperature requests, unhomed/out-of-bounds jogs, duplicate starts,
+unauthorized Moonraker access, corrupt archives, and stale safety profiles all
+fail closed.
+
+## Immediate next slice
+
+The artifact contract, hostile validator, exact target qualification, bounded
+upload, and durable print-start components are complete under issues #5–#9.
+ADR 0006 freezes the product-onboarding boundary, and issue #62 implements its
+private registry/secret persistence foundation. Issue #63 implements the
+bounded direct Moonraker probe and lifecycle orchestration. The immediate
+dependent slice is dynamic runtime activation with shared per-printer
+lifecycle/actuator admission in [issue #64](https://github.com/tomlawesome/klove/issues/64),
+followed by the protected API in #65. That chain unblocks the target-bound
+intake-through-completion proof in [issue #12](https://github.com/tomlawesome/klove/issues/12)
+without making Grove or the browser part of that internal safety proof.
+
+The compatibility provenance decision in [issue #11](https://github.com/tomlawesome/klove/issues/11)
+may proceed in parallel. Registry work then feeds the embedded setup/recovery UI
+in [issue #59](https://github.com/tomlawesome/klove/issues/59), the conservative
+MQTT/FTPS facade, and the minimal upstream Grove contribution in
+[issue #60](https://github.com/tomlawesome/klove/issues/60). Track the complete
+order under [Grove epic #32](https://github.com/tomlawesome/klove/issues/32) and
+[programme roadmap #38](https://github.com/tomlawesome/klove/issues/38).
+
+## Primary references
+
+- [Moonraker architecture and API overview](https://moonraker.readthedocs.io/en/latest/)
+- [Moonraker external API introduction](https://moonraker.readthedocs.io/en/latest/external_api/introduction/)
+- [Moonraker printer administration](https://moonraker.readthedocs.io/en/latest/external_api/printer/)
+- [Moonraker file management](https://moonraker.readthedocs.io/en/latest/external_api/file_manager/)
+- [Moonraker authentication](https://moonraker.readthedocs.io/en/latest/external_api/authorization/)
+- [Moonraker notifications](https://moonraker.readthedocs.io/en/latest/external_api/jsonrpc_notifications/)
+- [Moonraker webcam management](https://moonraker.readthedocs.io/en/latest/external_api/webcams/)
+- [Klipper API server](https://www.klipper3d.org/API_Server.html)
+- [Klipper status reference](https://www.klipper3d.org/Status_Reference.html)
+- [Mainsail overview](https://docs.mainsail.xyz/)
+- [Grove Control repository](https://github.com/EdwardChamberlain/grove-control)
+- [3MF Core Specification 1.3.0](https://3mf.io/wp-content/uploads/sites/106/2025/02/3MF_Core_Specification_v1.3.0.pdf)
+- [Python `zipfile` documentation](https://docs.python.org/3/library/zipfile.html)
+- [Bambu Studio 3MF implementation](https://github.com/bambulab/BambuStudio/blob/master/src/libslic3r/Format/bbs_3mf.cpp)
