@@ -4,8 +4,8 @@ Status: supplemental exact-release service emulation executed and the
 controlled host-MCU contract lane implemented; its full atomic contract record
 is still pending, and conclusive acceptance still requires supported ARM
 hardware under the attended procedure below. Service emulation is tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50) and the controlled
-contract in [issue #51](https://github.com/tomlawesome/klove/issues/51).
+[issue #50 — RatOS emulation feasibility](https://github.com/tomlawesome/klove/issues/50) and the controlled
+contract in [issue #51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51).
 
 RatOS acceptance is deliberately separate from Klove's native
 Klipper/Moonraker container test. The automated fixture proves the current
@@ -35,7 +35,7 @@ systemd service graph, udev, and hardware integration that make the release
 RatOS; it does not count as a RatOS test.
 
 The rootless full-system experiment is tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50) and is acceptable
+[issue #50 — RatOS emulation feasibility](https://github.com/tomlawesome/klove/issues/50) and is acceptable
 only if it:
 
 - verifies and boots the exact release image without modifying its contents;
@@ -93,19 +93,41 @@ snapshot and raw guest serial output is not retained. The lane is deliberately
 excluded from routine CI because the download and ARM-on-x86 TCG boot are large
 and slow.
 
+On a controlled-printer readiness timeout, the lane may retain one atomic,
+owner-only diagnostic record: stage, 30-second elapsed bucket, acknowledged
+restart and observed disconnect/reconnect booleans, status enums, the exact
+fixture-config SHA-256, and `/tmp/klipper_host_mcu` classification
+(`absent`, `socket`, or `other` with mode). A transient Klippy message is
+reduced locally to the closed `config-parse`, `mcu-connect-socket`,
+`mcu-protocol`, `restart-pending`, or `unknown` enum plus byte length and
+SHA-256; its text is never retained. `unknown` proves nothing and forbids a
+retry. This record contains no API key, configuration bytes, serial, or logs.
+
+Before starting Klove, the COW-only preparation obtains the per-run API key over
+the initially trusted isolated route, replaces exactly the one
+`[authorization]` `trusted_clients` setting with TEST-NET-1, restarts Moonraker,
+and verifies that the valid key remains required while a known-invalid key is
+rejected. It fingerprints and rechecks that modified configuration without
+retaining its contents. The contract evidence also records one immutable
+Moonraker history ID/start-time pair observed at job start, after the faulted
+pause, and after terminal cancellation; the final live history response must
+match before the atomic success marker can be written.
+
 Bounded diagnostic runs of the implemented lane reached Klippy `ready` with the
 exact `kinematics: none` configuration and Linux-process MCU. Production Klove
 observed the exact RatOS-hosted job, and one run confirmed pause, same-key replay,
 stale-token denial, resume, and cancel with the production single-dispatch and
-post-action semantics. A later second-job attempt correctly failed closed while
-Moonraker's new immutable history job identity lagged the visible phase. The
-lost-response assertion therefore did not execute, and a later clean run did
-not obtain stock Moonraker's asynchronous service-state readiness within the
-fixed TCG deadline. No archive has an atomic `contract-passed` marker, so these
-observations do not satisfy issue #51 or constitute RatOS job-control
-acceptance. HUP/INT/TERM cleanup was corrected after an interrupted run and the
-exact teardown was verified to leave no container, credential volume, COW, or
-active runtime state.
+post-action semantics. The former lost-response case started a second job and
+correctly failed closed while Moonraker's new immutable history job identity
+lagged the visible phase. The RatOS-only runner now keeps that assertion on the
+first controlled job, then cancels the same paused job; it retains every required
+control assertion without making the result depend on that second-job timing
+window. No archive has an atomic `contract-passed` marker yet, so the change
+still needs one new source-bound run and does not itself satisfy
+#51 — RatOS virtual-MCU proof or constitute RatOS job-control acceptance.
+HUP/INT/TERM cleanup was corrected
+after an interrupted run and the exact teardown was verified to leave no
+container, credential volume, COW, or active runtime state.
 
 Physical RatOS, configured macro semantics, board peripherals, timing, USB MCU
 behavior, and safe printer action remain subject to the attended procedure.

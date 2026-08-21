@@ -19,6 +19,8 @@ COPY --chmod=0555 tests/integration/moonraker-sim/fixture/proxy.py \
     /opt/klove-ratos/contract/proxy.py
 COPY --chmod=0555 tests/integration/moonraker-sim/fixture/exercise_contract.py \
     /opt/klove-ratos/contract/exercise_contract.py
+COPY --chmod=0555 tests/integration/ratos-emulation/contract/ratos_exercise_contract.py \
+    /opt/klove-ratos/contract/ratos_exercise_contract.py
 COPY --chmod=0444 tests/integration/moonraker-sim/fixture/contract.gcode \
     /opt/klove-ratos/contract/contract.gcode
 COPY --chmod=0444 tests/integration/ratos-emulation/contract/printer.cfg \

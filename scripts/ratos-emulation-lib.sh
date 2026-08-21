@@ -55,6 +55,7 @@ ratos_capture_source_state() {
         tests/integration/ratos-emulation/SHA256SUMS \
         tests/integration/ratos-emulation/contract/klove.toml \
         tests/integration/ratos-emulation/contract/printer.cfg \
+        tests/integration/ratos-emulation/contract/ratos_exercise_contract.py \
         tests/integration/ratos-emulation/debian.sources \
         tests/integration/ratos-emulation/tool.py \
         tests/integration/moonraker-sim/fixture/contract.gcode \
@@ -532,7 +533,7 @@ ratos_require_contract_container_identity() {
                 ratos_contract_memory=100663296
                 ratos_contract_nano_cpus=500000000
                 ratos_contract_entrypoint=null
-                ratos_contract_command='["/usr/local/bin/python","/opt/klove-ratos/contract/exercise_contract.py"]'
+                ratos_contract_command='["/usr/local/bin/python","/opt/klove-ratos/contract/ratos_exercise_contract.py"]'
             else
                 ratos_contract_pids=64
                 ratos_contract_memory=268435456
@@ -620,7 +621,7 @@ ratos_archive_runtime() {
     ratos_require_private_file "$ratos_state_dir/identities.json" 600
     ratos_require_private_file "$ratos_runtime_dir/$ratos_overlay_name" 666
     for ratos_runtime_file in \
-        active contract-prepared.json contract-succeeded contract.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json \
         firstboot-required firstboot-restarted probe-succeeded probe.json
     do
         if [ -e "$ratos_runtime_dir/$ratos_runtime_file" ] \
@@ -647,7 +648,7 @@ ratos_archive_runtime() {
     ratos_require_absent "$ratos_runtime_dir/$ratos_overlay_name"
 
     for ratos_runtime_file in \
-        active contract-prepared.json contract-succeeded contract.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json \
         firstboot-required firstboot-restarted probe-succeeded probe.json
     do
         if [ -e "$ratos_runtime_dir/$ratos_runtime_file" ]; then
@@ -658,7 +659,7 @@ ratos_archive_runtime() {
 
     ratos_checksums=$(mktemp "$ratos_archived_run/checksums.XXXXXX")
     for ratos_evidence_file in \
-        active contract-prepared.json contract-succeeded contract.json identities.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json identities.json \
         firstboot-required firstboot-restarted origin probe-succeeded probe.json
     do
         if [ -e "$ratos_archived_run/$ratos_evidence_file" ]; then

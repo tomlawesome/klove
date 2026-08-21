@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -317,6 +318,7 @@ def test_ratos_contract_fixture_is_exact_and_non_actuating() -> None:
 
     assert "tests/integration/moonraker-sim/fixture/proxy.py" in dockerfile
     assert "tests/integration/moonraker-sim/fixture/exercise_contract.py" in dockerfile
+    assert "tests/integration/ratos-emulation/contract/ratos_exercise_contract.py" in dockerfile
     assert "tests/integration/moonraker-sim/fixture/contract.gcode" in dockerfile
     assert "sha256sum --check /opt/klove-ratos/contract/SHA256SUMS" in dockerfile
     assert dockerignore.startswith("*\n")
@@ -329,8 +331,11 @@ def test_ratos_contract_fixture_is_exact_and_non_actuating() -> None:
     assert "contract secret volume must be empty before preparation" in tool
     assert "identity != (10001, 10001, 0o600)" in tool
     assert 'expected_phase="standby"' in tool
-    assert 'expected_phase="paused"' in tool
+    assert 'expected_phase="cancelled"' in tool
     assert 'filename="contract.gcode"' in tool
+    assert "_untrust_moonraker_clients" in tool
+    assert "RatOS did not reject an invalid Moonraker API key" in tool
+    assert "terminal Moonraker history identity differs from faulted-pause evidence" in tool
     assert "secrets.compare_digest(actual, expected)" in tool
     assert "os.O_NOFOLLOW" in tool
     assert "serial: /tmp/klipper_host_mcu" in printer_config
@@ -425,13 +430,79 @@ def test_ratos_cleanup_traps_exit_on_signals() -> None:
         assert all(line == "trap - EXIT HUP INT TERM" for line in combined_traps)
 
 
+def test_ratos_contract_runner_command_paths_match_and_are_exact() -> None:
+    contract_script = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
+    library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+
+    expected_command = "/opt/klove-ratos/contract/ratos_exercise_contract.py"
+    launcher_command = f"/usr/local/bin/python {expected_command}"
+    verifier_command = f'"/usr/local/bin/python","{expected_command}"'
+
+    assert launcher_command in contract_script
+    assert verifier_command in library
+
+
+def test_ratos_manifest_matches_the_tracked_source_bytes() -> None:
+    manifest = (ROOT / "tests" / "integration" / "ratos-emulation" / "SHA256SUMS").read_text(
+        encoding="utf-8"
+    )
+    source_by_target = {
+        "opt/klove-ratos/contract/printer.cfg": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "printer.cfg",
+        "opt/klove-ratos/contract/klove.toml": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "klove.toml",
+        "opt/klove-ratos/contract/contract.gcode": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "contract.gcode",
+        "opt/klove-ratos/contract/proxy.py": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "proxy.py",
+        "opt/klove-ratos/contract/exercise_contract.py": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "exercise_contract.py",
+        "opt/klove-ratos/contract/ratos_exercise_contract.py": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "ratos_exercise_contract.py",
+    }
+
+    manifest_targets = set()
+    for line in manifest.splitlines():
+        digest, target = line.split("  ", 1)
+        manifest_targets.add(target)
+        source = source_by_target[target]
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
+    assert manifest_targets == set(source_by_target)
+
+
 def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
     up = (ROOT / "scripts" / "ratos-emulation-up.sh").read_text(encoding="utf-8")
     contract = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
     down = (ROOT / "scripts" / "ratos-emulation-down.sh").read_text(encoding="utf-8")
 
     assert contract.count("--log-opt max-file=2") == 3
-    assert "--env KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION=trusted" in contract
+    assert "--env KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION=trusted" not in contract
+    assert "/opt/klove-ratos/contract/ratos_exercise_contract.py" in contract
+    assert 'docker exec --interactive "$ratos_container"' in contract
     wrapper = (ROOT / "scripts" / "test-ratos-emulation.sh").read_text(encoding="utf-8")
 
     assert "ratos_require_active" in contract
@@ -457,7 +528,7 @@ def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
     assert "KLOVE_TEST_MOONRAKER_HOST_HEADER=ratos.local" in contract
     assert "/opt/klove-ratos/tool.py contract-prepare" in contract
     assert "/opt/klove-ratos/tool.py contract-evidence" in contract
-    assert "/opt/klove-ratos/contract/exercise_contract.py" in contract
+    assert "/opt/klove-ratos/contract/ratos_exercise_contract.py" in contract
     assert "ratos_require_contract_container \\" in contract
     assert '"$repo_root/scripts/ratos-emulation-contract.sh"' in wrapper
 

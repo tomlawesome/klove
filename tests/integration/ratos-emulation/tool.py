@@ -45,6 +45,7 @@ RUNTIME_KERNEL: Final = INPUTS / "kernel8.Image"
 RUNTIME_DTB: Final = INPUTS / "bcm2710-rpi-3-b.dtb"
 EXTRACTED: Final = PREPARE_WORK / "extracted"
 OVERLAY: Final = RUN_STATE / OVERLAY_NAME
+READINESS_FAILURE: Final = RUN_STATE / "contract-prepare-failure.json"
 
 EXPECTED_SSH_BANNER_PREFIX: Final = "SSH-2.0-OpenSSH_8.4p1 Raspbian-5+deb11u5"
 EXPECTED_MOONRAKER_VERSION: Final = "v0.9.1-0-g63578ae"
@@ -65,6 +66,8 @@ EXPECTED_CONTRACT_COUNTS: Final = {
 }
 HTTP_BODY_LIMIT: Final = 1024 * 1024
 HTTP_TIMEOUT_SECONDS: Final = 60
+# Klippy restarts are slower than ordinary fixture JSON traffic under TCG.
+PRINTER_RESTART_TIMEOUT_SECONDS: Final = 300
 
 BOOT_FILES: Final[dict[str, tuple[int, str]]] = {
     "kernel8.img": (
@@ -101,6 +104,10 @@ def _digest(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _digest_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def _verify(path: Path, expected_size: int, expected_sha256: str) -> None:
@@ -320,13 +327,14 @@ def _parse_json(body: bytes, path: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], parsed)
 
 
-def _http_json(
+def _http_json(  # noqa: PLR0913 -- bounded internal HTTP fixture primitive.
     path: str,
     *,
     method: str = "GET",
     body: bytes | None = None,
     headers: Mapping[str, str] | None = None,
     expected_status: int = 200,
+    timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> Mapping[str, object]:
     status, response_body = _http_request(
         18080,
@@ -335,6 +343,7 @@ def _http_json(
         body=body,
         headers=headers,
         host_header="ratos.local",
+        timeout=timeout,
     )
     if status != expected_status:
         raise RuntimeError(f"{path} returned HTTP {status}")
@@ -362,8 +371,9 @@ def _probe_ssh() -> str:
     return banner
 
 
-def _probe_moonraker() -> dict[str, object]:
-    server = _result(_http_json("/server/info"), "/server/info")
+def _probe_moonraker(api_key: str | None = None) -> dict[str, object]:
+    headers = None if api_key is None else _api_headers(api_key)
+    server = _result(_http_json("/server/info", headers=headers), "/server/info")
     moonraker_version = server.get("moonraker_version")
     components = server.get("components")
     if moonraker_version != EXPECTED_MOONRAKER_VERSION:
@@ -479,6 +489,28 @@ def _api_headers(api_key: str, *, content_type: str | None = None) -> dict[str, 
     return headers
 
 
+def _restart_printer(api_key: str) -> bool:
+    try:
+        restart = _http_json(
+            "/printer/restart",
+            method="POST",
+            body=b"{}",
+            headers=_api_headers(api_key, content_type="application/json"),
+            timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as error:
+        message = str(error)
+        if (
+            "/printer/restart returned HTTP 504" in message
+            or "/printer/restart timed out" in message
+        ):
+            return False
+        raise
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    return True
+
+
 def _multipart_upload_body(root: str, filename: str, content: bytes) -> tuple[str, bytes]:
     checksum = hashlib.sha256(content).hexdigest()
     boundary = f"klove-ratos-{checksum[:24]}"
@@ -548,6 +580,49 @@ def _upload_contract_file(
             raise RuntimeError("Moonraker unexpectedly queued the uploaded file")
 
 
+def _replace_moonraker_configuration(api_key: str) -> bytes:
+    existing = _download_contract_file(api_key, root="config", filename="moonraker.conf")
+    replacement = _untrust_moonraker_clients(existing)
+    content_type, body = _multipart_upload_body("config", "moonraker.conf", replacement)
+    response = _http_json(
+        "/server/files/upload",
+        method="POST",
+        body=body,
+        headers=_api_headers(api_key, content_type=content_type),
+        expected_status=201,
+    )
+    result = _mapping(response, "Moonraker configuration upload result")
+    # RatOS Moonraker 0.9.1 returns ``create_file`` for the canonical config
+    # path even after serving its current bytes from that same path.  The
+    # subsequent exact byte read is the authoritative replacement proof.
+    if set(result) != {"item", "action"} or result.get("action") not in {
+        "create_file",
+        "modify_file",
+    }:
+        raise RuntimeError("Moonraker did not replace its exact configuration file")
+    item = _mapping(result.get("item"), "Moonraker configuration upload item")
+    if (
+        set(item) != {"root", "path", "modified", "size", "permissions"}
+        or item.get("root") != "config"
+        or item.get("path") != "moonraker.conf"
+        or item.get("size") != len(replacement)
+        or item.get("permissions") != "rw"
+    ):
+        raise RuntimeError("Moonraker returned a mismatched configuration upload")
+    _verify_remote_contract_file(
+        api_key, root="config", filename="moonraker.conf", expected=replacement
+    )
+    restart = _http_json(
+        "/server/restart",
+        method="POST",
+        body=b"{}",
+        headers=_api_headers(api_key, content_type="application/json"),
+    )
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected service restart result")
+    return replacement
+
+
 def _download_contract_file(api_key: str, *, root: str, filename: str) -> bytes:
     quoted = urllib.parse.quote(filename, safe="")
     status, body = _http_request(
@@ -569,22 +644,199 @@ def _verify_remote_contract_file(
         raise RuntimeError("Moonraker returned mismatched contract file bytes")
 
 
-def _wait_printer_ready(timeout_seconds: float) -> None:
+def _classify_klippy_message(value: str) -> str:
+    folded = value.casefold()
+    if "config" in folded and ("error" in folded or "parse" in folded):
+        return "config-parse"
+    if "mcu" in folded and ("socket" in folded or "connect" in folded):
+        return "mcu-connect-socket"
+    if "mcu" in folded and ("protocol" in folded or "version" in folded):
+        return "mcu-protocol"
+    if "restart" in folded:
+        return "restart-pending"
+    return "unknown"
+
+
+def _closed_state(value: object, allowed: set[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
+
+def _message_evidence(value: object) -> dict[str, object]:
+    if not isinstance(value, str):
+        return {"message": "unknown", "message_sha256": None, "message_bytes": 0}
+    encoded = value.encode("utf-8")
+    return {
+        "message": _classify_klippy_message(value),
+        "message_sha256": _digest_bytes(encoded),
+        "message_bytes": len(encoded),
+    }
+
+
+def _socket_evidence() -> dict[str, object]:
+    path = Path("/tmp/klipper_host_mcu")  # noqa: S108 - exact fixture endpoint
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"kind": "absent"}
+    return {
+        "kind": "socket" if stat.S_ISSOCK(metadata.st_mode) else "other",
+        "mode": stat.S_IMODE(metadata.st_mode),
+    }
+
+
+def _write_readiness_failure(  # noqa: PLR0913 - fixed retained evidence schema
+    *,
+    stage: str,
+    elapsed_seconds: float,
+    cycle: dict[str, bool],
+    config: bytes,
+    server: dict[str, object],
+    printer: dict[str, object],
+) -> None:
+    # Deliberately retain no response body or raw Klippy message.
+    evidence = {
+        "stage": stage,
+        "elapsed_bucket_seconds": int(elapsed_seconds // 30) * 30,
+        "connection_cycle": cycle,
+        "config_sha256": _digest_bytes(config),
+        "server": server,
+        "printer": printer,
+        "host_mcu_socket": _socket_evidence(),
+    }
+    partial = READINESS_FAILURE.with_suffix(".partial")
+    partial.write_text(json.dumps(evidence, sort_keys=True), encoding="utf-8")
+    partial.chmod(0o600)
+    partial.replace(READINESS_FAILURE)
+
+
+def _wait_printer_ready(
+    timeout_seconds: float,
+    api_key: str | None = None,
+    *,
+    failure_stage: str | None = None,
+    config: bytes | None = None,
+    restart_acknowledged: bool = False,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
+    headers = None if api_key is None else _api_headers(api_key)
+    cycle = {
+        "restart_acknowledged": restart_acknowledged,
+        "disconnect_observed": False,
+        "reconnect_observed": False,
+    }
+    start = time.monotonic()
+    last_server: dict[str, object] = {"status": "unavailable", "klippy_state": "unknown"}
+    last_printer: dict[str, object] = {
+        "status": "unavailable",
+        "message": "unknown",
+        "message_sha256": None,
+        "message_bytes": 0,
+    }
     while time.monotonic() < deadline:
         try:
-            server = _result(_http_json("/server/info"), "/server/info")
-            printer = _result(_http_json("/printer/info"), "/printer/info")
+            server = _result(_http_json("/server/info", headers=headers), "/server/info")
+            last_server = {
+                "status": "ok",
+                "klippy_state": _closed_state(
+                    server.get("klippy_state"), {"startup", "ready", "error", "shutdown"}
+                ),
+                "klippy_connected": server.get("klippy_connected") is True,
+            }
+            if server.get("klippy_connected") is False:
+                cycle["disconnect_observed"] = True
+            if cycle["disconnect_observed"] and server.get("klippy_connected") is True:
+                cycle["reconnect_observed"] = True
+        except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
+            server = {}
+        try:
+            status, body = _http_request(
+                18080, "/printer/info", headers=headers, host_header="ratos.local"
+            )
+            last_printer = {
+                "status": "ok" if status == 200 else "error",
+                "http_status": status if 200 <= status <= 599 else None,
+                **_message_evidence(None),
+            }
+            try:
+                parsed = _parse_json(body, "/printer/info")
+                if status == 200:
+                    printer = _result(parsed, "/printer/info")
+                    last_printer["state"] = _closed_state(
+                        printer.get("state"), {"ready", "startup", "error", "shutdown"}
+                    )
+                    last_printer.update(_message_evidence(printer.get("state_message")))
+                else:
+                    error = _mapping(_mapping(parsed, "printer error").get("error"), "error")
+                    last_printer.update(_message_evidence(error.get("message")))
+            except (RuntimeError, json.JSONDecodeError):
+                printer = {}
             if (
-                server.get("klippy_connected") is True
+                status == 200
+                and server.get("klippy_connected") is True
                 and server.get("klippy_state") == "ready"
                 and printer.get("state") == "ready"
             ):
                 return
-        except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
-            pass
+        except (ConnectionError, OSError):
+            last_printer = {"status": "unavailable", "http_status": None, **_message_evidence(None)}
         time.sleep(2)
+    if failure_stage is not None and config is not None:
+        _write_readiness_failure(
+            stage=failure_stage,
+            elapsed_seconds=time.monotonic() - start,
+            cycle=cycle,
+            config=config,
+            server=last_server,
+            printer=last_printer,
+        )
     raise RuntimeError("RatOS Klippy did not become ready within the fixed deadline")
+
+
+def _untrust_moonraker_clients(value: bytes) -> bytes:
+    """Replace only the configured authorization allowlist with TEST-NET-1."""
+    try:
+        text = value.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("Moonraker configuration is not UTF-8") from error
+    if "\r" in text:
+        raise RuntimeError("Moonraker configuration uses unsupported line endings")
+    lines = text.splitlines(keepends=True)
+    authorization = [
+        index
+        for index, line in enumerate(lines)
+        if line.rstrip("\n").strip().casefold() == "[authorization]"
+    ]
+    if len(authorization) != 1:
+        raise RuntimeError("Moonraker configuration must contain one authorization section")
+    start = authorization[0] + 1
+    end = next(
+        (
+            index
+            for index in range(start, len(lines))
+            if lines[index].lstrip() == lines[index]
+            and lines[index].rstrip("\n").startswith("[")
+            and lines[index].rstrip("\n").endswith("]")
+        ),
+        len(lines),
+    )
+    trusted = [
+        index
+        for index in range(start, end)
+        if lines[index].casefold().startswith("trusted_clients:")
+    ]
+    if len(trusted) != 1:
+        raise RuntimeError("Moonraker configuration must contain one trusted-client setting")
+    option = trusted[0]
+    continuation_end = option + 1
+    while continuation_end < end and lines[continuation_end][:1] in {" ", "\t"}:
+        continuation_end += 1
+    return b"".join(
+        [
+            *[line.encode("utf-8") for line in lines[:option]],
+            b"trusted_clients:\n  192.0.2.0/24\n",
+            *[line.encode("utf-8") for line in lines[continuation_end:]],
+        ]
+    )
 
 
 def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
@@ -620,7 +872,10 @@ def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
         raise RuntimeError("RatOS returned an inconsistent pause state")
     if expected_phase == "standby" and virtual_sdcard.get("is_active") is not False:
         raise RuntimeError("RatOS unexpectedly reported an active virtual SD job")
-    if expected_phase == "paused" and print_stats.get("filename") != "contract.gcode":
+    if (
+        expected_phase in {"paused", "cancelled"}
+        and print_stats.get("filename") != "contract.gcode"
+    ):
         raise RuntimeError("RatOS returned the wrong contract job identity")
     return {
         "config_sections": sorted(str(section) for section in settings),
@@ -628,6 +883,69 @@ def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
         "mcu_version": EXPECTED_MCU_VERSION,
         "phase": expected_phase,
     }
+
+
+def _history_identity(api_key: str, *, expected_status: str) -> tuple[str, float]:
+    result = _result(
+        _http_json(
+            "/server/history/list?limit=1&start=0&order=desc",
+            headers=_api_headers(api_key),
+        ),
+        "/server/history/list",
+    )
+    count = result.get("count")
+    jobs = result.get("jobs")
+    if type(count) is not int or count != 1 or not isinstance(jobs, list) or len(jobs) != 1:
+        raise RuntimeError("Moonraker did not return one current history job")
+    job = _mapping(jobs[0], "history job")
+    job_id = job.get("job_id")
+    start_time = job.get("start_time")
+    if (
+        not isinstance(job_id, str)
+        or not 6 <= len(job_id) <= 16
+        or any(character not in "0123456789ABCDEF" for character in job_id)
+        or isinstance(start_time, bool)
+        or not isinstance(start_time, (int, float))
+        or start_time < 0
+        or job.get("filename") != "contract.gcode"
+        or job.get("status") != expected_status
+    ):
+        raise RuntimeError("Moonraker returned an unexpected immutable history identity")
+    return job_id, float(start_time)
+
+
+def _runner_history_evidence() -> tuple[str, float]:
+    raw = sys.stdin.buffer.read(HTTP_BODY_LIMIT + 1)
+    if not raw or len(raw) > HTTP_BODY_LIMIT:
+        raise RuntimeError("RatOS contract runner history evidence is missing or oversized")
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("RatOS contract runner history evidence is malformed") from error
+    if not isinstance(document, dict) or set(document) != {"history"}:
+        raise RuntimeError("RatOS contract runner history evidence has unexpected fields")
+    history = _mapping(document["history"], "contract runner history")
+    if set(history) != {"job_id", "phases", "start_time"}:
+        raise RuntimeError("RatOS contract runner history identity has unexpected fields")
+    phases = _mapping(history["phases"], "contract runner history phases")
+    if phases != {
+        "started": "in_progress",
+        "faulted_pause": "in_progress",
+        "cancelled": "cancelled",
+    }:
+        raise RuntimeError("RatOS contract runner history phases are inconsistent")
+    job_id = history["job_id"]
+    start_time = history["start_time"]
+    if (
+        not isinstance(job_id, str)
+        or not 6 <= len(job_id) <= 16
+        or any(character not in "0123456789ABCDEF" for character in job_id)
+        or isinstance(start_time, bool)
+        or not isinstance(start_time, (int, float))
+        or start_time < 0
+    ):
+        raise RuntimeError("RatOS contract runner history identity is malformed")
+    return job_id, float(start_time)
 
 
 def _write_private(destination: Path, value: bytes) -> None:
@@ -695,8 +1013,9 @@ def contract_prepare() -> None:
     printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
     klove_config = _contract_source(CONTRACT_KLOVE_CONFIG)
     contract_gcode = _contract_source(CONTRACT_GCODE)
-    _wait_printer_ready(900)
     api_key = _moonraker_api_key()
+    # A stock RatOS image has no configured virtual printer, so Klippy cannot
+    # be ready until this exact COW-only fixture is installed and restarted.
     _upload_contract_file(
         api_key,
         root="config",
@@ -704,6 +1023,32 @@ def contract_prepare() -> None:
         content=printer_config,
         expect_print_status=False,
     )
+    _verify_remote_contract_file(
+        api_key, root="config", filename="printer.cfg", expected=printer_config
+    )
+    printer_restart_acknowledged = _restart_printer(api_key)
+    _wait_printer_ready(
+        900,
+        failure_stage="after_printer_restart",
+        config=printer_config,
+        restart_acknowledged=printer_restart_acknowledged,
+    )
+    moonraker_config = _replace_moonraker_configuration(api_key)
+    _wait_printer_ready(
+        300,
+        api_key,
+        failure_stage="after_moonraker_auth_restart",
+        config=printer_config,
+        restart_acknowledged=True,
+    )
+    invalid_status, _invalid_body = _http_request(
+        18080,
+        "/printer/objects/query?print_stats",
+        headers=_api_headers("0" * 32),
+        host_header="ratos.local",
+    )
+    if invalid_status != 401:
+        raise RuntimeError("RatOS did not reject an invalid Moonraker API key")
     _upload_contract_file(
         api_key,
         root="gcodes",
@@ -712,20 +1057,16 @@ def contract_prepare() -> None:
         expect_print_status=True,
     )
     _verify_remote_contract_file(
-        api_key, root="config", filename="printer.cfg", expected=printer_config
-    )
-    _verify_remote_contract_file(
         api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
     )
-    restart = _http_json(
-        "/printer/restart",
-        method="POST",
-        body=b"{}",
-        headers=_api_headers(api_key, content_type="application/json"),
+    printer_restart_acknowledged = _restart_printer(api_key)
+    _wait_printer_ready(
+        300,
+        api_key,
+        failure_stage="after_final_printer_restart",
+        config=printer_config,
+        restart_acknowledged=printer_restart_acknowledged,
     )
-    if restart.get("result") != "ok":
-        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
-    _wait_printer_ready(300)
     printer_evidence = _contract_status(api_key, expected_phase="standby")
     _verify_remote_contract_file(
         api_key, root="config", filename="printer.cfg", expected=printer_config
@@ -735,11 +1076,15 @@ def contract_prepare() -> None:
     )
 
     _write_private(SECRETS / "moonraker-api-key", f"{api_key}\n".encode())
+    _write_private(
+        SECRETS / "moonraker-config-sha256", f"{_digest_bytes(moonraker_config)}\n".encode()
+    )
     _write_private(SECRETS / "klove-token", f"{secrets.token_hex(32)}\n".encode())
     _write_private(SECRETS / "config.toml", klove_config)
     evidence = {
         "contract_gcode": _contract_identity(CONTRACT_GCODE),
         "klove_config": _contract_identity(CONTRACT_KLOVE_CONFIG),
+        "moonraker_config": {"sha256": _digest_bytes(moonraker_config)},
         "printer": printer_evidence,
         "printer_config": _contract_identity(CONTRACT_PRINTER_CONFIG),
     }
@@ -767,6 +1112,12 @@ def wait_service(service: str) -> None:
 
 def contract_evidence() -> None:
     api_key = _read_secret("moonraker-api-key")
+    runner_history = _runner_history_evidence()
+    moonraker_config_sha256 = _read_secret("moonraker-config-sha256")
+    if len(moonraker_config_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in moonraker_config_sha256
+    ):
+        raise RuntimeError("Moonraker configuration fingerprint is malformed")
     printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
     contract_gcode = _contract_source(CONTRACT_GCODE)
     _verify_remote_contract_file(
@@ -775,7 +1126,17 @@ def contract_evidence() -> None:
     _verify_remote_contract_file(
         api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
     )
-    printer = _contract_status(api_key, expected_phase="paused")
+    moonraker_config = _download_contract_file(api_key, root="config", filename="moonraker.conf")
+    if _digest_bytes(moonraker_config) != moonraker_config_sha256:
+        raise RuntimeError(
+            "RatOS Moonraker authorization configuration changed during the contract"
+        )
+    _contract_status(api_key, expected_phase="cancelled")
+    terminal_history = _history_identity(api_key, expected_status="cancelled")
+    if terminal_history != runner_history:
+        raise RuntimeError(
+            "terminal Moonraker history identity differs from faulted-pause evidence"
+        )
     status, body = _http_request(9126, "/stats")
     if status != 200:
         raise RuntimeError("the contract proxy did not return dispatch counts")
@@ -783,14 +1144,35 @@ def contract_evidence() -> None:
     counts = _mapping(proxy_result.get("counts"), "contract dispatch counts")
     if counts != EXPECTED_CONTRACT_COUNTS:
         raise RuntimeError("the contract proxy returned unexpected dispatch counts")
-    server = _probe_moonraker()
+    server = _probe_moonraker(api_key)
     evidence = {
         "dispatch_counts": dict(sorted(EXPECTED_CONTRACT_COUNTS.items())),
+        "history": {
+            "job_id": terminal_history[0],
+            "phases": {
+                "cancelled": "cancelled",
+                "faulted_pause": "in_progress",
+                "started": "in_progress",
+            },
+            "start_time": terminal_history[1],
+        },
         "moonraker": {
             "api_version_string": server["api_version_string"],
+            "authorization_config_sha256": _digest_bytes(moonraker_config),
             "moonraker_version": server["moonraker_version"],
         },
-        "printer": printer,
+        "printer": {
+            "config_sections": [
+                "idle_timeout",
+                "mcu",
+                "pause_resume",
+                "printer",
+                "virtual_sdcard",
+            ],
+            "filename": "contract.gcode",
+            "mcu_version": EXPECTED_MCU_VERSION,
+            "phase": "cancelled",
+        },
         "status": "passed",
     }
     print(json.dumps(evidence, indent=2, sort_keys=True))

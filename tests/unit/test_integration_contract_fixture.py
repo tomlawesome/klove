@@ -200,6 +200,134 @@ def test_ratos_http_uses_bounded_guest_timeout(monkeypatch: pytest.MonkeyPatch) 
     assert captured["closed"] is True
 
 
+def test_ratos_contract_prepare_uses_a_dedicated_restart_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = _load_ratos_tool()
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_http_json(path: str, **kwargs: object) -> dict[str, object]:
+        calls.append((path, kwargs))
+        if path == "/printer/restart":
+            return {"result": "ok"}
+        return {"result": {"status": {"print_stats": {"state": "standby"}}}}
+
+    monkeypatch.setattr(tool, "SECRETS", secrets)
+    monkeypatch.setattr(tool, "_require_secret_directory", lambda: None)
+    monkeypatch.setattr(tool, "_contract_source", lambda _path: b"fixture")
+    monkeypatch.setattr(tool, "_moonraker_api_key", lambda: "a" * 32)
+    monkeypatch.setattr(tool, "_upload_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_verify_remote_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_http_json", fake_http_json)
+    monkeypatch.setattr(tool, "_http_request", lambda *args, **kwargs: (401, b"{}"))
+    monkeypatch.setattr(tool, "_wait_printer_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_replace_moonraker_configuration", lambda *_args, **_kwargs: b"cfg")
+    monkeypatch.setattr(tool, "_contract_status", lambda *_args, **_kwargs: {"phase": "standby"})
+    monkeypatch.setattr(tool, "_contract_identity", lambda path: {"name": path.name})
+    monkeypatch.setattr(tool, "_write_private", lambda *args, **kwargs: None)
+
+    tool.contract_prepare()
+
+    restart_timeouts = [kwargs["timeout"] for path, kwargs in calls if path == "/printer/restart"]
+    assert restart_timeouts == [tool.PRINTER_RESTART_TIMEOUT_SECONDS] * 2
+    assert tool.PRINTER_RESTART_TIMEOUT_SECONDS > tool.HTTP_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    "restart_error",
+    ("/printer/restart returned HTTP 504", "/printer/restart timed out"),
+)
+def test_ratos_contract_prepare_treats_an_ambiguous_restart_as_read_only_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, restart_error: str
+) -> None:
+    tool = _load_ratos_tool()
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    calls: list[tuple[str, dict[str, object]]] = []
+    wait_calls: list[dict[str, object]] = []
+
+    class ReachedReadOnlyEvidence(RuntimeError):
+        pass
+
+    def wait_printer_ready(*_args: object, **kwargs: object) -> None:
+        wait_calls.append(kwargs)
+        raise ReachedReadOnlyEvidence()
+
+    def fake_http_json(path: str, **kwargs: object) -> dict[str, object]:
+        calls.append((path, kwargs))
+        if path == "/printer/restart":
+            raise RuntimeError(restart_error)
+        return {"result": {"status": {"print_stats": {"state": "standby"}}}}
+
+    monkeypatch.setattr(tool, "SECRETS", secrets)
+    monkeypatch.setattr(tool, "_require_secret_directory", lambda: None)
+    monkeypatch.setattr(tool, "_contract_source", lambda _path: b"fixture")
+    monkeypatch.setattr(tool, "_moonraker_api_key", lambda: "a" * 32)
+    monkeypatch.setattr(tool, "_upload_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_verify_remote_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_http_json", fake_http_json)
+    monkeypatch.setattr(tool, "_http_request", lambda *args, **kwargs: (401, b"{}"))
+    monkeypatch.setattr(tool, "_wait_printer_ready", wait_printer_ready)
+    monkeypatch.setattr(tool, "_replace_moonraker_configuration", lambda *_args, **_kwargs: b"cfg")
+    monkeypatch.setattr(tool, "_contract_status", lambda *_args, **_kwargs: {"phase": "standby"})
+    monkeypatch.setattr(tool, "_contract_identity", lambda path: {"name": path.name})
+    monkeypatch.setattr(tool, "_write_private", lambda *args, **kwargs: None)
+
+    with pytest.raises(ReachedReadOnlyEvidence):
+        tool.contract_prepare()
+
+    restart_calls = [path for path, _kwargs in calls if path == "/printer/restart"]
+    assert restart_calls == ["/printer/restart"]
+    assert wait_calls == [
+        {
+            "failure_stage": "after_printer_restart",
+            "config": b"fixture",
+            "restart_acknowledged": False,
+        }
+    ]
+
+
+def test_ratos_contract_prepare_denies_an_ambiguous_restart_without_read_only_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = _load_ratos_tool()
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_http_json(path: str, **kwargs: object) -> dict[str, object]:
+        calls.append((path, kwargs))
+        if path == "/printer/restart":
+            raise RuntimeError("/printer/restart returned HTTP 504")
+        return {"result": {"status": {"print_stats": {"state": "standby"}}}}
+
+    monkeypatch.setattr(tool, "SECRETS", secrets)
+    monkeypatch.setattr(tool, "_require_secret_directory", lambda: None)
+    monkeypatch.setattr(tool, "_contract_source", lambda _path: b"fixture")
+    monkeypatch.setattr(tool, "_moonraker_api_key", lambda: "a" * 32)
+    monkeypatch.setattr(tool, "_upload_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_verify_remote_contract_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool, "_http_json", fake_http_json)
+    monkeypatch.setattr(tool, "_http_request", lambda *args, **kwargs: (401, b"{}"))
+    monkeypatch.setattr(
+        tool,
+        "_wait_printer_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("did not become ready")),
+    )
+    monkeypatch.setattr(tool, "_replace_moonraker_configuration", lambda *_args, **_kwargs: b"cfg")
+    monkeypatch.setattr(tool, "_contract_status", lambda *_args, **_kwargs: {"phase": "standby"})
+    monkeypatch.setattr(tool, "_contract_identity", lambda path: {"name": path.name})
+    monkeypatch.setattr(tool, "_write_private", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        tool.contract_prepare()
+
+    restart_calls = [path for path, _kwargs in calls if path == "/printer/restart"]
+    assert restart_calls == ["/printer/restart"]
+
+
 def test_ratos_contract_prepare_rejects_nonempty_secret_volume(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
