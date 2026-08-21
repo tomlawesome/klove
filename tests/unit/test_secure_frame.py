@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -18,6 +20,8 @@ from klove.northbound.secure_frame import (
     _challenge_preflight_is_exact,
     install_secure_frame_routes,
 )
+from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.completion import CompletionHandoffService
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
 from klove.security.frame_handshake import (
@@ -29,6 +33,8 @@ from klove.security.owner_sessions import (
     SESSION_COOKIE_NAME,
     OnboardingOperation,
     OwnerCredentialAuthenticator,
+    OwnerSessionDenied,
+    OwnerSessionLease,
     OwnerSessionStore,
 )
 
@@ -38,6 +44,7 @@ from .test_api import FakeControls
 PARENT_ORIGIN = "https://console.example.invalid"
 FRAME_ORIGIN = "https://console.example.invalid:8443"
 OWNER_CREDENTIAL = "o" * 32
+ACCESS_CODE = "A" * 20
 
 
 class FrameLifecycle:
@@ -49,8 +56,66 @@ class FrameLifecycle:
         return printer()
 
 
-@pytest.fixture
-async def frame_client() -> AsyncIterator[tuple[TestClient[Any, Any], FrameLifecycle]]:
+class CompletionStore:
+    def get(self, printer_uuid: str) -> RegisteredPrinter | None:
+        return printer() if printer_uuid == PRINTER_UUID else None
+
+
+class CompletionSecrets:
+    def read(self, _reference: str, *, minimum_length: int) -> str:
+        assert minimum_length == 20
+        return ACCESS_CODE
+
+
+class DeniedCompletionSecrets:
+    def read(self, _reference: str, *, minimum_length: int) -> str:
+        assert minimum_length == 20
+        return "short"
+
+
+def completion_service() -> CompletionHandoffService:
+    return CompletionHandoffService(
+        CompletionStore(),
+        CompletionSecrets(),
+        "klove.example.test",
+        PrinterAdmissionGates(),
+    )
+
+
+def denied_completion_service() -> CompletionHandoffService:
+    return CompletionHandoffService(
+        CompletionStore(),
+        DeniedCompletionSecrets(),
+        "klove.example.test",
+        PrinterAdmissionGates(),
+    )
+
+
+class UnexpectedCompletionHandoff:
+    async def issue(self, _printer_uuid: str, _revision: int) -> object:
+        raise RuntimeError("unexpected completion failure")
+
+
+class BlockingCompletionHandoff:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def issue(self, _printer_uuid: str, _revision: int) -> object:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        raise RuntimeError("test completion release")
+
+
+@asynccontextmanager
+async def _frame_test_client(
+    handoff: CompletionHandoffService | object | None = None,
+) -> AsyncIterator[tuple[TestClient[Any, Any], FrameLifecycle, OwnerSessionStore]]:
     lifecycle = FrameLifecycle()
     sessions = OwnerSessionStore(
         frozenset({PARENT_ORIGIN}),
@@ -69,8 +134,15 @@ async def frame_client() -> AsyncIterator[tuple[TestClient[Any, Any], FrameLifec
         owner_sessions=sessions,
         lifecycle=lifecycle,  # type: ignore[arg-type]
         frame_handshakes=handshakes,
+        completion_handoff=cast(CompletionHandoffService, handoff or completion_service()),
     )
     async with TestClient(TestServer(app)) as client:
+        yield client, lifecycle, sessions
+
+
+@pytest.fixture
+async def frame_client() -> AsyncIterator[tuple[TestClient[Any, Any], FrameLifecycle]]:
+    async with _frame_test_client() as (client, lifecycle, _sessions):
         yield client, lifecycle
 
 
@@ -125,30 +197,92 @@ async def frame_session(
     )
 
 
+async def bound_completion_session(
+    client: TestClient[Any, Any],
+    *,
+    expected_status: int = 201,
+) -> tuple[Any, dict[str, object]]:
+    grant = await challenge(client)
+    session = await frame_session(client, grant)
+    document = await session.json()
+    assert session.status == 201 and isinstance(document, dict)
+    create = await client.post(
+        "/v1/onboarding/printers",
+        headers={
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": document["csrf_token"],
+            "Idempotency-Key": IDEMPOTENCY_KEY,
+        },
+        data=json.dumps(
+            {
+                "flow_nonce": document["flow_nonce"],
+                "printer_uuid": PRINTER_UUID,
+                "display_name": "Workshop printer",
+                "endpoint": {
+                    "url": "http://127.0.0.1:7125",
+                    "allow_insecure_http": False,
+                    "verify_tls": False,
+                },
+                "moonraker_credential": "m" * 32,
+                "safety_profiles": [],
+                "control_enabled": False,
+                "dispatch_enabled": False,
+            }
+        ),
+    )
+    assert create.status == expected_status
+    return session, cast(dict[str, object], document)
+
+
 @pytest.mark.asyncio
 async def test_frame_documents_and_assets_have_exact_private_response_policy(
     frame_client: tuple[TestClient[Any, Any], FrameLifecycle],
 ) -> None:
     client, _lifecycle = frame_client
-    setup = await client.get("/onboarding/setup")
-    recovery = await client.get("/onboarding/recovery")
+    documents = {
+        "/onboarding/setup": ("Register a Klipper printer", "create"),
+        "/onboarding/recovery": ("Repair printer registration", "update"),
+        "/onboarding/recovery/rotate-moonraker": (
+            "Replace Moonraker credential",
+            "rotate_moonraker",
+        ),
+        "/onboarding/recovery/rotate-compatibility": (
+            "Rotate compatibility access",
+            "rotate_compatibility",
+        ),
+        "/onboarding/recovery/disable": ("Disable a printer", "disable"),
+        "/onboarding/recovery/remove": ("Remove a disabled printer", "remove"),
+    }
+    responses = {path: await client.get(path) for path in documents}
     script = await client.get("/onboarding/assets/secure-frame.js")
     stylesheet = await client.get("/onboarding/assets/secure-frame.css")
 
-    for response in (setup, recovery, script, stylesheet):
+    for response in (*responses.values(), script, stylesheet):
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["Referrer-Policy"] == "no-referrer"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["Cross-Origin-Resource-Policy"] == "same-site"
         assert "X-Frame-Options" not in response.headers
-    csp = setup.headers["Content-Security-Policy"]
+    csp = responses["/onboarding/setup"].headers["Content-Security-Policy"]
     assert f"frame-ancestors {PARENT_ORIGIN}" in csp
     assert "*" not in csp and "unsafe-inline" not in csp
     assert "script-src 'self'" in csp and "style-src 'self'" in csp
-    assert "KloveSecureFrame" not in await script.text()
-    assert "access_code" not in await script.text()
-    assert "Set up a printer" in await setup.text()
-    assert "Recover a printer connection" in await recovery.text()
+    source = await script.text()
+    assert "KloveSecureFrame" not in source
+    assert '"/v1/onboarding/frame/completion"' in source
+    assert '"klove.frame.completion"' in source
+    assert "credential_ref" not in source
+    assert '"inspect"' not in source
+    assert '"/v1/onboarding/inspect"' not in source
+    assert "fetch(endpoint" not in source
+    assert "localStorage" not in source and "sessionStorage" not in source
+    for path, (heading, operation) in documents.items():
+        document = await responses[path].text()
+        assert heading in document
+        assert f'data-operation="{operation}"' in document
+        assert 'id="lifecycle-panel"' in document
     assert script.headers["Content-Security-Policy"] == "default-src 'none'; base-uri 'none'"
     assert stylesheet.content_type == "text/css"
 
@@ -297,6 +431,240 @@ async def test_server_proof_binds_parent_frame_owner_session_and_lifecycle_audit
     )
     assert create.status == 201
     assert lifecycle.calls[-1].request_origin == PARENT_ORIGIN
+    response_body = await create.text()
+    assert ACCESS_CODE not in response_body
+
+    completion = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers={
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": document["csrf_token"],
+        },
+        json={"flow_nonce": document["flow_nonce"]},
+    )
+    handoff = await completion.json()
+    assert completion.status == 200
+    assert set(handoff) == {
+        "version",
+        "type",
+        "flow_nonce",
+        "name",
+        "serial_number",
+        "ip_address",
+        "access_code",
+    }
+    assert handoff == {
+        "version": 1,
+        "type": "klove.frame.completion",
+        "flow_nonce": document["flow_nonce"],
+        "name": "Workshop Voron",
+        "serial_number": f"KLOVE-{PRINTER_UUID.upper()}",
+        "ip_address": "klove.example.test",
+        "access_code": ACCESS_CODE,
+    }
+    assert completion.headers["Cache-Control"] == "no-store"
+    assert completion.cookies[SESSION_COOKIE_NAME]["max-age"] == "0"
+    replay = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers={
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": document["csrf_token"],
+        },
+        json={"flow_nonce": document["flow_nonce"]},
+    )
+    assert replay.status == 403 and await replay.json() == {"error": "owner_denied"}
+
+
+@pytest.mark.asyncio
+async def test_completion_requires_one_bound_framed_create_and_never_returns_a_secret_on_denial(
+    frame_client: tuple[TestClient[Any, Any], FrameLifecycle],
+) -> None:
+    client, _lifecycle = frame_client
+    grant = await challenge(client)
+    session = await frame_session(client, grant)
+    document = await session.json()
+    headers = {
+        "Origin": FRAME_ORIGIN,
+        "Content-Type": "application/json",
+        "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+        "X-Klove-CSRF": document["csrf_token"],
+    }
+
+    no_binding = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers=headers,
+        json={"flow_nonce": document["flow_nonce"]},
+    )
+    assert no_binding.status == 403
+    assert ACCESS_CODE not in await no_binding.text()
+
+    malformed = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers=headers,
+        json={"flow_nonce": document["flow_nonce"], "unexpected": True},
+    )
+    assert malformed.status == 400
+    assert ACCESS_CODE not in await malformed.text()
+    hostile = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers={**headers, "Origin": PARENT_ORIGIN},
+        json={"flow_nonce": document["flow_nonce"]},
+    )
+    assert hostile.status == 403
+    assert ACCESS_CODE not in await hostile.text()
+
+
+@pytest.mark.asyncio
+async def test_bound_create_refuses_any_further_lifecycle_request_before_completion(
+    frame_client: tuple[TestClient[Any, Any], FrameLifecycle],
+) -> None:
+    client, lifecycle = frame_client
+    session, document = await bound_completion_session(client)
+    flow_nonce = cast(str, document["flow_nonce"])
+    headers: dict[str, str] = {
+        "Origin": FRAME_ORIGIN,
+        "Content-Type": "application/json",
+        "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+        "X-Klove-CSRF": cast(str, document["csrf_token"]),
+    }
+
+    refused = await client.post(
+        "/v1/onboarding/printers",
+        headers=headers,
+        json={"flow_nonce": flow_nonce},
+    )
+
+    assert refused.status == 403 and await refused.json() == {"error": "owner_denied"}
+    assert len(lifecycle.calls) == 1
+    completed = await client.post(
+        "/v1/onboarding/frame/completion",
+        headers=headers,
+        json={"flow_nonce": flow_nonce},
+    )
+    assert completed.status == 200
+
+
+@pytest.mark.asyncio
+async def test_create_invalidates_if_binding_the_framed_completion_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_client: tuple[TestClient[Any, Any], FrameLifecycle],
+) -> None:
+    client, _lifecycle = frame_client
+
+    def deny_binding(_lease: OwnerSessionLease, _printer_uuid: str, _revision: int) -> None:
+        raise OwnerSessionDenied
+
+    monkeypatch.setattr(OwnerSessionLease, "bind_completion", deny_binding)
+    session, document = await bound_completion_session(client, expected_status=503)
+    flow_nonce = cast(str, document["flow_nonce"])
+    headers: dict[str, str] = {
+        "Origin": FRAME_ORIGIN,
+        "Content-Type": "application/json",
+        "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+        "X-Klove-CSRF": cast(str, document["csrf_token"]),
+    }
+    assert (
+        await client.post(
+            "/v1/onboarding/frame/completion",
+            headers=headers,
+            json={"flow_nonce": flow_nonce},
+        )
+    ).status == 403
+
+
+@pytest.mark.asyncio
+async def test_completion_unexpected_failure_invalidates_the_bound_owner_session() -> None:
+    async with _frame_test_client(UnexpectedCompletionHandoff()) as (
+        client,
+        _lifecycle,
+        sessions,
+    ):
+        session, document = await bound_completion_session(client)
+        flow_nonce = cast(str, document["flow_nonce"])
+        headers: dict[str, str] = {
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": cast(str, document["csrf_token"]),
+        }
+
+        denied = await client.post(
+            "/v1/onboarding/frame/completion",
+            headers=headers,
+            json={"flow_nonce": flow_nonce},
+        )
+
+        assert denied.status == 503 and await denied.json() == {"error": "completion_denied"}
+        assert ACCESS_CODE not in await denied.text()
+        assert sessions.active_count == 0
+        assert (
+            await client.post(
+                "/v1/onboarding/frame/completion",
+                headers=headers,
+                json={"flow_nonce": flow_nonce},
+            )
+        ).status == 403
+
+
+@pytest.mark.asyncio
+async def test_completion_expected_denial_invalidates_the_bound_owner_session() -> None:
+    async with _frame_test_client(denied_completion_service()) as (client, _lifecycle, sessions):
+        session, document = await bound_completion_session(client)
+        flow_nonce = cast(str, document["flow_nonce"])
+        headers: dict[str, str] = {
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": cast(str, document["csrf_token"]),
+        }
+
+        denied = await client.post(
+            "/v1/onboarding/frame/completion",
+            headers=headers,
+            json={"flow_nonce": flow_nonce},
+        )
+
+        assert denied.status == 503 and await denied.json() == {"error": "completion_denied"}
+        assert sessions.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_completion_cancellation_invalidates_the_bound_owner_session() -> None:
+    handoff = BlockingCompletionHandoff()
+    async with _frame_test_client(handoff) as (client, _lifecycle, sessions):
+        session, document = await bound_completion_session(client)
+        flow_nonce = cast(str, document["flow_nonce"])
+        headers: dict[str, str] = {
+            "Origin": FRAME_ORIGIN,
+            "Content-Type": "application/json",
+            "Cookie": f"{SESSION_COOKIE_NAME}={session.cookies[SESSION_COOKIE_NAME].value}",
+            "X-Klove-CSRF": cast(str, document["csrf_token"]),
+        }
+        request = asyncio.ensure_future(
+            client.post(
+                "/v1/onboarding/frame/completion",
+                headers=headers,
+                json={"flow_nonce": flow_nonce},
+            )
+        )
+        await asyncio.wait_for(handoff.started.wait(), timeout=1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        await asyncio.wait_for(handoff.cancelled.wait(), timeout=1)
+
+        assert sessions.active_count == 0
+        assert (
+            await client.post(
+                "/v1/onboarding/frame/completion",
+                headers=headers,
+                json={"flow_nonce": flow_nonce},
+            )
+        ).status == 403
 
 
 @pytest.mark.asyncio
@@ -398,6 +766,13 @@ async def test_frame_route_requires_matching_complete_composition() -> None:
             lifecycle=object(),  # type: ignore[arg-type]
             frame_handshakes=handshakes,
         )
+    with pytest.raises(ValueError, match="completion handoff requires secure frame routes"):
+        create_api(
+            PrinterRegistry([]),
+            BearerAuthenticator("a" * 32),
+            FakeControls(),  # type: ignore[arg-type]
+            completion_handoff=cast(CompletionHandoffService, object()),
+        )
 
 
 def test_frame_route_rejects_a_session_store_without_one_frame_origin() -> None:
@@ -411,5 +786,7 @@ def test_frame_route_rejects_a_session_store_without_one_frame_origin() -> None:
     app[owner_sessions_key] = sessions
     with pytest.raises(ValueError, match="exact configured frame origin"):
         install_secure_frame_routes(
-            app, FrameHandshakeStore(frozenset({PARENT_ORIGIN}), capacity=1)
+            app,
+            FrameHandshakeStore(frozenset({PARENT_ORIGIN}), capacity=1),
+            completion_service(),
         )

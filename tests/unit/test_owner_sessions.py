@@ -329,6 +329,12 @@ def test_unknown_or_unclaimed_internal_lease_cannot_change_state() -> None:
     unknown_parent = OwnerSessionLease(sessions, hashlib.sha256(b"unknown-parent").digest())
     with pytest.raises(OwnerSessionDenied):
         _ = unknown_parent.parent_origin
+    unknown_completion = OwnerSessionLease(sessions, hashlib.sha256(b"unknown-completion").digest())
+    with pytest.raises(OwnerSessionDenied):
+        _ = unknown_completion.completion
+    unknown_framed = OwnerSessionLease(sessions, hashlib.sha256(b"unknown-framed").digest())
+    with pytest.raises(OwnerSessionDenied):
+        _ = unknown_framed.framed
 
     digest = hashlib.sha256(b"klove-owner-session-v1\x00" + grant.cookie_value.encode()).digest()
     unclaimed = OwnerSessionLease(sessions, digest)
@@ -369,6 +375,90 @@ def test_framed_session_binds_the_browser_request_and_parent_origins_separately(
     lease.release()
     with pytest.raises(OwnerSessionDenied):
         _ = lease.parent_origin
+    with pytest.raises(OwnerSessionDenied):
+        _ = lease.completion
+    with pytest.raises(OwnerSessionDenied):
+        _ = lease.framed
+    with pytest.raises(OwnerSessionDenied):
+        lease.bind_completion("11111111-1111-4111-8111-111111111111", 1)
+
+
+def test_only_one_framed_create_session_can_bind_one_exact_completion() -> None:
+    frame_origin = "https://grove.example.invalid:8443"
+    sessions = OwnerSessionStore(
+        frozenset({ORIGIN}),
+        capacity=2,
+        inactivity_timeout_seconds=900,
+        absolute_timeout_seconds=1_800,
+        frame_origin=frame_origin,
+        token_factory=token_sequence(1, 2, 3),
+    )
+    grant = sessions.issue_framed(parent_origin=ORIGIN, operation=OnboardingOperation.CREATE)
+    request: SessionEvidence = {
+        "cookie_headers": [f"{SESSION_COOKIE_NAME}={grant.cookie_value}"],
+        "csrf_headers": [grant.csrf_token],
+        "origin_headers": [frame_origin],
+        "operation": OnboardingOperation.CREATE,
+        "flow_nonce": grant.flow_nonce,
+    }
+    lease = sessions.authorize(**request)
+
+    assert lease.framed is True
+    initial_binding = lease.completion
+    assert initial_binding is None
+    for printer_uuid, revision in (
+        ("11111111-1111-4111-8111-111111111111", 0),
+        ("11111111-1111-4111-8111-111111111111", True),
+        ("11111111-1111-4111-8111-111111111111", 9_223_372_036_854_775_808),
+        (cast(str, True), 1),
+        ("not-a-uuid", 1),
+    ):
+        with pytest.raises(OwnerSessionDenied):
+            lease.bind_completion(printer_uuid, revision)
+
+    lease.bind_completion("11111111-1111-4111-8111-111111111111", 7)
+    binding = lease.completion
+    assert binding is not None
+    assert binding.printer_uuid == "11111111-1111-4111-8111-111111111111"
+    assert binding.revision == 7
+    with pytest.raises(OwnerSessionDenied):
+        lease.bind_completion("22222222-2222-4222-8222-222222222222", 8)
+    lease.release()
+
+    resumed = sessions.authorize(**request)
+    assert resumed.completion is not None
+    resumed.invalidate()
+
+
+def test_completion_binding_rejects_unframed_or_non_create_sessions() -> None:
+    sessions = store(token_factory=token_sequence(1, 2, 3, 4, 5, 6))
+    unframed = sessions.issue(ORIGIN, OnboardingOperation.CREATE)
+    lease = sessions.authorize(**evidence(unframed))
+    assert lease.framed is False
+    with pytest.raises(OwnerSessionDenied):
+        lease.bind_completion("11111111-1111-4111-8111-111111111111", 1)
+    lease.invalidate()
+
+    frame_origin = "https://grove.example.invalid:8443"
+    framed = OwnerSessionStore(
+        frozenset({ORIGIN}),
+        capacity=1,
+        inactivity_timeout_seconds=900,
+        absolute_timeout_seconds=1_800,
+        frame_origin=frame_origin,
+        token_factory=token_sequence(7, 8, 9),
+    )
+    grant = framed.issue_framed(parent_origin=ORIGIN, operation=OnboardingOperation.UPDATE)
+    update = framed.authorize(
+        cookie_headers=[f"{SESSION_COOKIE_NAME}={grant.cookie_value}"],
+        csrf_headers=[grant.csrf_token],
+        origin_headers=[frame_origin],
+        operation=OnboardingOperation.UPDATE,
+        flow_nonce=grant.flow_nonce,
+    )
+    with pytest.raises(OwnerSessionDenied):
+        update.bind_completion("11111111-1111-4111-8111-111111111111", 1)
+    update.invalidate()
 
 
 @pytest.mark.parametrize(

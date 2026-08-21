@@ -46,7 +46,9 @@ h1 {
 }
 
 #frame-guidance,
-.privacy-note {
+.privacy-note,
+#lifecycle-guidance,
+.field-hint {
   line-height: 1.55;
 }
 
@@ -58,6 +60,73 @@ form {
 
 label {
   font-weight: 680;
+}
+
+fieldset {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  border: 1px solid #b6c5d2;
+  border-radius: 0.7rem;
+  padding: 1rem;
+}
+
+legend {
+  color: #233650;
+  font-weight: 720;
+  padding: 0 0.3rem;
+}
+
+.field,
+.profile-details {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  color: #233650;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.checkbox-field input {
+  width: 1.1rem;
+  min-height: 1.1rem;
+  margin: 0.15rem 0 0;
+}
+
+.field-hint {
+  color: #41536a;
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+#lifecycle-panel {
+  margin-top: 1.5rem;
+}
+
+#lifecycle-title {
+  font-size: 1.2rem;
+  margin: 0;
+}
+
+#lifecycle-panel dl {
+  display: grid;
+  gap: 0.3rem;
+}
+
+#lifecycle-panel dt {
+  color: #41536a;
+  font-weight: 680;
+}
+
+#lifecycle-panel dd {
+  margin: 0 0 0.7rem;
+  overflow-wrap: anywhere;
 }
 
 input,

@@ -6,6 +6,7 @@ import json
 import os
 import ssl
 import sys
+import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import Any
@@ -18,7 +19,16 @@ CONTROL_METHODS = {
     "pause": "printer.print.pause",
     "resume": "printer.print.resume",
     "cancel": "printer.print.cancel",
+    "start": "printer.print.start",
 }
+OBSERVED_METHODS = frozenset(
+    (
+        *CONTROL_METHODS.values(),
+        "server.files.upload",
+    )
+)
+START_RECONCILIATION_METHODS = frozenset({"server.history.list", "printer.objects.query"})
+START_RECONCILIATION_BLACKOUT_SECONDS = 2.0
 
 
 def _environment_port(name: str, default: int) -> int:
@@ -120,8 +130,9 @@ TARGET_HOST_HEADER = _environment_host_header("KLOVE_TEST_MOONRAKER_HOST_HEADER"
 class ProxyState:
     armed_method: str | None = None
     counts: dict[str, int] = field(
-        default_factory=lambda: {method: 0 for method in CONTROL_METHODS.values()}
+        default_factory=lambda: {method: 0 for method in OBSERVED_METHODS}
     )
+    reconciliation_blackout_until: float = 0.0
 
 
 STATE = ProxyState()
@@ -264,15 +275,40 @@ def _jsonrpc_method(request_line: str, body: bytes) -> str | None:
     return method if isinstance(method, str) else None
 
 
+def _observed_method(request_line: str, body: bytes) -> str | None:
+    """Return one fixture-observed narrow production transport method."""
+    method = _jsonrpc_method(request_line, body)
+    if method is not None:
+        return method
+    if request_line == "POST /server/files/upload HTTP/1.1":
+        return "server.files.upload"
+    return None
+
+
+async def _read_request_body(reader: asyncio.StreamReader, headers: dict[str, str]) -> bytes:
+    """Read one bounded request body without normalizing its wire framing."""
+    content_length_header = headers.get("content-length")
+    transfer_encoding = headers.get("transfer-encoding")
+    if content_length_header is not None and transfer_encoding is not None:
+        raise ValueError("HTTP request framing is ambiguous")
+    if transfer_encoding is not None:
+        if transfer_encoding.casefold() != "chunked":
+            raise ValueError("HTTP transfer encoding is unsupported")
+        return await _read_chunked_body(reader)
+    if content_length_header is None:
+        return b""
+    content_length = int(content_length_header)
+    if content_length < 0 or content_length > MAX_BODY_BYTES:
+        raise ValueError("HTTP body is too large")
+    return await reader.readexactly(content_length)
+
+
 async def _proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     remote_writer: asyncio.StreamWriter | None = None
     try:
         head = await _read_head(reader)
         request_line, headers = _parse_head(head)
-        content_length = int(headers.get("content-length", "0"))
-        if content_length < 0 or content_length > MAX_BODY_BYTES:
-            raise ValueError("HTTP body is too large")
-        body = await reader.readexactly(content_length)
+        body = await _read_request_body(reader, headers)
         remote_reader, remote_writer = await _open_upstream()
         if headers.get("upgrade", "").casefold() == "websocket":
             remote_writer.write(_rewrite_head(head, close=False) + body)
@@ -280,13 +316,22 @@ async def _proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             await asyncio.gather(_pipe(reader, remote_writer), _pipe(remote_reader, writer))
             return
 
-        method = _jsonrpc_method(request_line, body)
+        method = _observed_method(request_line, body)
         drop_response = False
         if method in STATE.counts:
             STATE.counts[method] += 1
             if STATE.armed_method == method:
                 STATE.armed_method = None
                 drop_response = True
+                if method == CONTROL_METHODS["start"]:
+                    STATE.reconciliation_blackout_until = (
+                        time.monotonic() + START_RECONCILIATION_BLACKOUT_SECONDS
+                    )
+        elif (
+            method in START_RECONCILIATION_METHODS
+            and time.monotonic() < STATE.reconciliation_blackout_until
+        ):
+            drop_response = True
 
         remote_writer.write(_rewrite_head(head, close=True) + body)
         await remote_writer.drain()
@@ -325,7 +370,10 @@ async def _control(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -
         if method == "GET" and target == "/health":
             response = _http_response(HTTPStatus.OK, {"status": "ok"})
         elif method == "GET" and target == "/stats":
-            response = _http_response(HTTPStatus.OK, {"counts": dict(STATE.counts)})
+            response = _http_response(
+                HTTPStatus.OK,
+                {"counts": dict(STATE.counts)},
+            )
         elif method == "POST" and target.startswith("/arm/"):
             operation = target.removeprefix("/arm/")
             armed = CONTROL_METHODS.get(operation)

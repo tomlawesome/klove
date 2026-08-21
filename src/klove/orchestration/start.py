@@ -27,7 +27,7 @@ from klove.domain.start import (
 )
 from klove.domain.upload import MoonrakerGcodeMetadata, RemoteFileDigest, VerifiedUpload
 from klove.errors import JournalError, StartTransportError
-from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.admission import PrinterAdmissionGates, PrinterAdmissionLease
 from klove.persistence.start_journal import (
     JournalConflictError,
     JournalFenceError,
@@ -56,6 +56,7 @@ class _StartRequest:
 class _TaskEntry:
     request: _StartRequest
     task: asyncio.Task[StartOperationResult]
+    admission_lease: PrinterAdmissionLease | None
 
 
 class StartService:
@@ -117,7 +118,12 @@ class StartService:
                     return
             self._ready = True
 
-    async def execute(self, verified: VerifiedUpload) -> StartOperationResult:
+    async def execute(
+        self,
+        verified: VerifiedUpload,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
+    ) -> StartOperationResult:
         """Start an exact verified upload at most once across callers and restarts."""
         request = _StartRequest(verified)
         operation_id = verified.qualification.operation_id
@@ -129,24 +135,80 @@ class StartService:
             if existing is not None:
                 if keyed is not existing or operated is not existing or existing.request != request:
                     return _denied(verified, StartFailureCode.IDEMPOTENCY_CONFLICT)
+                if (
+                    admission_lease is not None
+                    and existing.admission_lease is None
+                    and not existing.task.done()
+                ):
+                    return _denied(verified, StartFailureCode.IDEMPOTENCY_CONFLICT)
                 task = existing.task
             else:
-                task = asyncio.create_task(self._execute_safely(verified))
-                entry = _TaskEntry(request, task)
+                task = asyncio.create_task(self._execute_safely(verified, admission_lease))
+                entry = _TaskEntry(request, task, admission_lease)
                 self._by_key[idempotency_key] = entry
                 self._by_operation[operation_id] = entry
                 task.add_done_callback(
-                    lambda _completed: self._forget_task(operation_id, idempotency_key)
+                    lambda completed: self._forget_task(operation_id, idempotency_key, completed)
                 )
         return await asyncio.shield(task)
 
-    def _forget_task(self, operation_id: str, idempotency_key: str) -> None:
-        self._by_key.pop(idempotency_key, None)
-        self._by_operation.pop(operation_id, None)
+    async def reconcile(
+        self,
+        verified: VerifiedUpload,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
+    ) -> StartOperationResult:
+        """Read-only reconcile one durable start row without issuing another RPC."""
+        if not self._journal_is_available():
+            return _denied(verified, StartFailureCode.JOURNAL_UNAVAILABLE)
+        async with self._admissions.hold(str(self._printer.uuid), lease=admission_lease):
+            try:
+                record = self._journal.lookup(verified)
+            except JournalConflictError:
+                return _denied(verified, StartFailureCode.IDEMPOTENCY_CONFLICT)
+            except JournalError:
+                self._journal_available = False
+                return _denied(verified, StartFailureCode.JOURNAL_UNAVAILABLE)
+            if record is None:
+                return _denied(verified, StartFailureCode.RECONCILIATION_PENDING)
+            if record.state is StartJournalState.CONFIRMED:
+                return _result_for_record(record)
+            return await self._confirm(record)
 
-    async def _execute_safely(self, verified: VerifiedUpload) -> StartOperationResult:
+    async def observe(
+        self,
+        verified: VerifiedUpload,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
+    ) -> StartObservation | None:
+        """Read one bounded current/history observation without changing start state."""
+        async with self._admissions.hold(str(self._printer.uuid), lease=admission_lease):
+            if self._current_profile(verified) is None:
+                return None
+            try:
+                return await self._transport.query()
+            except StartTransportError:
+                return None
+
+    def _forget_task(
+        self,
+        operation_id: str,
+        idempotency_key: str,
+        completed: asyncio.Task[StartOperationResult],
+    ) -> None:
+        """Forget only the matching finished task, never a newer reservation."""
+        entry = self._by_key.get(idempotency_key)
+        if entry is not None and entry.task is completed:
+            self._by_key.pop(idempotency_key, None)
+            self._by_operation.pop(operation_id, None)
+
+    async def _execute_safely(
+        self,
+        verified: VerifiedUpload,
+        admission_lease: PrinterAdmissionLease | None,
+    ) -> StartOperationResult:
         try:
-            return await self._execute_once(verified)
+            return await self._execute_once(verified, admission_lease)
         except asyncio.CancelledError:
             return _denied(verified, StartFailureCode.INTERNAL_FAILURE)
         except Exception:
@@ -155,6 +217,7 @@ class StartService:
     async def _execute_once(  # noqa: PLR0911, PLR0912 -- explicit safety gates.
         self,
         verified: VerifiedUpload,
+        admission_lease: PrinterAdmissionLease | None,
     ) -> StartOperationResult:
         if not self._enabled:
             return _denied(verified, StartFailureCode.DISPATCH_DISABLED)
@@ -163,7 +226,7 @@ class StartService:
         if not self._dispatch_ready():
             return _denied(verified, StartFailureCode.RECONCILIATION_PENDING)
 
-        async with self._admissions.hold(str(self._printer.uuid)):
+        async with self._admissions.hold(str(self._printer.uuid), lease=admission_lease):
             if not self._dispatch_ready():
                 return _denied(verified, StartFailureCode.RECONCILIATION_PENDING)
             try:

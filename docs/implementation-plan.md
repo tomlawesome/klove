@@ -39,13 +39,13 @@ Last updated: 2026-08-21
   visual work, exact-revision fixture provenance, licence/SBOM gates, and
   normal upstream contribution terms for #32 — Grove bridge, #59 — embedded
   setup/recovery, and #60 — minimal Grove contribution.
-- [#58 — registry epic](https://github.com/tomlawesome/klove/issues/58) is split
-  into #62 — registry storage, #63 — onboarding core, #64 — runtime fleet, and
-  #65 — protected onboarding API. Storage, core, and runtime bootstrap are
-  implemented; #71 — owner session, #72 — lifecycle routes, and #73 — runtime
-  handoff complete #65 — protected onboarding API.
-  #59 — embedded setup/recovery and #60 — minimal Grove contribution follow
-  under #32 — Grove bridge.
+- [#58 — registry epic](https://github.com/tomlawesome/klove/issues/58) is
+  complete through #62 — registry storage, #63 — onboarding core, #64 —
+  runtime fleet, and #65 — protected onboarding API. #71 — owner session, #72
+  — lifecycle routes, and #73 — runtime handoff complete the protected API.
+  #59 — embedded setup/recovery is also complete through #77–#79. #10 — MQTT
+  facade, #14 — FTPS ingress, #60 — minimal Grove contribution, and #13 —
+  deployment guidance remain under #32 — Grove bridge.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
@@ -58,9 +58,10 @@ Last updated: 2026-08-21
   [PR #55](https://github.com/tomlawesome/klove/pull/55) are complete on
   protected `develop`.
 - [Durable print-start issue #9](https://github.com/tomlawesome/klove/issues/9)
-  is implemented under accepted ADR 0005 with no northbound route. ADR 0007
-  accepts the one authenticated dispatch-ingress contract; issue #12 —
-  end-to-end dispatch remains the implementation and proof chain.
+  is implemented under accepted ADR 0005 with no northbound route. ADR 0007's
+  authenticated dispatch-ingress contract is implemented by #75 — dispatch
+  coordinator and proven by #76 — native dispatch proof, completing issue #12
+  — end-to-end dispatch.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
   are complete on protected `develop`.
@@ -456,80 +457,57 @@ before any product caller can reach it. The complete contract is
 - [x] Limit cancellation to preventing an upload or start that has not crossed
   its durable action boundary; it never becomes remote cleanup or a second job
   cancel path.
+- [x] Implement #75 — dispatch coordinator as the internal composition layer:
+  it reserves streamed hostile input before reading it, retains an owner-only
+  exact source and durable coordinator row, composes qualification/upload/start
+  under shared admission, and closes restart ambiguity without a blind retry.
+- [x] Implement #76 — native dispatch proof in the confined real Moonraker
+  fixture. It starts only from a bracketed coherent idle state, drives the
+  production coordinator/upload/start/journal/admission stack with one bounded
+  test artifact, proves grant/profile/source-byte/idempotency binding,
+  cancellation, duplicate/substitution and cross-printer isolation, then
+  resolves a deliberately lost typed-start response from a fresh process
+  without another upload or start. Local native acceptance and required CI
+  passed in PR #102.
 
-Exit criterion: ADR 0007 fixes one fail-closed ingress contract for issue #75 —
-dispatch coordinator and issue #76 — native dispatch proof without exposing a
-northbound adapter or adding an actuator.
+Exit criterion: #75 — dispatch coordinator is implemented without a northbound
+adapter or additional actuator. #76 — native dispatch proof passed against the
+real pinned Moonraker fixture and the complete chain is merged into protected
+`develop`.
 
 ## Next slices
 
-The completed authorized component slices are #5 — target qualification, #8 —
-verified upload, #9 — durable print start, #62 — registry storage, and #63 —
-onboarding core. ADR 0006 makes the secure runtime registry the current
-implementation chain. Its private persistence and secret-store foundation is
-implemented under #62 — registry storage, the direct probe/orchestration
-library is implemented under #63 — onboarding core, and
-registry-backed monitor activation is implemented under #68 — runtime
-supervisor, and shared admission is implemented under #69 — shared runtime
-gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
-owner authentication and request security are implemented under #71 — owner
-session. Strict secret-free lifecycle routes and committed runtime handoff are
-implemented under #72 — lifecycle routes and #73 — runtime handoff within #65
-— protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
-After that protected API chain completes, ADR 0007's accepted ingress is
-implemented by #75 — dispatch coordinator and #76 — native dispatch proof under
-#12 — end-to-end dispatch. The end-to-end lifecycle proof in #12 — onboarded
-lifecycle proof consumes that canonical onboarded printer.
-The implemented RatOS contract fixture remains a separate incomplete
-exact-release acceptance follow-up under #51 — RatOS contract and does not
-block focused development. Each safety-critical prerequisite is delivered
-through its own
-protected `develop` pull request and must merge with required checks green
-before work begins on the next dependent implementation. ADR 0004 upload
-remains non-actuating by itself; ADR 0005 print start is internal and is not a
-public dispatch workflow.
+The canonical runtime registry, protected onboarding API, embedded
+setup/recovery surface, authenticated dispatch coordinator, and native
+intake-through-completion proof are complete. ADR 0004 upload remains
+non-actuating by itself; ADR 0005 print start remains internal; no public or
+generic G-code path exists.
 
-1. Keep the native integration lane as a required regression gate and execute
-   the RatOS v2.1.0 procedure on supported ARM hardware before stable
-   promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
-   and [stable promotion #3](https://github.com/tomlawesome/klove/issues/3).
-   The rootless full-system feasibility work under
-   [spike #50](https://github.com/tomlawesome/klove/issues/50) now boots and
-   probes the exact RatOS v2.1.0 release kernel/base image and managed services
-   under a confined Pi 3B QEMU lane. The separate
-   [virtual-MCU/configuration spike #51](https://github.com/tomlawesome/klove/issues/51)
-   is required before the Klove contract can run there; supported hardware
-   remains the release-acceptance authority. This validation work authorizes no
-   new actuator.
-2. Complete the one canonical runtime printer registry chain under
-   [#58](https://github.com/tomlawesome/klove/issues/58). Foundation
-   [#62](https://github.com/tomlawesome/klove/issues/62) supplies the private
-   exact-schema database, external owner-only secrets, typed lifecycle journal,
-   reconciliation, and backup boundary. #63 supplies the direct probe and typed
-   lifecycle service. Then #64–#65 add dynamic fleet activation with shared
-   lifecycle/actuator admission and the owner-protected API. The
-   chain replaces per-printer TOML as the normal product onboarding path and
-   adds no actuator or dashboard.
-3. Integrate exact target/safety-profile binding, verified upload, durable
-   print start, and reconciliation from that onboarded registry entry. Each
-   actuator remains limited to its accepted ADR; roadmap placement alone is not
-   authorization. Track the lifecycle proof in
-   [#12](https://github.com/tomlawesome/klove/issues/12) under
-   [artifact-dispatch epic #33](https://github.com/tomlawesome/klove/issues/33).
-4. Apply the accepted clean-room boundary from
-   [#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11), then
-   complete [#59 — embedded setup/recovery](https://github.com/tomlawesome/klove/issues/59),
-   #10 — MQTT/TLS facade, #14 — FTPS ingress, and
-   [#60 — minimal Grove contribution](https://github.com/tomlawesome/klove/issues/60),
-   followed by #13 — Grove operations. Track the full order under
-   [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
-5. Separately decide and test bounded temperature/speed plus explicitly
-   mapped fan/light controls. Keep jog and extrusion disabled until proven;
-   [decision #15](https://github.com/tomlawesome/klove/issues/15) gates
-   [live-control epic #37](https://github.com/tomlawesome/klove/issues/37).
-6. Fleet hardening: durable journal, multi-printer fault isolation, cameras,
-   metrics, backup/restore, migrations, and restart/fault/soak tests, tracked in
-   [fleet epic #34](https://github.com/tomlawesome/klove/issues/34).
-7. Later adapters: exclude-object, richer cameras, MMU/toolchanger support,
-   optional outbound host agent, and additional printer stacks, tracked in
-   [adapter epic #35](https://github.com/tomlawesome/klove/issues/35).
+1. Finish [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
+   only after focused diagnosis justifies one fresh-COW exact-release run. The
+   run must prove the lost-response fence and archive `contract-passed`.
+   #81 — RatOS orchestration split follows without consuming a QEMU boot merely
+   for refactoring. Supported hardware remains release-acceptance authority.
+2. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
+   Obtain exact ADR-0008-compliant black-box wire evidence before accepting and
+   implementing proposed ADR 0009 under #10 — MQTT facade or proposed ADR 0010
+   under #14 — FTPS ingress. Then deliver #60 — minimal Grove contribution and
+   #13 — deployment guidance against one pinned supported Grove revision.
+3. Complete [#3 — stable promotion](https://github.com/tomlawesome/klove/issues/3)
+   only after documented production-like printer acceptance. Promote the exact
+   tested preview digest without rebuilding. Resolve #39 — delivery roadmap
+   project when account-level GitHub Projects write permission is available.
+4. Separately decide and test bounded temperature/speed plus explicitly mapped
+   fan/light controls. Keep jog and extrusion disabled until proven;
+   [#15 — live-control safety envelope](https://github.com/tomlawesome/klove/issues/15)
+   gates [#37 — live-control programme](https://github.com/tomlawesome/klove/issues/37).
+5. Harden fleet recovery, fault isolation, observability, backup/restore,
+   migrations, and soak behavior under
+   [#34 — fleet hardening](https://github.com/tomlawesome/klove/issues/34).
+6. Evaluate exclude-object, richer cameras, MMU/toolchanger support, an
+   outbound host agent, and other printer stacks only through separately
+   accepted adapter boundaries under
+   [#35 — optional adapters](https://github.com/tomlawesome/klove/issues/35).
+
+The retired native Grove-provider programme remains closed and must not be
+revived without a new accepted decision.

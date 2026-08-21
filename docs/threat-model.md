@@ -289,7 +289,8 @@ See `docs/decisions/0005-durable-moonraker-print-start.md`.
 ## Authenticated dispatch-ingress controls
 
 ADR 0007 accepts one internal asynchronous intake-to-completion contract. The
-coordinator is not yet implemented and no northbound route is exposed.
+internal coordinator and native lifecycle proof are implemented; no northbound
+compatibility route is exposed.
 
 - Only an independently authenticated `printers:dispatch` principal with an
   exact canonical printer grant may submit, cancel, or read an operation. A
@@ -314,9 +315,8 @@ coordinator is not yet implemented and no northbound route is exposed.
   durable start journal form one quiesced backup/restore set. Accepted and
   unresolved operations are never evicted to admit new work.
 
-Issue #75 — dispatch coordinator must implement this composition and issue #76
-— native dispatch proof must cover authentication, duplicate delivery,
-substitution, cancellation, restart, completion, and cross-printer isolation
-before target-bound dispatch is complete. Every later actuator requires its own
-typed parameters, positive capability and policy evidence, and accepted
-decision; the absence of any one item is denial.
+Issue #75 — dispatch coordinator implements this composition and issue #76 —
+native dispatch proof covers authentication, duplicate delivery, substitution,
+cancellation, restart, completion, and cross-printer isolation. Every later
+actuator requires its own typed parameters, positive capability and policy
+evidence, and accepted decision; the absence of any one item is denial.

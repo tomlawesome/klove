@@ -1,10 +1,10 @@
 # Secure embedded-frame boundary
 
-#77 — secure frame implements only the browser authorization boundary required before
-setup or recovery work may begin. It does not collect printer details, invoke
-Moonraker, create a printer, expose a dashboard or controls, or hand a Grove
-create bundle to a parent. Those workflows and the completion handoff are
-separate slices.
+#77 — secure frame establishes the browser authorization boundary. #78 — setup
+and recovery flow extends it with only the owner choices needed for canonical
+lifecycle operations. #79 — completion handoff adds the one-time exchange into
+Grove's existing printer-create flow. It remains neither a dashboard nor a
+printer-control surface.
 
 ## Deployment boundary
 
@@ -27,6 +27,7 @@ enabled = true
 owner_credential_file = "/run/secrets/klove-owner"
 allowed_grove_origins = ["https://console.example.test"]
 frame_origin = "https://console.example.test:8443"
+compatibility_host = "klove.example.test"
 ```
 
 The parent must use an iframe with only `allow-scripts`, `allow-forms`, and
@@ -76,6 +77,114 @@ After either cancellation or a failed owner exchange the controls remain
 disabled. A new challenge is rejected once a frame is pending, authorized, or
 cancelled.
 
+## One-time create completion handoff
+
+Only a successful framed `create` may cross the completion boundary. Its
+owner-session lease binds exactly the committed active printer UUID and revision
+and permits no further lifecycle request. Klove then reads the record and its
+owner-only compatibility secret while holding the shared per-printer admission
+gate, so a concurrent update, rotate, disable, or remove cannot substitute a
+stale record or secret between those reads. The gate is released before any
+browser or parent acknowledgement.
+
+The frame requests its same-origin completion route with only its existing
+CSRF proof and `flow_nonce`. The server invalidates that session immediately
+after creating the response, so it can never make a second completion request.
+The only successful response and parent message have this exact version-1
+schema:
+
+```json
+{
+  "version": 1,
+  "type": "klove.frame.completion",
+  "flow_nonce": "<43-character base64url nonce>",
+  "name": "<1–100 character display name>",
+  "serial_number": "KLOVE-<UPPERCASE UUID4>",
+  "ip_address": "<configured canonical DNS host or IPv4 address>",
+  "access_code": "<20-character base64url compatibility code>"
+}
+```
+
+No Moonraker endpoint, credential, secret reference, probe evidence, profile,
+lifecycle record, control setting, dispatch setting, or extra field can cross.
+The configured `compatibility_host` is host-only: it accepts a canonical DNS
+name or canonical IPv4 address, never a URL, port, path, IPv6 literal, or
+ambiguous numeric spelling.
+
+The frame posts that document once to the exact parent origin captured by the
+initial handshake. It refuses every later parent message from a different
+origin even if that origin is also configured. It does not render the access
+code; after synchronous `postMessage` it overwrites both its message and parsed
+response copies, removes the lifecycle DOM, and disables cancellation. The
+parent immediately submits only that bundle through its already-authorized
+existing printer-create flow, fixes the model to literal `KLOVE`, and clears
+its access-code value. It replies only to the same frame window and exact
+origin with one of these exact result messages:
+
+```json
+{
+  "version": 1,
+  "type": "klove.frame.completion.result",
+  "flow_nonce": "<the completion nonce>",
+  "status": "created"
+}
+```
+
+`"failed"` is the only other permitted status. The frame makes that result
+terminal: a failed Grove create leaves no Grove printer, while a successful
+result merely confirms the already-dispatched handoff. Cancellation before
+completion emits no bundle. Any malformed, replayed, stale, cancelled, or
+unexpected completion request is denied without a code and consumes the
+bound session where a dispatch outcome could be ambiguous.
+
+## Bounded setup and recovery actions
+
+Each frame route is fixed to exactly one lifecycle operation and its matching
+owner session. `/onboarding/setup` creates one printer; `/onboarding/recovery`
+repairs one endpoint/profile binding; the four recovery subroutes rotate the
+Moonraker credential, rotate private compatibility access, disable, or remove
+one printer. They never present a printer list, monitoring status, queue,
+generic settings editor, or controls.
+
+An endpoint displayed or supplied by discovery is advisory only. The owner may
+also enter one exact manual HTTP(S) origin. The browser calls no Moonraker
+address: create, update, and Moonraker-credential rotation call only their
+matching protected lifecycle route, whose canonical service repeats the direct
+bounded probe immediately before commit. The frame never calls `inspect` from a
+create, update, or rotation session; a future standalone inspection screen
+would require its own terminal `inspect` session.
+
+The create and update screens accept one exact UUID, name, endpoint, optional
+Klipper safety-profile binding, and explicit control/dispatch opt-ins. The
+profile fields are sent as the typed canonical profile; dispatch remains denied
+unless its profile and fresh positive capability evidence are present. Recovery
+screens require the exact registered UUID and current revision supplied by the
+owner. Compatibility rotation, disablement, and removal each require an
+explicit local acknowledgement; the lifecycle API remains the authorization
+and transition authority. Successful non-create lifecycle responses display
+only the one public record needed to confirm the operation; they never expose
+credentials, opaque references, raw probe material, or a compatibility access
+value. A successful framed create instead proceeds only through the one-time
+completion handoff above.
+
+An owner session is one operation only. Mutation idempotency is generated in
+transient frame memory, not browser storage, and the required secure UUIDs are
+generated before the owner-session exchange. A safe retry must reuse the same
+exact submitted evidence; changing evidence requires a new secure connection.
+The frame clears a submitted Moonraker credential input immediately after
+starting its same-origin request. Cancellation, terminal success, and uncertain
+cancellation remove lifecycle form DOM, clear owner/Moonraker inputs, and
+discard local session and nonce material. Only the terminal create handoff may
+send the narrow completion bundle through `postMessage`; all other lifecycle,
+Moonraker, and compatibility data remains in Klove.
+
+Before it can issue a lifecycle request, the frame rejects malformed UUIDs,
+revisions, exact text, canonical origins, Moonraker credentials, and safety
+profile fields locally. These locally correctable errors neither dispatch an
+API request nor consume the exact owner session; the owner can correct the
+fields or cancel that same session. Any Moonraker credential input is cleared
+on a local validation failure as well.
+
 ## Browser policy and privacy
 
 Frame documents emit an exact, route-specific CSP with only configured
@@ -90,21 +199,27 @@ The original Klove HTML, CSS, and JavaScript use system fonts and contain no
 Grove code, branding, visual assets, wording, source-derived test data, or
 third-party runtime asset. They register no service worker and use no local or
 session storage, analytics, telemetry, popups, downloads, or URL session
-material. Owner credentials, session cookies, CSRF values, flow nonces,
-Moonraker values, compatibility credentials, and future completion values are
-not sent through `postMessage` or rendered in the parent. In particular, this
-slice contains no completion-message encoder or access-code handoff.
+material. Owner credentials, session cookies, CSRF values, Moonraker values,
+compatibility references, and all non-completion data are not sent through
+`postMessage` or rendered in the parent. The sole exception is the one-time
+exact completion bundle, whose access code is never rendered, stored, placed
+in history or URLs, logged, or retained after dispatch.
 
 ## Verification and browser dependency
 
 `tests/unit/test_secure_frame.py` exercises the actual aiohttp routes,
-security headers, CORS decoding, cancellation, replay, and the separate
-parent/request-origin bindings. `tests/browser/secure-frame.spec.mjs` serves
-the shipped Klove JS/CSS through a temporary protocol harness to exercise a
-real Chromium parent/frame relationship, hostile and out-of-flow messages,
-expiry/restart/cancellation/parallel flows, top-level and cross-site refusal,
-privacy, keyboard operation, semantics, and responsive embedding. The harness
-is independently authored test infrastructure, not Grove code.
+security headers, CORS decoding, completion replay and failure, cancellation,
+all fixed lifecycle frame documents, and the separate parent/request-origin
+bindings. `tests/unit/test_completion.py` covers active-record/revision and
+secret validation plus shared-gate serialization with a concurrent lifecycle
+state change.
+`tests/browser/secure-frame.spec.mjs` serves the shipped Klove JS/CSS through a
+temporary protocol harness to exercise a real Chromium parent/frame
+relationship, exact one-time completion, parent-create failure, configured
+origin-swap rejection, hostile and out-of-flow messages, lifecycle errors,
+restart, cancellation, all bounded operation forms, privacy, keyboard
+operation, semantics, and responsive embedding. The harness is independently
+authored test infrastructure, not Grove code.
 
 Run browser verification with `npm ci`, `npx playwright install chromium`,
 and `sh scripts/test-browser.sh`. The lockfile records the exact official
