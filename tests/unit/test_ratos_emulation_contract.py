@@ -145,6 +145,39 @@ def test_ratos_readiness_transport_failure_retains_server_evidence(
     }
 
 
+def test_ratos_readiness_404_error_envelope_is_redacted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = _load_tool()
+    message = "MCU socket connection failed"
+    clocks = iter((0.0, 0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(tool.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(tool.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tool, "READINESS_FAILURE", tmp_path / "failure.json")
+    monkeypatch.setattr(tool, "_socket_evidence", lambda: {"kind": "absent"})
+    monkeypatch.setattr(
+        tool,
+        "_http_json",
+        lambda *_args, **_kwargs: {"result": {"klippy_connected": True, "klippy_state": "startup"}},
+    )
+    monkeypatch.setattr(
+        tool,
+        "_http_request",
+        lambda *_args, **_kwargs: (
+            404,
+            json.dumps({"error": {"code": 404, "message": message}}).encode(),
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        tool._wait_printer_ready(1, failure_stage="after_printer_restart", config=b"fixture")
+    serialized = (tmp_path / "failure.json").read_text(encoding="utf-8")
+    assert message not in serialized
+    printer = json.loads(serialized)["printer"]
+    assert printer["http_status"] == 404
+    assert printer["message"] == "mcu-connect-socket"
+    assert printer["message_bytes"] == len(message.encode())
+
+
 @pytest.mark.parametrize(
     "configuration",
     (
