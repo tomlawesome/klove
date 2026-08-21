@@ -14,12 +14,25 @@ from klove.domain.onboarding import RegisteredPrinter, RegistryOperationRecord
 from klove.persistence.printer_registry import PrinterStore, _operation_row, _printer_row
 from klove.persistence.printer_registry_errors import RegistryStoreError
 from klove.persistence.printer_registry_migrations import (
+    V1_TO_V2,
     RegistryMigrationStep,
     _apply_plan,
     _user_version,
     ensure_registry_schema,
+    validate_v1_source,
+    validate_v2,
+)
+from klove.persistence.printer_registry_schema import (
+    _MAPPING_HISTORY_COLUMNS,
+    _PROFILE_HISTORY_COLUMNS,
+    _SCHEMA_VERSION_V1,
+    _SCHEMA_VERSION_V2,
+    _initialize_schema_v2,
+    _validate_schema_v2_structure,
 )
 from klove.persistence.secret_store import SecretStore
+
+from ..onboarding_helpers import make_stores
 
 FIXTURE_DIRECTORY = Path(__file__).parents[1] / "fixtures" / "registry-migrations"
 
@@ -355,3 +368,133 @@ def test_v1_fixture_digest_records_and_ephemeral_secrets_are_exact(tmp_path: Pat
     )
     assert compatibility_value.encode() not in fixture_bytes
     assert compatibility_value.encode() not in database.read_bytes()
+
+
+def test_v2_schema_has_exact_composite_keys_and_immutable_triggers() -> None:
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_schema_v2(connection, "a" * 64)
+    _validate_schema_v2_structure(connection)
+    assert tuple(
+        row[1] for row in connection.execute("PRAGMA table_info(registry_mapping_history)")
+    ) == (*_MAPPING_HISTORY_COLUMNS,)
+    assert tuple(
+        row[5] for row in connection.execute("PRAGMA table_info(registry_mapping_history)")
+    ) == (
+        1,
+        2,
+        0,
+        0,
+        0,
+    )
+    assert tuple(
+        row[1] for row in connection.execute("PRAGMA table_info(registry_profile_history)")
+    ) == (*_PROFILE_HISTORY_COLUMNS,)
+    assert tuple(
+        row[5] for row in connection.execute("PRAGMA table_info(registry_profile_history)")
+    ) == (
+        1,
+        2,
+        3,
+        0,
+        0,
+        4,
+        0,
+    )
+    connection.execute(
+        """
+        INSERT INTO registry_mapping_history VALUES (?, ?, ?, ?, ?)
+        """,
+        ("11111111-1111-4111-8111-111111111111", 1, 0, "a" * 64, "{}"),
+    )
+    connection.execute(
+        """
+        INSERT INTO registry_profile_history VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            "profile",
+            1,
+            "b" * 64,
+            "baseline",
+            "{}",
+        ),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("UPDATE registry_mapping_history SET mapping_json = '{}'")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("DELETE FROM registry_mapping_history")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("UPDATE registry_profile_history SET profile_json = '{}' ")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("DELETE FROM registry_profile_history")
+    connection.close()
+
+
+def test_v1_to_v2_backfill_is_fixture_bound_and_reopens_exactly(tmp_path: Path) -> None:
+    fixture_path = FIXTURE_DIRECTORY / "v2.json"
+    assert (
+        hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        == ((FIXTURE_DIRECTORY / "v2.sha256").read_text(encoding="ascii").split()[0])
+    )
+    document = json.loads((FIXTURE_DIRECTORY / "v1.json").read_bytes())
+    printer = RegisteredPrinter.model_validate_json(json.dumps(document["printer"]))
+    operation = RegistryOperationRecord.model_validate_json(json.dumps(document["operation"]))
+    _secrets, store = make_stores(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "registry.sqlite3")) as connection, connection:
+        connection.execute(
+            "INSERT INTO registry_printers VALUES (?, ?, ?, ?, ?, ?, ?)", _printer_row(printer)
+        )
+        connection.execute(
+            "INSERT INTO registry_operations VALUES (?, ?, ?, ?, ?, ?)", _operation_row(operation)
+        )
+    with closing(
+        sqlite3.connect(tmp_path / "registry.sqlite3", isolation_level=None)
+    ) as connection:
+        ensure_registry_schema(
+            connection,
+            current_version=_SCHEMA_VERSION_V2,
+            initialize_current=lambda _target: None,
+            validators={_SCHEMA_VERSION_V1: validate_v1_source, _SCHEMA_VERSION_V2: validate_v2},
+            steps=(V1_TO_V2,),
+        )
+        assert _version(connection) == _SCHEMA_VERSION_V2
+        expected = json.loads((FIXTURE_DIRECTORY / "v2.json").read_bytes())
+        mapping = connection.execute(
+            """
+            SELECT printer_uuid, registry_revision, observed_at_unix_ms,
+                   mapping_fingerprint, mapping_json
+            FROM registry_mapping_history
+            """
+        ).fetchall()
+        profiles = connection.execute(
+            """
+            SELECT printer_uuid, registry_revision, slicer_profile_id,
+                   generation, profile_fingerprint, event, profile_json
+            FROM registry_profile_history
+            """
+        ).fetchall()
+        expected_mapping = expected["mapping_history"][0]
+        assert mapping == [
+            (
+                expected_mapping["printer_uuid"],
+                expected_mapping["registry_revision"],
+                expected_mapping["observed_at_unix_ms"],
+                expected_mapping["mapping_fingerprint"],
+                expected_mapping["mapping_json"],
+            )
+        ]
+        expected_profile = expected["profile_history"][0]
+        assert profiles == [
+            (
+                expected_profile["printer_uuid"],
+                expected_profile["registry_revision"],
+                expected_profile["slicer_profile_id"],
+                expected_profile["generation"],
+                expected_profile["profile_fingerprint"],
+                expected_profile["event"],
+                expected_profile["profile_json"],
+            )
+        ]
+        validate_v2(connection)
+    assert store.get(printer.printer_uuid) == printer
