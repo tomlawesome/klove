@@ -501,6 +501,13 @@ Runtime implementation remains blocked until ADR-0008-compliant black-box
 evidence completes the exact Grove packet and payload profile and ADR 0009 is
 accepted. FTPS and artifact dispatch remain separate later boundaries.
 
+The independent issue #14 — FTPS ingress design remains file-only. Proposed
+ADR 0010 separates bounded private artifact staging from every validation,
+Moonraker upload, print-start, and control authority. Runtime implementation is
+blocked until ADR-0008-compliant black-box evidence completes the exact Grove
+FTPS profile and a later accepted adapter binds one staged artifact to every
+required ADR-0007 dispatch field. MQTT `print.project_file` remains unsupported.
+
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
    promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
