@@ -1,0 +1,9 @@
+*
+!tests/
+!tests/integration/
+!tests/integration/moonraker-sim/
+!tests/integration/moonraker-sim/dispatch.Dockerfile
+!tests/integration/moonraker-sim/fixture/
+!tests/integration/moonraker-sim/fixture/dispatch_contract.py
+!tests/integration/moonraker-sim/fixture/dispatch_reconnect_contract.py
+!tests/integration/moonraker-sim/fixture/sdcard_reset.py

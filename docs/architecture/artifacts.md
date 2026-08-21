@@ -63,7 +63,12 @@ accepts one asynchronous coordinator that binds their shared identities to an
 authenticated exact-printer grant, canonical registry target, private spool,
 durable lifecycle result, restart reconciliation, and safe cancellation.
 [Issue #75 — dispatch coordinator](https://github.com/tomlawesome/klove/issues/75)
-implements that internal integration. No northbound route exists yet.
+implements that internal integration. Its confined native proof runs the
+production coordinator, upload/start transports, journals, and shared admission
+gate against the pinned Moonraker fixture; it proves source-byte and profile
+binding, cancellation, duplicate/substitution isolation, completion, and
+read-only reconciliation after an ambiguous start. No northbound route exists
+yet.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and

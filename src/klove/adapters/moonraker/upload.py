@@ -77,7 +77,11 @@ class MoonrakerUploadTransport:
             ) as response:
                 document = await _json_document(response, expected_status=201)
                 locations = response.headers.getall("Location", [])
-                if locations != [f"/server/files/gcodes/{path}"]:
+                expected_location_path = f"/server/files/gcodes/{path}"
+                if locations not in (
+                    [expected_location_path],
+                    [f"{self._base_url}{expected_location_path}"],
+                ):
                     raise UploadTransportError
             receipt = _decode_upload(document)
         except (

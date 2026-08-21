@@ -102,7 +102,7 @@ async def test_transport_uses_exact_non_actuating_upload_and_verifies_remote_byt
         return web.json_response(
             response_document,
             status=201,
-            headers={"Location": f"/server/files/gcodes/{PATH}"},
+            headers={"Location": f"{request.scheme}://{request.host}/server/files/gcodes/{PATH}"},
         )
 
     async def metadata(request: web.Request) -> web.Response:
@@ -176,6 +176,85 @@ async def test_metadata_404_is_the_only_not_ready_result() -> None:
             config(str(server.make_url(""))), API_KEY, session, request_timeout_seconds=1
         )
         assert await transport.metadata(PATH) is None
+
+
+@pytest.mark.asyncio
+async def test_upload_accepts_exact_relative_location() -> None:
+    body = json.dumps(upload_document(), default=float).encode()
+    response = FakeResponse(body=body, status=201)
+    response.headers.add("Location", f"/server/files/gcodes/{PATH}")
+    transport = MoonrakerUploadTransport(
+        config("http://moonraker.local:7125"),
+        API_KEY,
+        FakeSession(response),  # type: ignore[arg-type]
+        request_timeout_seconds=1,
+    )
+
+    receipt = await transport.upload(PATH, BytesIO(DATA), DIGEST, len(DATA))
+
+    assert receipt.path == PATH
+    assert receipt.size_bytes == len(DATA)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "locations"),
+    [
+        ("http://moonraker.local:7125", ["http://other.local:7125/server/files/gcodes/" + PATH]),
+        ("http://moonraker.local", ["http://moonraker.local:80/server/files/gcodes/" + PATH]),
+        (
+            "http://moonraker.local:7125",
+            ["http://Moonraker.local:7125/server/files/gcodes/" + PATH],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["https://moonraker.local:7125/server/files/gcodes/" + PATH],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["http://moonraker.local:7125/%73erver/files/gcodes/" + PATH],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["http://moonraker.local:7125/server/files/gcodes/" + PATH + "%3F"],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["http://moonraker.local:7125/server/files/gcodes/" + PATH + "?next=/wrong"],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["http://moonraker.local:7125/server/files/gcodes/" + PATH + "#fragment"],
+        ),
+        (
+            "http://moonraker.local:7125",
+            ["http://user@moonraker.local:7125/server/files/gcodes/" + PATH],
+        ),
+        (
+            "http://moonraker.local:7125",
+            [
+                "http://moonraker.local:7125/server/files/gcodes/" + PATH,
+                "/server/files/gcodes/" + PATH,
+            ],
+        ),
+    ],
+)
+async def test_upload_rejects_location_aliases_and_ambiguity(
+    endpoint: str, locations: list[str]
+) -> None:
+    body = json.dumps(upload_document(), default=float).encode()
+    response = FakeResponse(body=body, status=201)
+    for location in locations:
+        response.headers.add("Location", location)
+    transport = MoonrakerUploadTransport(
+        config(endpoint),
+        API_KEY,
+        FakeSession(response),  # type: ignore[arg-type]
+        request_timeout_seconds=1,
+    )
+
+    with pytest.raises(UploadTransportError):
+        await transport.upload(PATH, BytesIO(DATA), DIGEST, len(DATA))
 
 
 @pytest.mark.parametrize(

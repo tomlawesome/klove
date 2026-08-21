@@ -174,6 +174,68 @@ services:
         condition: service_healthy
     restart: "no"
 
+  dispatch-contract:
+    profiles:
+      - contract
+    platform: linux/amd64
+    image: klove-moonraker-sim-dispatch-contract:local
+    build:
+      context: ../../..
+      dockerfile: tests/integration/moonraker-sim/dispatch.Dockerfile
+    pull_policy: never
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+      - dispatch-state:/var/lib/klove
+    networks:
+      - simulation
+    depends_on:
+      printer-host:
+        condition: service_healthy
+      moonraker-proxy:
+        condition: service_healthy
+    restart: "no"
+
+  dispatch-reconnect-contract:
+    profiles:
+      - contract
+    platform: linux/amd64
+    image: klove-moonraker-sim-dispatch-contract:local
+    pull_policy: never
+    entrypoint:
+      - python
+      - /fixture/dispatch_reconnect_contract.py
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+      - dispatch-state:/var/lib/klove
+    networks:
+      - simulation
+    depends_on:
+      printer-host:
+        condition: service_healthy
+      moonraker-proxy:
+        condition: service_healthy
+    restart: "no"
+
 networks:
   simulation:
     internal: true
@@ -183,3 +245,4 @@ volumes:
   runtime-secrets:
   runtime-state:
   test-state:
+  dispatch-state:

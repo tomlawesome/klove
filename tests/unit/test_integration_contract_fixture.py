@@ -55,6 +55,77 @@ def _load_ratos_tool() -> ModuleType:
     return module
 
 
+def _load_dispatch_fixture() -> ModuleType:
+    reset = _load_fixture("sdcard_reset.py")
+    sys.modules["sdcard_reset"] = reset
+    try:
+        return _load_fixture("dispatch_contract.py")
+    finally:
+        sys.modules.pop("sdcard_reset", None)
+
+
+def test_fixture_sdcard_reset_accepts_only_the_exact_ok_result() -> None:
+    reset = _load_fixture("sdcard_reset.py")
+
+    reset._require_exact_response(
+        status=200,
+        content_types=["application/json"],
+        content_type="application/json",
+        charset="UTF-8",
+        body=b'{"result":"ok"}',
+    )
+
+
+@pytest.mark.parametrize(
+    ("updates", "category"),
+    (
+        ({"status": 201}, "status"),
+        ({"content_types": []}, "content_type"),
+        ({"content_types": ["application/json", "application/json"]}, "content_type"),
+        ({"content_type": "text/plain"}, "content_type"),
+        ({"charset": "latin-1"}, "content_type"),
+        ({"body": b"x" * 1025}, "size"),
+        ({"body": b'{"result":{},"result":{}}'}, "duplicate"),
+        ({"body": b'{"result":{}}'}, "shape"),
+        ({"body": b'{"result":NaN}'}, "json"),
+        ({"body": b"\xff"}, "json"),
+    ),
+)
+def test_fixture_sdcard_reset_rejects_every_response_alias(
+    updates: dict[str, object], category: str
+) -> None:
+    reset = _load_fixture("sdcard_reset.py")
+    response: dict[str, object] = {
+        "status": 200,
+        "content_types": ["application/json"],
+        "content_type": "application/json",
+        "charset": None,
+        "body": b'{"result":"ok"}',
+    }
+    response.update(updates)
+
+    with pytest.raises(RuntimeError, match=f"response was invalid: {category}"):
+        reset._require_exact_response(**response)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_fixture_observes_the_durable_unknown_before_reconciliation() -> None:
+    dispatch = _load_dispatch_fixture()
+    request = SimpleNamespace(operation_id="operation", idempotency_key="idempotency")
+    record = SimpleNamespace(state=dispatch.DispatchState.OUTCOME_UNKNOWN)
+    journal = SimpleNamespace(lookup=lambda *_args: record)
+
+    assert (
+        await dispatch._wait_persisted_state(
+            journal,
+            request,
+            dispatch.DispatchState.OUTCOME_UNKNOWN,
+            timeout=0.1,
+        )
+        is record
+    )
+
+
 def test_ratos_upload_contract_accepts_exact_top_level_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,6 +605,41 @@ async def test_proxy_relays_bounded_http_response_framing(
     reader.feed_eof()
 
     assert await proxy._read_response(reader) == response
+
+
+@pytest.mark.asyncio
+async def test_proxy_relays_bounded_chunked_upload_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_environment(monkeypatch)
+    proxy = _load_fixture("proxy.py")
+    body = b"4\r\ntest\r\n0\r\n\r\n"
+    reader = proxy.asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+
+    assert await proxy._read_request_body(reader, {"transfer-encoding": "chunked"}) == body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    (
+        {"content-length": "1", "transfer-encoding": "chunked"},
+        {"transfer-encoding": "gzip"},
+        {"content-length": "-1"},
+    ),
+)
+async def test_proxy_rejects_ambiguous_or_invalid_request_framing(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    _clear_environment(monkeypatch)
+    proxy = _load_fixture("proxy.py")
+    reader = proxy.asyncio.StreamReader()
+    reader.feed_eof()
+
+    with pytest.raises(ValueError):
+        await proxy._read_request_body(reader, headers)
 
 
 @pytest.mark.asyncio
