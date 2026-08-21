@@ -9,6 +9,7 @@ import pytest
 from klove.adapters.moonraker.client import MoonrakerMonitorConfig
 from klove.domain.onboarding import MoonrakerEndpoint, PrinterLifecycle, RegisteredPrinter
 from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.control import ControlService, ControlTransport
 from klove.orchestration.runtime_registry import RegistryRuntimeError, RegistryRuntimeSupervisor
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
@@ -166,6 +167,71 @@ def supervisor(
         admissions=admissions or PrinterAdmissionGates(),
         monitor_factory=factory,
     )
+
+
+def control_service(
+    registry: PrinterRegistry,
+    admissions: PrinterAdmissionGates,
+) -> ControlService:
+    return ControlService(
+        registry,
+        {},
+        confirmation_timeout_seconds=1,
+        poll_interval_seconds=0.1,
+        idempotency_capacity=10,
+        admissions=admissions,
+    )
+
+
+@pytest.mark.parametrize("with_controls", [True, False])
+def test_runtime_requires_control_routes_and_factory_together(with_controls: bool) -> None:
+    registry = PrinterRegistry([])
+    admissions = PrinterAdmissionGates()
+    controls = control_service(registry, admissions) if with_controls else None
+    factory = (
+        (lambda _record, _key, _session: cast(ControlTransport, object()))
+        if not with_controls
+        else None
+    )
+
+    with pytest.raises(ValueError):
+        RegistryRuntimeSupervisor(
+            cast(PrinterStore, FakeStore(())),
+            cast(SecretStore, FakeSecrets({})),
+            registry,
+            cast(aiohttp.ClientSession, object()),
+            admissions=admissions,
+            controls=controls,
+            control_transport_factory=factory,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_installs_and_removes_control_route_with_monitor() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = PrinterRegistry([])
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
+    store = FakeStore((printer(),))
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
+    )
+
+    assert await runtime.refresh() == (PRINTER_UUID,)
+    with pytest.raises(KeyError):
+        controls.register_transport(PRINTER_UUID, transport)
+
+    store.records = ()
+    assert await runtime.refresh() == ()
+    assert controls.unregister_transport(PRINTER_UUID) is False
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -333,17 +399,26 @@ async def test_disable_and_removal_each_stop_an_active_route() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_removes_unmanaged_and_colliding_registry_routes() -> None:
+    admissions = PrinterAdmissionGates()
     registry = PrinterRegistry(["stale", PRINTER_UUID])
-    runtime = supervisor(
-        FakeStore((printer(),)),
-        FakeSecrets(secret_values()),
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
+    controls.register_transport("stale", transport)
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((printer(),))),
+        cast(SecretStore, FakeSecrets(secret_values())),
         registry,
-        RecordingFactory(),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
     )
 
     assert await runtime.refresh() == (PRINTER_UUID,)
     assert await registry.get("stale") is None
     assert await registry.get(PRINTER_UUID) is not None
+    assert controls.unregister_transport("stale") is False
     await runtime.shutdown()
 
 
@@ -423,8 +498,20 @@ async def test_monitor_failure_removes_only_its_route() -> None:
     second = other_printer()
     store = FakeStore((first, second))
     registry = PrinterRegistry([])
+    admissions = PrinterAdmissionGates()
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
     factory = RecordingFactory(failures={PRINTER_UUID: RuntimeError()})
-    runtime = supervisor(store, FakeSecrets(secret_values()), registry, factory)
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=factory,
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
+    )
 
     assert await runtime.refresh() == (PRINTER_UUID, OTHER_PRINTER_UUID)
     await factory.monitors[0].started.wait()
@@ -433,7 +520,61 @@ async def test_monitor_failure_removes_only_its_route() -> None:
 
     assert await registry.get(PRINTER_UUID) is None
     assert await registry.get(OTHER_PRINTER_UUID) is not None
+    assert controls.unregister_transport(PRINTER_UUID) is False
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_control_route_makes_activation_fail_closed_and_is_removed() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = PrinterRegistry([])
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
+    controls.register_transport(PRINTER_UUID, transport)
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((printer(),))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
+    )
+
+    assert await runtime.refresh() == ()
+    assert await registry.get(PRINTER_UUID) is None
+    assert controls.unregister_transport(PRINTER_UUID) is False
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_route_cleanup_also_operates_when_global_controls_are_disabled() -> None:
+    stale_registry = PrinterRegistry(["stale"])
+    stale_runtime = supervisor(
+        FakeStore(()),
+        FakeSecrets({}),
+        stale_registry,
+        RecordingFactory(),
+    )
+    assert await stale_runtime.refresh() == ()
+    assert await stale_registry.get("stale") is None
+    await stale_runtime.shutdown()
+
+    failed_registry = PrinterRegistry([])
+    factory = RecordingFactory(failures={PRINTER_UUID: RuntimeError()})
+    failed_runtime = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        failed_registry,
+        factory,
+    )
+    assert await failed_runtime.refresh() == (PRINTER_UUID,)
+    await factory.monitors[0].started.wait()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert await failed_registry.get(PRINTER_UUID) is None
+    await failed_runtime.shutdown()
 
 
 @pytest.mark.asyncio

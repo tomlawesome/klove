@@ -9,6 +9,7 @@ from klove.config import (
     ControlConfig,
     DispatchConfig,
     PrinterConfig,
+    RegistryConfig,
     load_config,
     read_secret,
 )
@@ -86,6 +87,7 @@ id = "voron-24"
 uuid = "11111111-1111-4111-8111-111111111111"
 endpoint = "http://127.0.0.1:7125"
 api_key_file = "moonraker.key"
+verify_tls = false
 dispatch_enabled = true
 
 [[printers.safety_profiles]]
@@ -149,9 +151,68 @@ def test_ambiguous_or_insecure_endpoints_are_rejected(endpoint: str) -> None:
 
 
 def test_insecure_remote_http_requires_explicit_consent() -> None:
-    assert printer(endpoint="http://printer.example.invalid:7125", allow_insecure_http=True)
-    assert printer(endpoint="http://localhost:7125")
-    assert printer(endpoint="http://[::1]:7125")
+    assert printer(
+        endpoint="http://printer.example.invalid:7125",
+        allow_insecure_http=True,
+        verify_tls=False,
+    )
+    assert printer(endpoint="http://localhost:7125", verify_tls=False)
+    assert printer(endpoint="http://[::1]:7125", verify_tls=False)
+
+
+def test_registry_paths_and_probe_allowlist_are_exact() -> None:
+    assert RegistryConfig().allowed_probe_cidrs == ("127.0.0.0/8",)
+    for values in (
+        {"database_file": Path("relative.sqlite3")},
+        {"secret_directory": Path("relative-secrets")},
+        {"allowed_probe_cidrs": ("0.0.0.0/0",)},
+        {"allowed_probe_cidrs": (" 127.0.0.0/8",)},
+        {"allowed_probe_cidrs": ("tést",)},
+        {"allowed_probe_cidrs": ("192.168.1.1/24",)},
+        {"allowed_probe_cidrs": ("192.168.1.0/24", "192.168.1.0/24")},
+        {"allowed_probe_cidrs": tuple(f"10.{index}.0.0/16" for index in range(65))},
+    ):
+        with pytest.raises(ValidationError):
+            RegistryConfig.model_validate(values)
+
+    with pytest.raises(ValidationError, match="probe CIDR allowlist"):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            registry=RegistryConfig(allowed_probe_cidrs=()),
+            printers=(printer(),),
+        )
+
+
+@pytest.mark.parametrize(
+    ("registry", "journal"),
+    [
+        (
+            RegistryConfig(
+                database_file=Path("/state/secrets/registry.sqlite3"),
+                secret_directory=Path("/state/secrets"),
+            ),
+            Path("/state/start.sqlite3"),
+        ),
+        (
+            RegistryConfig(database_file=Path("/state/shared.sqlite3")),
+            Path("/state/shared.sqlite3"),
+        ),
+        (
+            RegistryConfig(secret_directory=Path("/state/secrets")),
+            Path("/state/secrets/start.sqlite3"),
+        ),
+    ],
+)
+def test_registry_storage_boundaries_cannot_overlap(
+    registry: RegistryConfig,
+    journal: Path,
+) -> None:
+    with pytest.raises(ValidationError):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            registry=registry,
+            dispatch=DispatchConfig(journal_file=journal),
+        )
 
 
 def test_printer_uuid_is_required_and_canonical() -> None:

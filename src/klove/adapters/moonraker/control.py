@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 
 from klove.adapters.moonraker.history import decode_history_list
-from klove.config import PrinterConfig
 from klove.domain.control import ControlOperation, LiveControlState
 from klove.domain.models import JobIdentitySnapshot, PrinterPhase
 from klove.errors import ControlTransportError, ProtocolError
@@ -39,12 +38,22 @@ _PHASES = {
 }
 
 
+class MoonrakerControlConfig(Protocol):
+    """Minimal immutable connection settings required by job control."""
+
+    @property
+    def endpoint(self) -> str: ...
+
+    @property
+    def verify_tls(self) -> bool: ...
+
+
 class MoonrakerControlTransport:
     """Poll and actuate one explicitly configured Moonraker instance."""
 
     def __init__(
         self,
-        config: PrinterConfig,
+        config: MoonrakerControlConfig,
         api_key: str,
         session: aiohttp.ClientSession,
         *,

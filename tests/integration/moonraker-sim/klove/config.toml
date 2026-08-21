@@ -3,6 +3,14 @@ listen_host = "0.0.0.0"
 listen_port = 8080
 token_file = "/run/klove-secrets/klove-token"
 
+[registry]
+database_file = "/var/lib/klove/printer-registry.sqlite3"
+secret_directory = "/var/lib/klove/registry-secrets"
+allowed_probe_cidrs = ["172.16.0.0/12"]
+
+[dispatch]
+journal_file = "/var/lib/klove/start-journal.sqlite3"
+
 [control]
 enabled = true
 request_timeout_seconds = 3.0

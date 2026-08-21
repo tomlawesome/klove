@@ -50,14 +50,13 @@ class FakeTransport:
             raise ControlTransportError
 
 
-async def setup(  # noqa: PLR0913 -- compact explicit service fixture.
+async def setup(
     transport: FakeTransport,
     *,
     capacity: int = 10,
     timeout: float = 0.01,
     poll: float = 0.001,
     admissions: PrinterAdmissionGates | None = None,
-    admission_id: str = "voron",
 ) -> tuple[ControlService, ControlIntent, PrinterRegistry]:
     registry = PrinterRegistry(["voron"])
     current = initial_snapshot("voron").model_copy(
@@ -90,7 +89,6 @@ async def setup(  # noqa: PLR0913 -- compact explicit service fixture.
         poll_interval_seconds=poll,
         idempotency_capacity=capacity,
         admissions=admissions or PrinterAdmissionGates(),
-        admission_ids={"voron": admission_id},
     )
     return (
         service,
@@ -102,22 +100,6 @@ async def setup(  # noqa: PLR0913 -- compact explicit service fixture.
         ),
         registry,
     )
-
-
-@pytest.mark.parametrize("admission_ids", [{}, {"voron": ""}])
-def test_control_requires_one_canonical_admission_id_per_transport(
-    admission_ids: dict[str, str],
-) -> None:
-    with pytest.raises(ValueError):
-        ControlService(
-            PrinterRegistry(["voron"]),
-            {"voron": FakeTransport([])},
-            confirmation_timeout_seconds=1,
-            poll_interval_seconds=0.1,
-            idempotency_capacity=10,
-            admissions=PrinterAdmissionGates(),
-            admission_ids=admission_ids,
-        )
 
 
 def live(
@@ -146,20 +128,50 @@ async def test_confirmed_command_is_dispatched_once_and_duplicate_reuses_result(
 @pytest.mark.asyncio
 async def test_control_admission_waits_for_the_shared_printer_gate() -> None:
     admissions = PrinterAdmissionGates()
-    admission_id = "00000000-0000-4000-8000-000000000001"
     transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
-    service, intent, _registry = await setup(
-        transport,
-        admissions=admissions,
-        admission_id=admission_id,
-    )
+    service, intent, _registry = await setup(transport, admissions=admissions)
 
-    async with admissions.hold(admission_id):
+    async with admissions.hold(intent.printer_id):
         task = asyncio.create_task(service.execute(intent))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert transport.query_count == 0
     assert (await task).status is ControlStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_removal_wins_before_waiting_control_admission() -> None:
+    admissions = PrinterAdmissionGates()
+    transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
+    service, intent, _registry = await setup(transport, admissions=admissions)
+
+    async with admissions.hold(intent.printer_id):
+        task = asyncio.create_task(service.execute(intent))
+        await asyncio.sleep(0)
+        assert service.unregister_transport(intent.printer_id) is True
+
+    result = await task
+    assert result.status is ControlStatus.DENIED
+    assert result.code == "control_disabled"
+    assert transport.query_count == 0
+
+
+def test_runtime_control_routes_reject_duplicates_and_remove_idempotently() -> None:
+    service = ControlService(
+        PrinterRegistry([]),
+        {},
+        confirmation_timeout_seconds=1,
+        poll_interval_seconds=0.1,
+        idempotency_capacity=10,
+        admissions=PrinterAdmissionGates(),
+    )
+    transport = FakeTransport([])
+
+    service.register_transport("printer", transport)
+    with pytest.raises(KeyError):
+        service.register_transport("printer", transport)
+    assert service.unregister_transport("printer") is True
+    assert service.unregister_transport("printer") is False
 
 
 @pytest.mark.asyncio

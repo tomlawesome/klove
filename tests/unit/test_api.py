@@ -26,7 +26,6 @@ async def client() -> AsyncIterator[TestClient[Any, Any]]:
         poll_interval_seconds=0.1,
         idempotency_capacity=10,
         admissions=PrinterAdmissionGates(),
-        admission_ids={},
     )
     app = create_api(registry, BearerAuthenticator(TOKEN), controls)
     async with TestClient(TestServer(app)) as result:

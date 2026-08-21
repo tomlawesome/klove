@@ -5,8 +5,11 @@ secret references, confirmed capability mappings, safety-profile history,
 artifact/operation identifiers, and bounded idempotency journals. Secret values
 remain in owner-only storage outside the database. Grove remains the queue and
 production system of record; Moonraker/Klipper remains the execution state of
-record. Per-printer TOML is a temporary bootstrap path, not a parallel product
-registry.
+record. Per-printer TOML is a one-time idempotent bootstrap input, not a
+parallel product registry: exact file entries are directly probed and imported
+into the canonical registry, and every live route is then derived from that
+durable record by canonical printer UUID. File/database drift fails startup
+closed.
 
 The implemented persistence foundation, two-phase credential protocol, and
 inseparable backup/restore set are specified in

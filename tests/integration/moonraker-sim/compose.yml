@@ -95,6 +95,7 @@ services:
       - /run/klove-secrets/config.toml
     volumes:
       - runtime-secrets:/run/klove-secrets:ro
+      - klove-state:/var/lib/klove
     networks:
       - simulation
     depends_on:
@@ -178,6 +179,7 @@ networks:
     internal: true
 
 volumes:
+  klove-state:
   runtime-secrets:
   runtime-state:
   test-state:

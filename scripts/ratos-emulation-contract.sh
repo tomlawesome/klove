@@ -109,6 +109,8 @@ timeout 30 docker run \
     --log-opt max-size=512k \
     --log-opt max-file=2 \
     --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --tmpfs /var/lib/klove:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001 \
+    --tmpfs /run/klove-registry-secrets:rw,noexec,nosuid,nodev,size=1m,mode=0700,uid=10001,gid=10001 \
     --label "io.klove.ratos.state=$ratos_state_dir" \
     --label "io.klove.ratos.source-digest=$ratos_stored_source_digest" \
     --label "io.klove.ratos.role=production-klove" \

@@ -2,8 +2,8 @@
 
 Status: registry foundation, direct-probe lifecycle orchestration, and the
 dynamic monitor supervisor are implemented. Issue #69 — shared runtime gate is
-implemented. Startup wiring and the protected API remain tracked in issue #70
-— runtime bootstrap and issue #65 — protected onboarding API.
+implemented. Issue #70 — runtime bootstrap now completes startup wiring. The
+protected API remains tracked in issue #65 — protected onboarding API.
 
 ## Boundary
 
@@ -29,7 +29,17 @@ print start, or generic G-code capability. Issue #68 — runtime supervisor adds
 fail-closed dynamic monitor activation from complete active records. Issue #69
 — shared runtime gate supplies canonical per-printer lifecycle, actuator, and
 runtime admission. Issue #70 — runtime bootstrap owns startup wiring, and issue
-#65 — protected onboarding API owns the route.
+#65 — protected onboarding API owns lifecycle routes.
+
+At startup, Klove validates and reconciles the registry, external credential
+store, and durable print-start journal before opening readiness. Any configured
+file printers are imported through one deterministic idempotent
+`bootstrap_import` operation and the same direct-probe/create contract. An
+exact replay is accepted; changed file input, an existing non-bootstrap record,
+or disagreement with current database state fails startup. Once imported,
+monitoring and control routes are built only from complete active registry
+records and use the canonical printer UUID. Removing file printer blocks does
+not remove or replace their durable records.
 
 ## Mutation and recovery protocol
 

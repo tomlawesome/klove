@@ -11,7 +11,7 @@ from typing import Any
 
 KLOVE = "http://klove:8080"
 PROXY_CONTROL = "http://moonraker-proxy:9126"
-PRINTER_ID = "simulated-printer"
+PRINTER_ID = "11111111-1111-4111-8111-111111111111"
 TOKEN = Path("/run/klove-secrets/klove-token").read_text(encoding="utf-8").strip()
 STATE_TOKEN_PATH = Path("/run/test-state/state-token")
 

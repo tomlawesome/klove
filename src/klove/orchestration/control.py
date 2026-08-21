@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Mapping
 from typing import Protocol
 
 from klove.domain.control import (
@@ -44,15 +43,9 @@ class ControlService:
         poll_interval_seconds: float,
         idempotency_capacity: int,
         admissions: PrinterAdmissionGates,
-        admission_ids: Mapping[str, str],
     ) -> None:
-        if admission_ids.keys() != transports.keys() or any(
-            not value for value in admission_ids.values()
-        ):
-            raise ValueError("control admission ids must exactly match configured transports")
         self._registry = registry
         self._transports = dict(transports)
-        self._admission_ids = dict(admission_ids)
         self._confirmation_timeout = confirmation_timeout_seconds
         self._poll_interval = poll_interval_seconds
         self._capacity = idempotency_capacity
@@ -62,6 +55,16 @@ class ControlService:
         self._journal_lock = asyncio.Lock()
         self._admissions = admissions
         self._uncertain_tokens: set[tuple[str, str]] = set()
+
+    def register_transport(self, printer_id: str, transport: ControlTransport) -> None:
+        """Install one canonical runtime route while its shared gate is held."""
+        if printer_id in self._transports:
+            raise KeyError("control transport is already registered")
+        self._transports[printer_id] = transport
+
+    def unregister_transport(self, printer_id: str) -> bool:
+        """Remove one canonical runtime route while its shared gate is held."""
+        return self._transports.pop(printer_id, None) is not None
 
     async def execute(self, intent: ControlIntent) -> ControlResult:
         """Execute an intent once; duplicates await and reuse the original result."""
@@ -110,11 +113,10 @@ class ControlService:
     async def _execute_once(  # noqa: PLR0911 -- fail-closed exits precede dispatch.
         self, intent: ControlIntent
     ) -> ControlResult:
-        transport = self._transports.get(intent.printer_id)
-        admission_id = self._admission_ids.get(intent.printer_id)
-        if transport is None or admission_id is None:
-            return _denied(intent.operation, "control_disabled")
-        async with self._admissions.hold(admission_id):
+        async with self._admissions.hold(intent.printer_id):
+            transport = self._transports.get(intent.printer_id)
+            if transport is None:
+                return _denied(intent.operation, "control_disabled")
             uncertainty_key = (intent.printer_id, intent.state_token)
             if uncertainty_key in self._uncertain_tokens:
                 return _unknown(intent.operation)

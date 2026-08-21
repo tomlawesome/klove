@@ -66,6 +66,16 @@ class PrinterConfig(BaseModel):
         return self
 
 
+def _is_loopback(hostname: str) -> bool:
+    """Return whether a hostname is an unambiguous loopback address."""
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 class ApiConfig(BaseModel):
     """Native API configuration."""
 
@@ -74,6 +84,39 @@ class ApiConfig(BaseModel):
     listen_host: str = "127.0.0.1"
     listen_port: int = Field(default=8080, ge=1, le=65535)
     token_file: Path
+
+
+class RegistryConfig(BaseModel):
+    """Private canonical registry storage and direct-probe policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    database_file: Path = Path("/var/lib/klove/printer-registry.sqlite3")
+    secret_directory: Path = Path("/var/lib/klove/registry-secrets")
+    allowed_probe_cidrs: tuple[str, ...] = ("127.0.0.0/8",)
+
+    @field_validator("database_file", "secret_directory")
+    @classmethod
+    def durable_paths_are_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("registry paths must be absolute")
+        return value
+
+    @field_validator("allowed_probe_cidrs")
+    @classmethod
+    def probe_cidrs_are_exact(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) > 64 or len(values) != len(set(values)):
+            raise ValueError("probe CIDRs must be unique and bounded")
+        for value in values:
+            if value != value.strip() or not value.isascii():
+                raise ValueError("probe CIDRs must be exact ASCII strings")
+            try:
+                network = ipaddress.ip_network(value, strict=True)
+            except ValueError as exc:
+                raise ValueError("probe CIDRs must be canonical networks") from exc
+            if str(network) != value or network.prefixlen == 0:
+                raise ValueError("probe CIDRs must be canonical and narrower than all addresses")
+        return values
 
 
 class ControlConfig(BaseModel):
@@ -128,6 +171,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     api: ApiConfig
+    registry: RegistryConfig = RegistryConfig()
     control: ControlConfig = ControlConfig()
     dispatch: DispatchConfig = DispatchConfig()
     artifacts: ArtifactLimits = ArtifactLimits()
@@ -146,17 +190,15 @@ class AppConfig(BaseModel):
             raise ValueError("per-printer control requires control.enabled=true")
         if not self.dispatch.enabled and any(printer.dispatch_enabled for printer in self.printers):
             raise ValueError("per-printer dispatch requires dispatch.enabled=true")
+        if self.printers and not self.registry.allowed_probe_cidrs:
+            raise ValueError("file bootstrap printers require an exact probe CIDR allowlist")
+        if self.registry.database_file.is_relative_to(self.registry.secret_directory):
+            raise ValueError("registry database must remain outside the secret directory")
+        if self.dispatch.journal_file == self.registry.database_file:
+            raise ValueError("registry and print-start journals must be separate files")
+        if self.dispatch.journal_file.is_relative_to(self.registry.secret_directory):
+            raise ValueError("print-start journal must remain outside the secret directory")
         return self
-
-
-def _is_loopback(hostname: str) -> bool:
-    """Return whether a hostname is an unambiguous loopback address."""
-    if hostname.casefold() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
 
 
 def load_config(path: Path) -> AppConfig:
