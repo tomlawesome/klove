@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import sys
 import uuid
 from pathlib import Path
@@ -79,6 +80,36 @@ def test_ratos_contract_installs_controlled_printer_before_first_ready_wait() ->
 )
 def test_ratos_klippy_message_classification_is_closed(message: str, expected: str) -> None:
     assert _load_tool()._classify_klippy_message(message) == expected
+
+
+def test_ratos_readiness_record_redacts_hostile_remote_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = _load_tool()
+    hostile_state = "private-state-value"
+    hostile_message = "private klippy diagnostic"
+    monkeypatch.setattr(tool, "READINESS_FAILURE", tmp_path / "failure.json")
+    monkeypatch.setattr(tool, "_socket_evidence", lambda: {"kind": "absent"})
+    printer = {"status": "ok", **tool._message_evidence(hostile_message)}
+    tool._write_readiness_failure(
+        stage="after_printer_restart",
+        elapsed_seconds=31,
+        cycle={
+            "restart_acknowledged": True,
+            "disconnect_observed": False,
+            "reconnect_observed": False,
+        },
+        config=b"fixture",
+        server={"status": "ok", "klippy_state": tool._closed_state(hostile_state, {"ready"})},
+        printer=printer,
+    )
+    serialized = (tmp_path / "failure.json").read_text(encoding="utf-8")
+    assert hostile_state not in serialized
+    assert hostile_message not in serialized
+    record = json.loads(serialized)
+    assert record["server"]["klippy_state"] == "unknown"
+    assert record["printer"]["message"] == "unknown"
+    assert record["printer"]["message_bytes"] == len(hostile_message.encode())
 
 
 @pytest.mark.parametrize(
