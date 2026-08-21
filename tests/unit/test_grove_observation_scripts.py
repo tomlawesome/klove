@@ -26,7 +26,7 @@ def _mock_environment(
     log = tmp_path / "docker.log"
     _write_executable(
         tools / "timeout",
-        "#!/usr/bin/env sh\nshift\nexec \"$@\"\n",
+        '#!/usr/bin/env sh\nshift\nexec "$@"\n',
     )
     _write_executable(tools / "sleep", "#!/usr/bin/env sh\nexit 0\n")
     _write_executable(tools / "dd", "#!/usr/bin/env sh\nprintf x\n")
