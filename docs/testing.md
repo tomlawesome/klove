@@ -29,11 +29,16 @@ that the protocol model is complete. The suite therefore also includes:
   completion decoding, cancellation, hostile inputs, no browser persistence,
   responsive layouts, keyboard navigation, accessibility, and recovery outside
   the frame;
-- Grove contract and browser tests pinned to the supported source revision for
+- clean-room Grove contract and browser tests pinned to the supported source
+  revision for
   `KLOVE` create-field limits, stable proxy identity, successful and failed
   handoff, image fallback, exact-printer scheduling, model-compatibility bypass,
   unsupported Bambu feature suppression, and regression of existing Bambu
   printer types;
+- every committed Grove observation fixture paired with a validated provenance
+  manifest naming the exact upstream and harness revisions, black-box scenario,
+  tools, UTC capture date, generated inputs, normalization, media type, byte
+  count, SHA-256, value classifications, and source/secret/privacy review;
 - control tests for exact token/job/state matching, per-printer serialization,
   history job-id/start-time bracketing, telemetry-stable control tokens, final
   exact-token rechecks, single dispatch, cross-key uncertainty fencing,
@@ -169,7 +174,7 @@ non-editable or stale environment installation from producing misleading
 coverage for code other than the source under review.
 
 The registry and onboarding core add no browser dependency or UI implementation.
-Issue #59 must introduce a repeatable Playwright entry point only after
-#64–#65's runtime and registry/authentication boundaries are merged. Browser
-results supplement—not replace—the package-wide 100% statement and branch gate
-for authentication, authorization, decoding, translation, control, and policy.
+#59 — embedded setup/recovery must introduce a repeatable Playwright entry point
+only after #64 — dynamic runtime and #65 — protected onboarding API are merged.
+Browser results supplement—not replace—the package-wide 100% statement and branch
+gate for authentication, authorization, decoding, translation, control, and policy.

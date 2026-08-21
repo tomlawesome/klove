@@ -65,10 +65,11 @@ Grove's host-network mode and Grove's own virtual-printer feature can contend
 for 8883, 990, and passive FTP ports; document bridge mode for the MVP and add
 configurable compatibility ports before claiming host-network support.
 
-The fastest lawful reuse path is to make Klove AGPL-3.0-compatible and adapt
-Grove's tested virtual-printer MQTT/FTPS components with attribution. If a
-different Klove licence is desired, obtain permission or implement the facade
-without copying Grove code before development begins.
+ADR 0008 requires a clean-room facade. Grove's virtual-printer implementation
+may be exercised only as a black-box oracle at the exact supported revision;
+its source, tests, fixtures, dependencies, messages, and assets are not Klove
+implementation inputs. Every committed observation fixture carries exact
+revision, capture, sanitization, classification, and SHA-256 provenance.
 
 ## Embedded onboarding and minimal Grove boundary
 
@@ -111,14 +112,18 @@ Grove. The Klove route is protected by owner authentication, short-lived
 server-side sessions, CSRF and exact-Origin checks, route-specific CSP
 `frame-ancestors`, a minimal iframe sandbox, no-store/no-referrer responses, and
 self-hosted assets. The complete browser and completion policy is frozen in ADR
-0006.
+0006. ADR 0008 clarifies that visual coherence is independently authored from
+semantic roles and accessibility requirements. Klove does not copy Grove's
+logos, icons, fonts, screenshots, CSS, exact tokens, layout composition, or
+wording.
 
 Compatibility is claimed only for an exact tested Grove revision. The currently
 reviewed baseline is `cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4`. Klove has
-read-only access upstream, so the small Grove contribution is built in a fork
-and proposed normally. Upstream rejection leaves the compatibility facade and
-standalone recovery available for development, but does not justify a permanent
-private fork or revive the native-provider programme.
+read-only access upstream, so the small Grove contribution is built in a
+short-lived fork after upstream issue agreement and proposed normally under
+Grove's repository licence terms. Upstream rejection leaves the compatibility
+facade and standalone recovery available for development, but does not justify
+a permanent private fork or revive the native-provider programme.
 
 ## Retired option: broad native Grove provider
 
