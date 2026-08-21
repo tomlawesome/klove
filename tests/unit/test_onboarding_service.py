@@ -75,7 +75,12 @@ def request_key(index: int) -> str:
 
 
 def evidence(index: int = 0) -> PrinterIdentityEvidence:
-    return identity().model_copy(update={"server_hostname": f"192.0.2.{index + 1}"})
+    return identity().model_copy(
+        update={
+            "server_hostname": f"192.0.2.{index + 1}",
+            "observed_at_unix_ms": 900 + index,
+        }
+    )
 
 
 class FakeProbe:

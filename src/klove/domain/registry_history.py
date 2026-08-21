@@ -56,6 +56,46 @@ class RegistryHistoryAppendPlan:
     profiles: tuple[ProfileHistoryAppend, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MappingHistoryCursor:
+    """Exclusive cursor for one printer's mapping history."""
+
+    registry_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileHistoryCursor:
+    """Exclusive cursor for one printer's profile history."""
+
+    registry_revision: int
+    slicer_profile_id: str
+    event: ProfileHistoryEvent
+
+
+@dataclass(frozen=True, slots=True)
+class MappingHistoryRecord:
+    """One decoded immutable mapping-history record."""
+
+    printer_uuid: str
+    registry_revision: int
+    observed_at_unix_ms: int
+    mapping_fingerprint: str
+    identity: PrinterIdentityEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileHistoryRecord:
+    """One decoded immutable profile-history record."""
+
+    printer_uuid: str
+    registry_revision: int
+    slicer_profile_id: str
+    generation: int
+    profile_fingerprint: str
+    event: ProfileHistoryEvent
+    profile: SafetyProfile
+
+
 def build_registry_history_append_plan(
     current: RegisteredPrinter | None,
     result: RegisteredPrinter,

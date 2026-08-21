@@ -8,7 +8,7 @@ from typing import Final, cast
 
 from klove.persistence.printer_registry_errors import RegistryStoreError
 
-_SCHEMA_VERSION: Final = 1
+_SCHEMA_VERSION: Final = 2
 _SCHEMA_VERSION_V1: Final = 1
 _SCHEMA_VERSION_V2: Final = 2
 _PRINTER_COLUMNS: Final = (

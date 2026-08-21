@@ -71,9 +71,16 @@ and index definitions, canonical JSON, denormalized lookup columns, SQLite
 integrity result, private ownership, and the HMAC-key identity recorded in the
 database. A future or weakened schema is rejected. ADR 0011 supplies the exact
 transactional migration runner and immutable version-1 compatibility harness;
-version 1 remains current and has no production migration step. Every later
-schema version requires its own accepted exact descriptor and contiguous
-migration.
+ADR 0012 makes version 2 current. Startup transactionally migrates an exact v1
+source and deterministically backfills one direct mapping snapshot plus one
+`baseline` event for every retained safety profile, including tombstoned
+printers. New creates and material mapping/profile changes append immutable
+history in the same optimistic transaction and registry revision as the
+current record. Equal fresher mapping evidence appends no duplicate. Database
+triggers reject history update or deletion, and internal audit reads require
+one canonical printer UUID, an exclusive cursor, and a limit from 1 through
+1,000. Current authorization never reads history. Every later schema version
+requires its own accepted exact descriptor and contiguous migration.
 
 ## Backup and restore
 

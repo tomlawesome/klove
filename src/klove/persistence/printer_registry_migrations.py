@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Final
+from typing import Final, cast
 
 from klove.domain.artifacts import SafetyProfile, safety_profile_fingerprint
 from klove.domain.onboarding import PrinterIdentityEvidence, RegisteredPrinter
@@ -119,7 +119,6 @@ def _read_v1_records(connection: sqlite3.Connection) -> tuple[RegisteredPrinter,
             """
         ).fetchall()
         printers = tuple(_decode_printer(row) for row in printer_rows)
-        printer_ids = {printer.printer_uuid for printer in printers}
         operation_rows = connection.execute(
             """
             SELECT idempotency_key, operation, printer_uuid,
@@ -129,9 +128,7 @@ def _read_v1_records(connection: sqlite3.Connection) -> tuple[RegisteredPrinter,
             """
         ).fetchall()
         for row in operation_rows:
-            operation = _decode_operation(row)
-            if operation.printer_uuid not in printer_ids:
-                raise RegistryStoreError
+            _decode_operation(row)
         return printers
     except RegistryStoreError:
         raise
@@ -187,7 +184,7 @@ def _validate_history(  # noqa: PLR0912 - one fail-closed validator covers the e
             current = by_uuid[printer_uuid].identity
             if rows[-1][2] != _mapping_fingerprint(current):
                 raise RegistryStoreError
-            if rows[-1][3] != _canonical_identity_json(current):
+            if rows[-1][1] > current.observed_at_unix_ms:
                 raise RegistryStoreError
 
         profile_rows = connection.execute(
@@ -293,9 +290,8 @@ def _canonical_identity_json(identity: PrinterIdentityEvidence) -> str:
 
 def _identity_document(identity: PrinterIdentityEvidence) -> dict[str, object]:
     document = identity.model_dump(mode="json")
-    capabilities = document["capabilities"]
-    if isinstance(capabilities, dict) and isinstance(capabilities.get("objects"), list):
-        capabilities["objects"] = sorted(capabilities["objects"])
+    capabilities = cast(dict[str, object], document["capabilities"])
+    capabilities["objects"] = sorted(cast(list[str], capabilities["objects"]))
     return document
 
 

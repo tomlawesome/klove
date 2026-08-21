@@ -509,11 +509,13 @@ generic G-code path exists.
    ADR 0011 accepts the first ordered boundary: registry-only transactional
    migrations and an immutable exact-version harness, with no production schema
    change in the framework slice. #108 implements that runner and exact
-   version-1 harness. Later profile/mapping history, cross-service fence
-   references, and operational recovery remain separate work.
-   ADR 0012 accepts the next slice's exact version-2 append-only capability and
-   safety-profile history boundary under #110, without adding fence references
-   or backup behavior.
+   version-1 harness. ADR 0012 and #110 implement the next exact version-2
+   slice: append-only capability-mapping and safety-profile history, atomic
+   current/history commits, deterministic v1 backfill, immutable triggers, and
+   bounded per-printer audit reads. History adds no current authority, fence
+   reference, or backup behavior. #112 is the next decision-only slice and must
+   freeze durable cross-service actuator-fence references before its separate
+   implementation issue; operational recovery remains later work.
 6. Evaluate exclude-object, richer cameras, MMU/toolchanger support, an
    outbound host agent, and other printer stacks only through separately
    accepted adapter boundaries under

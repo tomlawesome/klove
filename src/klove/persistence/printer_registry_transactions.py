@@ -63,7 +63,6 @@ def _commit_transaction(
     operation: RegistryOperationRecord,
     result: RegisteredPrinter,
     committed: RegistryOperationRecord,
-    *,
     history: RegistryHistoryWriter | None = None,
 ) -> None:
     connection.execute("BEGIN IMMEDIATE")

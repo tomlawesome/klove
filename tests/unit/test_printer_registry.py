@@ -134,7 +134,9 @@ def test_registry_executes_exact_full_lifecycle_and_survives_restart(  # noqa: P
     current = printer(
         display_name="Renamed Voron",
         moonraker_credential_ref=NEW_MOONRAKER_REF,
-        identity=identity().model_copy(update={"server_hostname": "192.0.2.10"}),
+        identity=identity().model_copy(
+            update={"server_hostname": "192.0.2.10", "observed_at_unix_ms": 901}
+        ),
         revision=3,
         updated_at_unix_ms=1_500,
     )
