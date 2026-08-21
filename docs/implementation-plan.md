@@ -511,6 +511,9 @@ generic G-code path exists.
    change in the framework slice. #108 implements that runner and exact
    version-1 harness. Later profile/mapping history, cross-service fence
    references, and operational recovery remain separate work.
+   ADR 0012 accepts the next slice's exact version-2 append-only capability and
+   safety-profile history boundary under #110, without adding fence references
+   or backup behavior.
 6. Evaluate exclude-object, richer cameras, MMU/toolchanger support, an
    outbound host agent, and other printer stacks only through separately
    accepted adapter boundaries under

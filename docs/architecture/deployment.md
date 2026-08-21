@@ -93,6 +93,9 @@ tests.
   historical-schema harness before any fleet schema extension. Profile and
   mapping history, cross-service fence references, and operational
   backup/restore remain separate ordered slices.
+- ADR 0012 accepts schema version 2's append-only, directly evidenced
+  capability-mapping and safety-profile history. History remains audit evidence
+  and never becomes current authorization.
 - Multi-printer routing, per-printer credentials/policies, job journal, cameras
   via external URLs, metrics, backups, migration tests, and upgrade/rollback.
 - Docker Compose examples for bridge and host-network constraints.
