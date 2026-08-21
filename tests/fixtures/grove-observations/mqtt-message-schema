@@ -1,0 +1,57 @@
+{
+  "profile_version": 1,
+  "transport": "mqtt-over-tls",
+  "upstream_revision": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
+  "generated_serial": "{serial}",
+  "observed": {
+    "report_topic": "device/{serial}/report",
+    "idle_available": {
+      "root": "print",
+      "observed_fields": {
+        "command": {"type": "string", "enum": ["push_status"]},
+        "gcode_state": {"type": "string", "enum": ["IDLE"]},
+        "gcode_file": {"type": "string", "enum": [""]},
+        "sequence_id": {"type": "string", "generated": true},
+        "ams_status": {"type": "integer"},
+        "bed_target_temper": {"type": "number"},
+        "bed_temper": {"type": "number"},
+        "chamber_temper": {"type": "number"},
+        "nozzle_target_temper": {"type": "number"},
+        "nozzle_temper": {"type": "number"},
+        "layer_num": {"type": "integer"},
+        "total_layer_num": {"type": "integer"},
+        "mc_percent": {"type": "integer"},
+        "mc_remaining_time": {"type": "integer"},
+        "print_error": {"type": "integer"},
+        "print_type": {"type": "string", "enum": [""]},
+        "sdcard": {"type": "boolean", "enum": [true]},
+        "nozzle_diameter": {"type": "string", "enum": ["0.4"]},
+        "nozzle_type": {"type": "string", "enum": ["hardened_steel"]},
+        "wifi_signal": {"type": "string"},
+        "lights_report": {"type": "array", "observed_item_fields": {"node": {"type": "string", "enum": ["chamber_light"]}, "mode": {"type": "string", "enum": ["on"]}}},
+        "ipcam": {"type": "object", "observed_fields": {"ipcam_dev": {"type": "string", "generated": true}, "ipcam_record": {"type": "string", "enum": ["enable"]}, "resolution": {"type": "string", "enum": ["1080p"]}, "timelapse": {"type": "string", "enum": ["disable"]}}},
+        "online": {"type": "object", "observed_fields": {"version": {"type": "integer"}, "ahb": {"type": "boolean", "enum": [false]}, "rfid": {"type": "boolean", "enum": [false]}}},
+        "storage": {"type": "object", "observed_fields": {"free": {"type": "integer"}, "total": {"type": "integer"}}},
+        "xcam": {"type": "object", "observed_fields": {"allow_skip_parts": {"type": "boolean"}, "buildplate_marker_detector": {"type": "boolean"}, "first_layer_inspector": {"type": "boolean"}, "halt_print_sensitivity": {"type": "string", "enum": ["medium"]}, "print_halt": {"type": "boolean"}, "printing_monitor": {"type": "boolean"}, "spaghetti_detector": {"type": "boolean"}}}
+      }
+    },
+    "request_replies": {
+      "pushall": {"report_root": "print", "command": "push_status", "same_schema_as": "idle_available"},
+      "get_version": {"report_root": "info", "observed_fields": {"command": {"type": "string", "enum": ["get_version"]}, "sequence_id": {"type": "string", "generated": true}, "module": {"type": "array", "observed_item_fields": {"name": {"type": "string", "enum": ["ota", "esp32", "rv1126", "th", "mc"]}, "sn": {"type": "string", "enum": ["{serial}"]}, "flag": {"type": "integer"}, "hw_ver": {"type": "string"}, "product_name": {"type": "string", "enum": ["X1 Carbon"]}, "sw_ver": {"type": "string"}, "sw_new_ver": {"type": "string", "enum": [""]}}}}}
+    }
+  },
+  "not_observed": [
+    "extrusion_cali_get reply schema",
+    "pause request schema",
+    "resume request schema",
+    "stop request schema",
+    "printing or paused report schema",
+    "request payload upper bound",
+    "Grove initial pushall request schema",
+    "Grove initial get_version request schema",
+    "Grove initial extrusion_cali_get request schema",
+    "pause request schema after public control",
+    "resume request schema after public control",
+    "stop request schema after public control"
+  ]
+}
