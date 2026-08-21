@@ -98,6 +98,9 @@ change outside this issue.
    Raw traces are temporary, access-restricted, secret-scanned, and destroyed
    after the minimal fixture and manifest are approved. A fixture without its
    valid manifest fails the test gate.
+   `scripts/validate_grove_observations.py` enforces this version-1 manifest
+   schema, safe sibling layout, and fixture byte-count/SHA-256 binding for
+   `tests/fixtures/grove-observations/`.
 8. Generated payloads should be preferred to captured payloads. Boundary tests
    must include rejection cases derived independently from the schema rather
    than copied from Grove tests. A revision update invalidates the compatibility

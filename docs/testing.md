@@ -39,6 +39,8 @@ that the protocol model is complete. The suite therefore also includes:
   manifest naming the exact upstream and harness revisions, black-box scenario,
   tools, UTC capture date, generated inputs, normalization, media type, byte
   count, SHA-256, value classifications, and source/secret/privacy review;
+  `scripts/validate_grove_observations.py` is the repository gate for this
+  version-1 manifest and fixture-digest contract;
 - control tests for exact token/job/state matching, per-printer serialization,
   history job-id/start-time bracketing, telemetry-stable control tokens, final
   exact-token rechecks, single dispatch, cross-key uncertainty fencing,
