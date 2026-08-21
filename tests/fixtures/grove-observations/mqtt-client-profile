@@ -5,11 +5,15 @@
   "generated_serial": "00M00A391800001",
   "observed": {
     "tls_versions": ["TLSv1.3"],
+    "tls_cipher_suite": "TLS_AES_256_GCM_SHA384",
+    "tls_session_reused": false,
     "mqtt_protocol_name": "MQTT",
     "mqtt_protocol_level": 4,
     "clean_session": true,
     "keepalive_seconds": 30,
     "client_id_pattern": "bambuddy_{serial}_{printer-id}_{session-counter}",
+    "client_id_printer_id_is_decimal": true,
+    "client_id_session_counter_is_decimal": true,
     "username": "bblp",
     "password_is_access_code": true,
     "will_present": false,
@@ -24,10 +28,19 @@
     "next_packet_before_first_puback": true,
     "initial_commands": ["pushall", "get_version", "extrusion_cali_get"],
     "initial_publish_payload_bytes": [35, 56, 109],
-    "client_sessions_observed": 2
+    "client_sessions_observed": 5,
+    "qos1_connected_hold_seconds": 75,
+    "qos1_retransmissions_during_hold": 0,
+    "pingreq_times_ms": [30086, 60119],
+    "reconnect_duplicate_flag": true,
+    "reconnect_reuses_prior_packet_id": true,
+    "reconnect_reuses_prior_payload_hash": true,
+    "reconnect_fresh_initial_precedes_outstanding": true,
+    "second_reconnect_retransmits_all_unacked": true
   },
   "not_observed": [
-    "QoS 1 retransmission timing after withheld acknowledgements",
-    "request payload upper bound"
+    "request payload upper bound",
+    "full request schema",
+    "full report schema"
   ]
 }

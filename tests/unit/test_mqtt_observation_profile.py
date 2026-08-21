@@ -27,10 +27,14 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
     assert assessment.profile == MqttObservationProfile(
         upstream_revision="cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
         tls_version="TLSv1.3",
+        tls_cipher_suite="TLS_AES_256_GCM_SHA384",
+        tls_session_reused=False,
         mqtt_protocol_level=4,
         clean_session=True,
         keepalive_seconds=30,
         client_id_pattern="bambuddy_{serial}_{printer-id}_{session-counter}",
+        client_id_printer_id_is_decimal=True,
+        client_id_session_counter_is_decimal=True,
         username="bblp",
         password_is_access_code=True,
         will_present=False,
@@ -47,6 +51,14 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
         next_packet_before_first_puback=True,
         initial_commands=frozenset({"pushall", "get_version", "extrusion_cali_get"}),
         initial_publish_payload_bytes=(35, 56, 109),
+        qos1_connected_hold_seconds=75,
+        qos1_retransmissions_during_hold=0,
+        pingreq_times_ms=(30086, 60119),
+        reconnect_duplicate_flag=True,
+        reconnect_reuses_prior_packet_id=True,
+        reconnect_reuses_prior_payload_hash=True,
+        reconnect_fresh_initial_precedes_outstanding=True,
+        second_reconnect_retransmits_all_unacked=True,
     )
     assert mqtt_listener_disposition(assessment.profile).enabled is False
     assert mqtt_listener_disposition(assessment.profile).code == "mqtt_runtime_disabled"
@@ -56,15 +68,24 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
     "change",
     [
         lambda document: document.__setitem__("extra", None),
+        lambda document: document.__setitem__("profile_version", 1.0),
         lambda document: document.__setitem__("transport", "mqtt"),
         lambda document: document.__setitem__("generated_serial", "not unicode-\N{SNOWMAN}"),
         lambda document: document.__setitem__("not_observed", []),
         lambda document: document.__setitem__("observed", []),
         lambda document: document["observed"].__setitem__("keepalive_seconds", True),
+        lambda document: document["observed"].__setitem__(
+            "tls_cipher_suite", "TLS_AES_128_GCM_SHA256"
+        ),
+        lambda document: document["observed"].__setitem__("tls_session_reused", True),
         lambda document: document["observed"].__setitem__("mqtt_protocol_name", "MQIsdp"),
         lambda document: document["observed"].__setitem__("mqtt_protocol_level", 4.0),
         lambda document: document["observed"].__setitem__("clean_session", 1),
         lambda document: document["observed"].__setitem__("client_id_pattern", "bambuddy_{serial}"),
+        lambda document: document["observed"].__setitem__("client_id_printer_id_is_decimal", False),
+        lambda document: document["observed"].__setitem__(
+            "client_id_session_counter_is_decimal", False
+        ),
         lambda document: document["observed"].__setitem__("username", "guest"),
         lambda document: document["observed"].__setitem__("password_is_access_code", False),
         lambda document: document["observed"].__setitem__("will_present", True),
@@ -79,6 +100,22 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
             "initial_publish_payload_bytes", [35.0, 56, 109]
         ),
         lambda document: document["observed"].__setitem__("client_sessions_observed", 2.0),
+        lambda document: document["observed"].__setitem__("qos1_connected_hold_seconds", 75.0),
+        lambda document: document["observed"].__setitem__("qos1_retransmissions_during_hold", 1),
+        lambda document: document["observed"].__setitem__("pingreq_times_ms", [30086.0, 60119]),
+        lambda document: document["observed"].__setitem__("reconnect_duplicate_flag", False),
+        lambda document: document["observed"].__setitem__(
+            "reconnect_reuses_prior_packet_id", False
+        ),
+        lambda document: document["observed"].__setitem__(
+            "reconnect_reuses_prior_payload_hash", False
+        ),
+        lambda document: document["observed"].__setitem__(
+            "reconnect_fresh_initial_precedes_outstanding", False
+        ),
+        lambda document: document["observed"].__setitem__(
+            "second_reconnect_retransmits_all_unacked", False
+        ),
         lambda document: document["observed"].__setitem__("subscriptions", []),
         lambda document: document["observed"].__setitem__(
             "subscriptions", ["not a subscription", "also not a subscription"]

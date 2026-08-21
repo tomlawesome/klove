@@ -12,8 +12,9 @@ _TRANSPORT: Final = "mqtt-over-tls"
 _UPSTREAM_REVISION: Final = "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
 _REQUIRED_NOT_OBSERVED: Final = frozenset(
     {
-        "QoS 1 retransmission timing after withheld acknowledgements",
         "request payload upper bound",
+        "full request schema",
+        "full report schema",
     }
 )
 _REQUIRED_SUBSCRIPTIONS: Final = frozenset(
@@ -30,10 +31,14 @@ class MqttObservationProfile:
 
     upstream_revision: str
     tls_version: str
+    tls_cipher_suite: str
+    tls_session_reused: bool
     mqtt_protocol_level: int
     clean_session: bool
     keepalive_seconds: int
     client_id_pattern: str
+    client_id_printer_id_is_decimal: bool
+    client_id_session_counter_is_decimal: bool
     username: str
     password_is_access_code: bool
     will_present: bool
@@ -45,6 +50,14 @@ class MqttObservationProfile:
     next_packet_before_first_puback: bool
     initial_commands: frozenset[str]
     initial_publish_payload_bytes: tuple[int, ...]
+    qos1_connected_hold_seconds: int
+    qos1_retransmissions_during_hold: int
+    pingreq_times_ms: tuple[int, ...]
+    reconnect_duplicate_flag: bool
+    reconnect_reuses_prior_packet_id: bool
+    reconnect_reuses_prior_payload_hash: bool
+    reconnect_fresh_initial_precedes_outstanding: bool
+    second_reconnect_retransmits_all_unacked: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +118,8 @@ def _decode_profile(value: object) -> MqttObservationProfile | None:
     }:
         return None
     if (
-        value["profile_version"] != _PROFILE_VERSION
+        type(value["profile_version"]) is not int
+        or value["profile_version"] != _PROFILE_VERSION
         or value["transport"] != _TRANSPORT
         or value["upstream_revision"] != _UPSTREAM_REVISION
         or not _valid_generated_serial(value["generated_serial"])
@@ -131,11 +145,15 @@ def _valid_not_observed(value: object) -> bool:
 def _decode_observed(value: object) -> MqttObservationProfile | None:
     if not isinstance(value, dict) or set(value) != {
         "tls_versions",
+        "tls_cipher_suite",
+        "tls_session_reused",
         "mqtt_protocol_name",
         "mqtt_protocol_level",
         "clean_session",
         "keepalive_seconds",
         "client_id_pattern",
+        "client_id_printer_id_is_decimal",
+        "client_id_session_counter_is_decimal",
         "username",
         "password_is_access_code",
         "will_present",
@@ -148,6 +166,14 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
         "initial_commands",
         "initial_publish_payload_bytes",
         "client_sessions_observed",
+        "qos1_connected_hold_seconds",
+        "qos1_retransmissions_during_hold",
+        "pingreq_times_ms",
+        "reconnect_duplicate_flag",
+        "reconnect_reuses_prior_packet_id",
+        "reconnect_reuses_prior_payload_hash",
+        "reconnect_fresh_initial_precedes_outstanding",
+        "second_reconnect_retransmits_all_unacked",
     }:
         return None
     tls_versions = value["tls_versions"]
@@ -156,8 +182,13 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
     publish_qos = value["publish_qos"]
     payload_bytes = value["initial_publish_payload_bytes"]
     sessions = value["client_sessions_observed"]
+    hold_seconds = value["qos1_connected_hold_seconds"]
+    retransmissions = value["qos1_retransmissions_during_hold"]
+    pingreq_times = value["pingreq_times_ms"]
     if (
         tls_versions != ["TLSv1.3"]
+        or value["tls_cipher_suite"] != "TLS_AES_256_GCM_SHA384"
+        or value["tls_session_reused"] is not False
         or value["mqtt_protocol_name"] != "MQTT"
         or type(protocol_level) is not int
         or protocol_level != 4
@@ -165,6 +196,8 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
         or type(keepalive) is not int
         or keepalive != 30
         or value["client_id_pattern"] != "bambuddy_{serial}_{printer-id}_{session-counter}"
+        or value["client_id_printer_id_is_decimal"] is not True
+        or value["client_id_session_counter_is_decimal"] is not True
         or value["username"] != "bblp"
         or value["password_is_access_code"] is not True
         or value["will_present"] is not False
@@ -177,7 +210,17 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
         or any(type(item) is not int for item in payload_bytes)
         or payload_bytes != [35, 56, 109]
         or type(sessions) is not int
-        or sessions != 2
+        or sessions != 5
+        or type(hold_seconds) is not int
+        or hold_seconds != 75
+        or type(retransmissions) is not int
+        or retransmissions != 0
+        or not _exact_int_list(pingreq_times, (30086, 60119))
+        or value["reconnect_duplicate_flag"] is not True
+        or value["reconnect_reuses_prior_packet_id"] is not True
+        or value["reconnect_reuses_prior_payload_hash"] is not True
+        or value["reconnect_fresh_initial_precedes_outstanding"] is not True
+        or value["second_reconnect_retransmits_all_unacked"] is not True
     ):
         return None
     subscriptions = _decode_subscriptions(value["subscriptions"])
@@ -190,10 +233,14 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
     return MqttObservationProfile(
         upstream_revision=_UPSTREAM_REVISION,
         tls_version="TLSv1.3",
+        tls_cipher_suite="TLS_AES_256_GCM_SHA384",
+        tls_session_reused=False,
         mqtt_protocol_level=4,
         clean_session=True,
         keepalive_seconds=30,
         client_id_pattern="bambuddy_{serial}_{printer-id}_{session-counter}",
+        client_id_printer_id_is_decimal=True,
+        client_id_session_counter_is_decimal=True,
         username="bblp",
         password_is_access_code=True,
         will_present=False,
@@ -205,6 +252,14 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
         next_packet_before_first_puback=True,
         initial_commands=commands,
         initial_publish_payload_bytes=(35, 56, 109),
+        qos1_connected_hold_seconds=75,
+        qos1_retransmissions_during_hold=0,
+        pingreq_times_ms=(30086, 60119),
+        reconnect_duplicate_flag=True,
+        reconnect_reuses_prior_packet_id=True,
+        reconnect_reuses_prior_payload_hash=True,
+        reconnect_fresh_initial_precedes_outstanding=True,
+        second_reconnect_retransmits_all_unacked=True,
     )
 
 
@@ -231,3 +286,12 @@ def _exact_string_set(value: object, expected: set[str]) -> frozenset[str] | Non
         return None
     result = frozenset(value)
     return result if result == expected else None
+
+
+def _exact_int_list(value: object, expected: tuple[int, ...]) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == len(expected)
+        and all(type(item) is int for item in value)
+        and tuple(value) == expected
+    )
