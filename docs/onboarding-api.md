@@ -1,8 +1,7 @@
 # Protected onboarding API contract
 
-Status: issue #72 — lifecycle routes implements the secret-free lifecycle HTTP
-boundary. Issue #73 — runtime handoff remains responsible for activating a
-committed result in the running fleet.
+Status: issues #72 — lifecycle routes and #73 — runtime handoff implement the
+secret-free lifecycle boundary and committed runtime activation.
 
 ## Session exchange
 
@@ -39,9 +38,11 @@ input is denied before orchestration.
 
 The server derives the audit actor and exact request origin. It never accepts
 either from browser JSON. Each lifecycle route calls only the typed
-`PrinterLifecycleService`; it does not call a runtime supervisor or actuator.
-Result recovery binds operation, printer UUID, idempotency key, actor, and
-origin, finalizes any safe pending credential cleanup, and never repeats a
+`PrinterLifecycleService`; no route calls a runtime supervisor or actuator.
+The service holds the shared per-printer admission gate across its durable
+commit and exact runtime handoff. Result recovery binds operation, printer UUID,
+idempotency key, actor, and origin, finalizes safe pending credential cleanup,
+reconciles the durable result into the runtime again, and never repeats a
 direct probe.
 
 ## Privacy and terminal behavior
@@ -57,3 +58,7 @@ expires the cookie. Safe pre-commit conflicts release the exclusive lease for
 an exact retry. Storage or internal uncertainty invalidates it; durable result
 recovery requires a new session. Process restart invalidates every session but
 preserves mutation idempotency and committed result recovery in the registry.
+If commit/activation is interrupted or uncertain, Klove withdraws that
+printer's monitor and control transport, returns `runtime_unavailable`, and
+only a later result recovery or startup reconciliation may activate the exact
+durable record.

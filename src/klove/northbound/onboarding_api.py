@@ -442,6 +442,6 @@ def _async_result(
     lifecycle: PrinterLifecycleService,
 ) -> Callable[[LifecycleResultRequest], Awaitable[RegisteredPrinter]]:
     async def result(request: LifecycleResultRequest) -> RegisteredPrinter:
-        return lifecycle.result(request)
+        return await lifecycle.result(request)
 
     return result

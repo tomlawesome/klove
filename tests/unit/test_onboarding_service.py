@@ -125,6 +125,23 @@ class FakeFences:
         return cast(bool, result)
 
 
+class FakeRuntime:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.records: list[RegisteredPrinter] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.block = False
+
+    async def reconcile_committed(self, record: RegisteredPrinter) -> None:
+        self.records.append(record)
+        self.entered.set()
+        if self.block:
+            await self.release.wait()
+        if self.failure is not None:
+            raise self.failure
+
+
 def entropy_sequence() -> Callable[[int], bytes]:
     calls = itertools.count(1)
 
@@ -142,6 +159,7 @@ def make_service(  # noqa: PLR0913 -- compact explicit service fixture.
     random_bytes: Callable[[int], bytes] | None = None,
     clock_ms: Callable[[], int] | None = None,
     admissions: PrinterAdmissionGates | None = None,
+    runtime: FakeRuntime | None = None,
 ) -> tuple[
     PrinterLifecycleService, SecretStore, PrinterStore, FakeProbe | BlockingProbe, FakeFences
 ]:
@@ -155,6 +173,7 @@ def make_service(  # noqa: PLR0913 -- compact explicit service fixture.
         selected_probe,
         selected_fences,
         admissions=admissions or PrinterAdmissionGates(),
+        runtime=runtime or FakeRuntime(),
         random_bytes=random_bytes or entropy_sequence(),
         clock_ms=clock_ms or (lambda: next(ticks)),
     )
@@ -315,19 +334,59 @@ async def test_result_recovers_exact_committed_operation_without_reprobe(tmp_pat
         probe,
         FakeFences(),
         admissions=PrinterAdmissionGates(),
+        runtime=FakeRuntime(),
     )
 
-    recovered = restarted.result(result_request())
+    recovered = await restarted.result(result_request())
 
     assert recovered == committed
     assert len(probe.calls) == probe_calls
 
 
 @pytest.mark.asyncio
+async def test_cancelled_handoff_finishes_fail_closed_and_result_recovers(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    runtime.block = True
+    service, _secrets, store, _probe, _fences = make_service(tmp_path, runtime=runtime)
+
+    create = asyncio.create_task(service.create(create_request()))
+    await runtime.entered.wait()
+    create.cancel()
+    runtime.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await create
+    committed = store.lookup_operation(IDEMPOTENCY_KEY)
+    assert committed is not None and committed.state is RegistryOperationState.COMMITTED
+    assert runtime.records == [committed.result]
+
+    recovered = await service.result(result_request())
+    assert recovered == committed.result
+    assert runtime.records == [committed.result, committed.result]
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_failure_preserves_durable_result_for_recovery(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeRuntime(RuntimeError("runtime route uncertain"))
+    service, _secrets, store, _probe, _fences = make_service(tmp_path, runtime=runtime)
+
+    with pytest.raises(LifecycleServiceError) as failed:
+        await service.create(create_request())
+    assert failed.value.code is LifecycleFailureCode.RUNTIME_UNAVAILABLE
+    committed = store.lookup_operation(IDEMPOTENCY_KEY)
+    assert committed is not None and committed.state is RegistryOperationState.COMMITTED
+
+    runtime.failure = None
+    assert await service.result(result_request()) == committed.result
+
+
+@pytest.mark.asyncio
 async def test_result_denies_missing_or_mismatched_operation(tmp_path: Path) -> None:
     service, _secrets, _store, _probe, _fences = make_service(tmp_path)
     with pytest.raises(LifecycleServiceError) as missing:
-        service.result(result_request())
+        await service.result(result_request())
     assert missing.value.code is LifecycleFailureCode.CONFLICT
     await service.create(create_request())
     for request in (
@@ -337,11 +396,12 @@ async def test_result_denies_missing_or_mismatched_operation(tmp_path: Path) -> 
         result_request(request_origin="https://other.example.test"),
     ):
         with pytest.raises(LifecycleServiceError) as denied:
-            service.result(request)
+            await service.result(request)
         assert denied.value.code is LifecycleFailureCode.CONFLICT
 
 
-def test_result_maps_registry_lookup_failure(
+@pytest.mark.asyncio
+async def test_result_maps_registry_lookup_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -352,7 +412,7 @@ def test_result_maps_registry_lookup_failure(
 
     monkeypatch.setattr(store, "lookup_operation", fail_lookup)
     with pytest.raises(LifecycleServiceError) as denied:
-        service.result(result_request())
+        await service.result(result_request())
     assert denied.value.code is LifecycleFailureCode.STORAGE_UNAVAILABLE
 
 
@@ -490,6 +550,7 @@ async def test_preparing_duplicate_is_busy_and_cancellation_aborts_for_exact_ret
         probe,
         FakeFences(),
         admissions=PrinterAdmissionGates(),
+        runtime=FakeRuntime(),
         random_bytes=entropy_sequence(),
         clock_ms=lambda: 2_000,
     )
@@ -688,6 +749,7 @@ async def test_post_commit_cleanup_ambiguity_is_reconciled_without_repeating_pro
         probe,
         FakeFences(),
         admissions=PrinterAdmissionGates(),
+        runtime=FakeRuntime(),
         random_bytes=entropy_sequence(),
         clock_ms=lambda: 2_000,
     )

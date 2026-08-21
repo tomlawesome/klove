@@ -2,8 +2,9 @@
 
 Status: onboarding is implemented under issue #63 — onboarding core. Issue
 #68 — runtime supervisor through #70 — runtime bootstrap add registry-backed
-runtime composition, and #72 — lifecycle routes adds its secret-free HTTP
-consumer. Runtime handoff and the browser route remain later slices.
+runtime composition, #72 — lifecycle routes adds its secret-free HTTP consumer,
+and #73 — runtime handoff binds committed mutations to runtime activation. The
+browser route remains a later slice.
 
 ## Direct probe
 
@@ -69,17 +70,17 @@ Create generates the compatibility credential from exactly 15 cryptographically
 random bytes. Rotation rejects a value identical to the current credential.
 This service never returns a compatibility secret; it returns only the
 secret-free `RegisteredPrinter`. The one-flow completion boundary in issue #59
-is the only future component allowed to expose the active compatibility value
-to Grove.
+— embedded setup/recovery is the only future component allowed to expose the
+active compatibility value to Grove.
 
 Every mutation of an existing printer currently requires a composite proof
 that both in-process job control and the durable print-start journal have no
 unresolved outcome. This is stronger than the minimum identity-changing and
-disable/remove rule. Issue #64 must place lifecycle admission and all new
-control/start admission behind one shared per-printer runtime gate, hold that
-gate through the proof and registry commit, and deactivate or replace the
-runtime only from the committed result. The inspector is not permission to
-wire this library behind an uncoordinated route.
+disable/remove rule. Issue #64 — runtime fleet places lifecycle admission and
+all new control/start admission behind one shared per-printer runtime gate,
+holds that gate through the proof and registry commit, and deactivates or
+replaces the runtime only from the committed result. The inspector is not
+permission to wire this library behind an uncoordinated route.
 
 ## Idempotency and recovery
 
@@ -91,19 +92,24 @@ exact revisioned transition and records the complete public result; only then
 are retired secret files deleted.
 
 An exact committed duplicate returns and finalizes the durable result without
-another probe, secret generation, or remote request. A preparing duplicate is
-busy, a changed use of the same key is a conflict, and an aborted exact request
-may make a new bounded attempt. Cancellation or any pre-commit failure aborts
+another probe, secret generation, or remote request. Before any success is
+returned, it holds the shared printer gate and reconciles the exact durable
+record into the runtime. A preparing duplicate is busy, a changed use of the
+same key is a conflict, and an aborted exact request may make a new bounded
+attempt. Cancellation or any pre-commit failure aborts
 the reservation and removes only its uncommitted new references. If the
 database commit succeeded but local secret retirement is ambiguous, the
 operation remains committed: the caller receives a bounded storage failure and
 the same key later completes cleanup and returns the result without repeating
 the probe. Startup reconciliation applies the same rule.
 
-Errors leave the boundary as one bounded code and contain no endpoint response,
-credential, secret reference value, or hostile exception text. The core adds no
-Moonraker mutation, printer actuator, upload, print start, generic G-code,
-listener, browser route, or UI.
+If the post-commit handoff is interrupted or cannot prove activation, it removes
+the monitor and control transport for that printer, reports
+`runtime_unavailable`, and preserves the committed operation for exact result
+recovery or startup reconciliation. Errors leave the boundary as one bounded
+code and contain no endpoint response, credential, secret reference value, or
+hostile exception text. The core adds no Moonraker mutation, printer actuator,
+upload, print start, generic G-code, listener, browser route, or UI.
 
 ## Validation and dependent slices
 
@@ -118,8 +124,7 @@ Moonraker simulation as a regression gate.
   canonical per-printer lifecycle, actuator, and runtime admission. Issue #70
   — runtime bootstrap implements startup reconciliation, one exact file import,
   canonical UUID routing, restart recovery, and cross-printer fault isolation.
-- Issue #72 — lifecycle routes adds the separately authenticated, authorized,
-  bounded API. Issue #73 — runtime handoff remains required to activate each
-  committed result.
+- Issues #72 — lifecycle routes and #73 — runtime handoff provide the
+  separately authenticated, authorized, bounded API and committed activation.
 - Issue #59 — embedded setup/recovery may add the accepted browser flow only
   after those machine boundaries are complete.

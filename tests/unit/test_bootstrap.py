@@ -8,6 +8,7 @@ from klove.config import PrinterConfig
 from klove.domain.onboarding import (
     MoonrakerEndpoint,
     PrinterIdentityEvidence,
+    RegisteredPrinter,
     RegistryOperationKind,
 )
 from klove.orchestration.admission import PrinterAdmissionGates
@@ -33,6 +34,11 @@ class Probe:
 class Fences:
     async def clear(self, _printer_uuid: str) -> bool:
         raise AssertionError("bootstrap create must not inspect an existing-printer fence")
+
+
+class Runtime:
+    async def reconcile_committed(self, _record: RegisteredPrinter) -> None:
+        return None
 
 
 def configured_printer(secret_file: Path, **updates: object) -> PrinterConfig:
@@ -61,6 +67,7 @@ async def test_file_bootstrap_is_exact_idempotent_and_uses_the_create_contract(
         probe,
         Fences(),
         admissions=PrinterAdmissionGates(),
+        runtime=Runtime(),
         clock_ms=lambda: 1_000,
     )
     importer = FileBootstrapImporter(lifecycle, store)
@@ -92,6 +99,7 @@ async def test_file_bootstrap_rejects_config_or_database_drift(
         Probe(),
         Fences(),
         admissions=PrinterAdmissionGates(),
+        runtime=Runtime(),
         clock_ms=lambda: 1_000,
     )
     importer = FileBootstrapImporter(lifecycle, store)
@@ -115,6 +123,7 @@ async def test_file_bootstrap_bounds_unreadable_source_credentials(tmp_path: Pat
         Probe(),
         Fences(),
         admissions=PrinterAdmissionGates(),
+        runtime=Runtime(),
         clock_ms=lambda: 1_000,
     )
 

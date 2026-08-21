@@ -9,6 +9,7 @@ import json
 import secrets as secrets_module
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from enum import StrEnum
 from typing import Protocol
 
@@ -78,6 +79,12 @@ class ActuatorFenceInspector(Protocol):
     async def clear(self, printer_uuid: str) -> bool: ...
 
 
+class RuntimeHandoff(Protocol):
+    """Reconcile one committed canonical record while its printer gate is held."""
+
+    async def reconcile_committed(self, record: RegisteredPrinter) -> None: ...
+
+
 class ControlFenceSource(Protocol):
     """Expose unresolved in-process job-control evidence without mutating it."""
 
@@ -122,6 +129,7 @@ class LifecycleFailureCode(StrEnum):
     PROBE_FAILED = "probe_failed"
     PRINTER_FENCED = "printer_fenced"
     FENCE_UNAVAILABLE = "fence_unavailable"
+    RUNTIME_UNAVAILABLE = "runtime_unavailable"
     STORAGE_UNAVAILABLE = "storage_unavailable"
     INTERNAL_FAILURE = "internal_failure"
 
@@ -145,6 +153,7 @@ class PrinterLifecycleService:
         fences: ActuatorFenceInspector,
         *,
         admissions: PrinterAdmissionGates,
+        runtime: RuntimeHandoff,
         random_bytes: Callable[[int], bytes] = secrets_module.token_bytes,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
@@ -155,6 +164,7 @@ class PrinterLifecycleService:
         self._random_bytes = random_bytes
         self._clock_ms = clock_ms or _unix_time_ms
         self._admissions = admissions
+        self._runtime = runtime
 
     async def create(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Create one registration only after direct current Moonraker evidence."""
@@ -172,7 +182,7 @@ class PrinterLifecycleService:
         except Exception as exc:
             raise LifecycleServiceError(LifecycleFailureCode.INTERNAL_FAILURE) from exc
 
-    def result(self, request: LifecycleResultRequest) -> RegisteredPrinter:
+    async def result(self, request: LifecycleResultRequest) -> RegisteredPrinter:
         """Return and finalize one exact durable result without replaying secret input."""
         try:
             operation = self._store.lookup_operation(request.idempotency_key)
@@ -185,7 +195,7 @@ class PrinterLifecycleService:
             or operation.request_origin != request.request_origin
         ):
             raise LifecycleServiceError(LifecycleFailureCode.CONFLICT)
-        return self._durable_result(operation)
+        return await self._recover_committed(operation)
 
     async def bootstrap_import(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Import one file-configured printer through the exact create contract."""
@@ -197,7 +207,7 @@ class PrinterLifecycleService:
         request: CreatePrinterRequest,
     ) -> RegisteredPrinter:
         fingerprint = self._fingerprint(kind, request)
-        duplicate = self._existing_result(kind, request, fingerprint)
+        duplicate = await self._existing_result(kind, request, fingerprint)
         if duplicate is not None:
             return duplicate
         if self._get_printer(request.printer_uuid) is not None:
@@ -242,7 +252,7 @@ class PrinterLifecycleService:
     async def update(self, request: UpdatePrinterRequest) -> RegisteredPrinter:
         """Refresh direct evidence and replace one exact mutable registration."""
         fingerprint = self._fingerprint(RegistryOperationKind.UPDATE, request)
-        duplicate = self._existing_result(RegistryOperationKind.UPDATE, request, fingerprint)
+        duplicate = await self._existing_result(RegistryOperationKind.UPDATE, request, fingerprint)
         if duplicate is not None:
             return duplicate
         current = self._current(request, {PrinterLifecycle.ACTIVE, PrinterLifecycle.DISABLED})
@@ -281,7 +291,7 @@ class PrinterLifecycleService:
     ) -> RegisteredPrinter:
         """Commit a new credential only when it directly proves the same route."""
         fingerprint = self._fingerprint(RegistryOperationKind.ROTATE_MOONRAKER, request)
-        duplicate = self._existing_result(
+        duplicate = await self._existing_result(
             RegistryOperationKind.ROTATE_MOONRAKER, request, fingerprint
         )
         if duplicate is not None:
@@ -327,7 +337,7 @@ class PrinterLifecycleService:
     ) -> RegisteredPrinter:
         """Generate a new compatibility copy without returning its active value."""
         fingerprint = self._fingerprint(RegistryOperationKind.ROTATE_COMPATIBILITY, request)
-        duplicate = self._existing_result(
+        duplicate = await self._existing_result(
             RegistryOperationKind.ROTATE_COMPATIBILITY, request, fingerprint
         )
         if duplicate is not None:
@@ -368,7 +378,7 @@ class PrinterLifecycleService:
     async def disable(self, request: DisablePrinterRequest) -> RegisteredPrinter:
         """Disable controls and dispatch while retaining exact identity and secrets."""
         fingerprint = self._fingerprint(RegistryOperationKind.DISABLE, request)
-        duplicate = self._existing_result(RegistryOperationKind.DISABLE, request, fingerprint)
+        duplicate = await self._existing_result(RegistryOperationKind.DISABLE, request, fingerprint)
         if duplicate is not None:
             return duplicate
         current = self._current(request, {PrinterLifecycle.ACTIVE})
@@ -394,7 +404,7 @@ class PrinterLifecycleService:
     async def remove(self, request: RemovePrinterRequest) -> RegisteredPrinter:
         """Tombstone one disabled registration and durably retire both secrets."""
         fingerprint = self._fingerprint(RegistryOperationKind.REMOVE, request)
-        duplicate = self._existing_result(RegistryOperationKind.REMOVE, request, fingerprint)
+        duplicate = await self._existing_result(RegistryOperationKind.REMOVE, request, fingerprint)
         if duplicate is not None:
             return duplicate
         current = self._current(request, {PrinterLifecycle.DISABLED})
@@ -436,10 +446,10 @@ class PrinterLifecycleService:
         except Exception as exc:
             raise _service_error(exc) from exc
         if not created:
-            return self._durable_result(prepared)
+            return await self._recover_committed(prepared)
         try:
             async with self._admissions.hold(operation.printer_uuid):
-                return await complete(prepared)
+                return await self._handoff(await complete(prepared))
         except asyncio.CancelledError:
             self._abort_if_preparing(prepared)
             raise
@@ -449,7 +459,7 @@ class PrinterLifecycleService:
                 raise
             raise _service_error(exc) from exc
 
-    def _existing_result(
+    async def _existing_result(
         self,
         operation: RegistryOperationKind,
         request: LifecycleMutationRequest,
@@ -465,7 +475,28 @@ class PrinterLifecycleService:
             raise LifecycleServiceError(LifecycleFailureCode.CONFLICT)
         if existing.state is RegistryOperationState.PREPARING:
             raise LifecycleServiceError(LifecycleFailureCode.BUSY)
-        return self._durable_result(existing)
+        return await self._recover_committed(existing)
+
+    async def _recover_committed(self, operation: RegistryOperationRecord) -> RegisteredPrinter:
+        """Finalize durable cleanup and re-establish runtime admission exactly once."""
+        async with self._admissions.hold(operation.printer_uuid):
+            return await self._handoff(self._durable_result(operation))
+
+    async def _handoff(self, result: RegisteredPrinter) -> RegisteredPrinter:
+        """Complete the runtime handoff without cancellation ambiguity."""
+        handoff = asyncio.create_task(
+            self._runtime.reconcile_committed(result),
+            name=f"registry-runtime-handoff:{result.printer_uuid}",
+        )
+        try:
+            await asyncio.shield(handoff)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await handoff
+            raise
+        except Exception as exc:
+            raise LifecycleServiceError(LifecycleFailureCode.RUNTIME_UNAVAILABLE) from exc
+        return result
 
     def _durable_result(self, operation: RegistryOperationRecord) -> RegisteredPrinter:
         if operation.state is RegistryOperationState.PREPARING:

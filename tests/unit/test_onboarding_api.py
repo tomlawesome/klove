@@ -54,7 +54,7 @@ class FakeLifecycle:
     async def remove(self, request: object) -> RegisteredPrinter:
         return await self._complete("remove", request, self.record)
 
-    def result(self, request: object) -> RegisteredPrinter:
+    async def result(self, request: object) -> RegisteredPrinter:
         self.calls.append(("result", request))
         if self.failure is not None:
             raise self.failure

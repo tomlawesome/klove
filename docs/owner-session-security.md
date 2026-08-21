@@ -50,4 +50,5 @@ This substrate grants no printer lifecycle or runtime authority by itself.
 Issue #72 — lifecycle routes strictly decodes requests, authenticates the owner
 credential before issuance, uses the exact raw-header checks above, and
 invalidates sessions at the required terminal transitions. Issue #73 — runtime
-handoff must reconcile committed mutations into runtime activation.
+handoff reconciles committed mutations into runtime activation while the shared
+printer gate remains held.
