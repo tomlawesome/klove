@@ -3,7 +3,10 @@
 
   const VERSION = 1;
   const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+  const ACCESS_CODE = /^[A-Za-z0-9_-]{20}$/;
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const PROXY_SERIAL = /^KLOVE-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/;
+  const DNS_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
   const INTEGER = /^[1-9][0-9]{0,15}$/;
   const VISIBLE_SECRET = /^[\x21-\x7e]{32,4096}$/;
   const MAX_SAFE_LIFECYCLE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -98,6 +101,8 @@
     session: null,
     cancelled: false,
     pending: false,
+    completionPending: false,
+    completionFlowNonce: null,
     idempotencyKey: null,
     printerUuid: null,
   };
@@ -133,6 +138,13 @@
       return;
     }
     if (state.cancelled) {
+      return;
+    }
+    if (state.parentOrigin !== null && event.origin !== state.parentOrigin) {
+      return;
+    }
+    if (state.completionPending) {
+      receiveCompletionResult(event.data);
       return;
     }
     if (state.parentOrigin === null) {
@@ -182,6 +194,26 @@
     cancel.disabled = false;
     guidance.textContent = "Enter the Klove owner credential to authorize this short-lived session.";
     credential.focus();
+  }
+
+  function receiveCompletionResult(message) {
+    if (
+      !matches(message, ["version", "type", "flow_nonce", "status"]) ||
+      message.version !== VERSION ||
+      message.type !== "klove.frame.completion.result" ||
+      message.flow_nonce !== state.completionFlowNonce ||
+      (message.status !== "created" && message.status !== "failed")
+    ) {
+      return;
+    }
+    const created = message.status === "created";
+    discardSessionMaterial({ hideLifecycle: true });
+    state.cancelled = true;
+    guidance.textContent = created
+      ? "The host application confirmed the printer entry."
+      : "The host application did not create a printer entry.";
+    status.textContent = created ? "Registration handoff complete." : "Registration handoff failed.";
+    cancel.disabled = true;
   }
 
   async function authorizeSession(event) {
@@ -514,6 +546,10 @@
       const response = await responsePromise;
       const document = await jsonObject(response);
       if (response.ok && matches(document, ["printer"]) && isObject(document.printer)) {
+        if (operation === "create") {
+          await deliverCompletion();
+          return;
+        }
         completeLifecycle(document.printer);
         return;
       }
@@ -730,6 +766,65 @@
     cancel.disabled = true;
   }
 
+  async function deliverCompletion() {
+    if (
+      state.parentOrigin === null ||
+      state.session === null ||
+      operation !== "create" ||
+      state.cancelled ||
+      state.completionPending
+    ) {
+      fail("Klove could not prepare the registration handoff. Restart the secure host connection.");
+      return;
+    }
+    const session = state.session;
+    try {
+      const response = await fetch("/v1/onboarding/frame/completion", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klove-CSRF": session.csrfToken,
+        },
+        body: JSON.stringify({ flow_nonce: session.flowNonce }),
+      });
+      const completion = await jsonObject(response);
+      if (!response.ok || !isExactCompletion(completion, session.flowNonce)) {
+        throw new Error("completion denied");
+      }
+      state.session = null;
+      state.serverNonce = null;
+      state.idempotencyKey = null;
+      state.printerUuid = null;
+      state.completionPending = true;
+      state.completionFlowNonce = completion.flow_nonce;
+      lifecyclePanel.replaceChildren(lifecycleTitle, lifecycleGuidance);
+      lifecyclePanel.hidden = true;
+      cancel.disabled = true;
+      guidance.textContent = "Klove is handing the printer details to the host application.";
+      status.textContent = "Waiting for host confirmation.";
+      const message = {
+        version: VERSION,
+        type: "klove.frame.completion",
+        flow_nonce: completion.flow_nonce,
+        name: completion.name,
+        serial_number: completion.serial_number,
+        ip_address: completion.ip_address,
+        access_code: completion.access_code,
+      };
+      try {
+        window.parent.postMessage(message, state.parentOrigin);
+      } finally {
+        message.access_code = "";
+        completion.access_code = "";
+      }
+    } catch {
+      state.session = null;
+      fail("Klove could not deliver the registration handoff. Restart the secure host connection.");
+    }
+  }
+
   function appendSummary(list, labelText, valueText) {
     const term = document.createElement("dt");
     term.textContent = labelText;
@@ -760,7 +855,7 @@
   }
 
   async function cancelSession() {
-    if (state.pending || state.cancelled) {
+    if (state.pending || state.cancelled || state.completionPending) {
       return false;
     }
     state.pending = true;
@@ -849,6 +944,51 @@
     return typeof value === "string" && TOKEN.test(value);
   }
 
+  function isExactCompletion(value, flowNonce) {
+    return (
+      matches(value, ["version", "type", "flow_nonce", "name", "serial_number", "ip_address", "access_code"]) &&
+      value.version === VERSION &&
+      value.type === "klove.frame.completion" &&
+      value.flow_nonce === flowNonce &&
+      isDisplayName(value.name) &&
+      typeof value.serial_number === "string" &&
+      PROXY_SERIAL.test(value.serial_number) &&
+      isCompatibilityHost(value.ip_address) &&
+      typeof value.access_code === "string" &&
+      ACCESS_CODE.test(value.access_code)
+    );
+  }
+
+  function isDisplayName(value) {
+    return (
+      typeof value === "string" &&
+      value.length >= 1 &&
+      value.length <= 100 &&
+      value === value.trim() &&
+      !/[\u0000-\u001f\u007f]/.test(value)
+    );
+  }
+
+  function isCompatibilityHost(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 253 || !/^[\x21-\x7e]+$/.test(value)) {
+      return false;
+    }
+    const parts = value.split(".");
+    if (parts.every((part) => /^[0-9]+$/.test(part))) {
+      if (parts.length !== 4) {
+        return false;
+      }
+      return parts.every((part) => {
+        if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) {
+          return false;
+        }
+        const number = Number(part);
+        return Number.isInteger(number) && number >= 0 && number <= 255 && String(number) === part;
+      });
+    }
+    return DNS_HOST.test(value);
+  }
+
   function secureRandomUuid() {
     if (typeof crypto.randomUUID !== "function") {
       throw new InputError("This browser cannot create a secure registration identifier.");
@@ -876,6 +1016,8 @@
     state.serverNonce = null;
     state.parentNonce = null;
     state.parentOrigin = null;
+    state.completionPending = false;
+    state.completionFlowNonce = null;
     state.idempotencyKey = null;
     state.printerUuid = null;
     lifecyclePanel.replaceChildren(lifecycleTitle, lifecycleGuidance);

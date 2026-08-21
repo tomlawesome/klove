@@ -165,6 +165,7 @@ async def create_printer(request: web.Request) -> web.Response:
         CreatePrinterRequest,
         request.app[lifecycle_key].create,
         status=HTTPStatus.CREATED,
+        hold_framed_completion=True,
     )
 
 
@@ -268,6 +269,7 @@ async def _run_mutation(  # noqa: PLR0913 -- all route bindings remain explicit.
     *,
     printer_uuid: str | None = None,
     status: int = HTTPStatus.OK,
+    hold_framed_completion: bool = False,
 ) -> web.Response:
     return await _run(
         request,
@@ -279,10 +281,11 @@ async def _run_mutation(  # noqa: PLR0913 -- all route bindings remain explicit.
         printer_uuid=printer_uuid,
         status=status,
         idempotency=True,
+        hold_framed_completion=hold_framed_completion,
     )
 
 
-async def _run(  # noqa: PLR0913,PLR0917 -- all request-security inputs stay explicit.
+async def _run(  # noqa: PLR0911,PLR0912,PLR0913,PLR0917 -- all request-security inputs stay explicit.
     request: web.Request,
     payload: dict[str, Any],
     operation: OnboardingOperation,
@@ -293,11 +296,15 @@ async def _run(  # noqa: PLR0913,PLR0917 -- all request-security inputs stay exp
     printer_uuid: str | None = None,
     status: int = HTTPStatus.OK,
     idempotency: bool = False,
+    hold_framed_completion: bool = False,
     extra: Mapping[str, object] | None = None,
 ) -> web.Response:
     flow_nonce = payload.pop("flow_nonce", None)
     lease = _authorize(request, operation, flow_nonce)
     if lease is None:
+        return _error(HTTPStatus.FORBIDDEN, "owner_denied")
+    if lease.completion is not None:
+        lease.release()
         return _error(HTTPStatus.FORBIDDEN, "owner_denied")
     values: dict[str, object] = {**payload, **(extra or {})}
     profiles = values.get("safety_profiles")
@@ -328,6 +335,14 @@ async def _run(  # noqa: PLR0913,PLR0917 -- all request-security inputs stay exp
     except Exception:
         lease.invalidate()
         return _error(HTTPStatus.SERVICE_UNAVAILABLE, "internal_failure")
+    if hold_framed_completion and lease.framed:
+        try:
+            lease.bind_completion(result.printer_uuid, result.revision)
+            lease.release()
+        except OwnerSessionDenied:
+            lease.invalidate()
+            return _error(HTTPStatus.SERVICE_UNAVAILABLE, "internal_failure")
+        return _json_response(render(result), status=status)
     lease.invalidate()
     response = _json_response(render(result), status=status)
     response.del_cookie(SESSION_COOKIE_NAME, path=SESSION_COOKIE_PATH)

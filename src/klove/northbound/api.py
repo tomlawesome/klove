@@ -7,7 +7,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from aiohttp import web
 
@@ -21,6 +21,7 @@ from klove.northbound.onboarding_api import (
     owner_sessions_key,
 )
 from klove.northbound.secure_frame import install_secure_frame_routes
+from klove.orchestration.completion import CompletionHandoffService
 from klove.orchestration.control import ControlService
 from klove.orchestration.onboarding import PrinterLifecycleService
 from klove.registry import PrinterRegistry
@@ -42,6 +43,7 @@ def create_api(  # noqa: PLR0913 -- explicit composition dependencies.
     owner_sessions: OwnerSessionStore | None = None,
     lifecycle: PrinterLifecycleService | None = None,
     frame_handshakes: FrameHandshakeStore | None = None,
+    completion_handoff: CompletionHandoffService | None = None,
 ) -> web.Application:
     """Build the native monitoring and typed-control application."""
     if (owner_authenticator is None) is not (owner_sessions is None):
@@ -54,8 +56,11 @@ def create_api(  # noqa: PLR0913 -- explicit composition dependencies.
         or lifecycle is None
         or owner_sessions.frame_origin is None
         or owner_sessions.allowed_parent_origins != frame_handshakes.allowed_parent_origins
+        or completion_handoff is None
     ):
         raise ValueError("secure frame routes require matching owner-session configuration")
+    if completion_handoff is not None and frame_handshakes is None:
+        raise ValueError("completion handoff requires secure frame routes")
     app = web.Application(client_max_size=16 * 1024, middlewares=[onboarding_security_headers])
     app[registry_key] = registry
     app[authenticator_key] = authenticator
@@ -77,7 +82,11 @@ def create_api(  # noqa: PLR0913 -- explicit composition dependencies.
     if lifecycle is not None:
         install_onboarding_routes(app)
     if frame_handshakes is not None:
-        install_secure_frame_routes(app, frame_handshakes)
+        install_secure_frame_routes(
+            app,
+            frame_handshakes,
+            cast(CompletionHandoffService, completion_handoff),
+        )
     return app
 
 

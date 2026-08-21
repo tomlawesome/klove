@@ -20,6 +20,9 @@ SESSION_COOKIE_PATH = "/v1/onboarding"
 CSRF_HEADER_NAME = "X-Klove-CSRF"
 _TOKEN_BYTES = 32
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
+_CANONICAL_UUID4 = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 _COOKIE_NAME_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 _COOKIE_VALUE_PATTERN = re.compile(r"[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*")
 _SESSION_DOMAIN = b"klove-owner-session-v1\x00"
@@ -89,16 +92,26 @@ class OwnerSessionGrant:
         return "OwnerSessionGrant(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionBinding:
+    """One exact active record made available for a single framed handoff."""
+
+    printer_uuid: str
+    revision: int
+
+
 @dataclass(slots=True)
 class _Session:
     parent_origin: str
     request_origin: str
     flow_nonce: str
     operation: OnboardingOperation
+    framed: bool
     csrf_digest: bytes
     created_at: float
     last_used_at: float
     in_use: bool = False
+    completion: CompletionBinding | None = None
 
 
 class OwnerSessionLease:
@@ -122,6 +135,26 @@ class OwnerSessionLease:
             raise OwnerSessionDenied
         self._closed = True
         self._store._invalidate(self._session_digest)
+
+    def bind_completion(self, printer_uuid: str, revision: int) -> None:
+        """Reserve one exact framed CREATE result for the completion route."""
+        if self._closed:
+            raise OwnerSessionDenied
+        self._store._bind_completion(self._session_digest, printer_uuid, revision)
+
+    @property
+    def completion(self) -> CompletionBinding | None:
+        """Return the one bound result while this exact lease remains claimed."""
+        if self._closed:
+            raise OwnerSessionDenied
+        return self._store._completion(self._session_digest)
+
+    @property
+    def framed(self) -> bool:
+        """Return whether this lease was issued through the parent-frame proof."""
+        if self._closed:
+            raise OwnerSessionDenied
+        return self._store._framed(self._session_digest)
 
     @property
     def parent_origin(self) -> str:
@@ -252,6 +285,7 @@ class OwnerSessionStore:
                 request_origin=request_origin,
                 flow_nonce=flow_nonce,
                 operation=operation,
+                framed=parent_origin != request_origin,
                 csrf_digest=_digest(_CSRF_DOMAIN, csrf_token),
                 created_at=now,
                 last_used_at=now,
@@ -332,6 +366,35 @@ class OwnerSessionStore:
         if session is None or not session.in_use:
             raise OwnerSessionDenied
         return session.parent_origin
+
+    def _bind_completion(self, digest: bytes, printer_uuid: str, revision: int) -> None:
+        session = self._sessions.get(digest)
+        if (
+            session is None
+            or not session.in_use
+            or session.operation is not OnboardingOperation.CREATE
+            or not session.framed
+            or session.completion is not None
+            or type(printer_uuid) is not str
+            or _CANONICAL_UUID4.fullmatch(printer_uuid) is None
+            or type(revision) is not int
+            or isinstance(revision, bool)
+            or not 1 <= revision <= 9_223_372_036_854_775_807
+        ):
+            raise OwnerSessionDenied
+        session.completion = CompletionBinding(printer_uuid, revision)
+
+    def _completion(self, digest: bytes) -> CompletionBinding | None:
+        session = self._sessions.get(digest)
+        if session is None or not session.in_use:
+            raise OwnerSessionDenied
+        return session.completion
+
+    def _framed(self, digest: bytes) -> bool:
+        session = self._sessions.get(digest)
+        if session is None or not session.in_use:
+            raise OwnerSessionDenied
+        return session.framed
 
     def _purge_expired(self, now: float) -> None:
         for digest, session in tuple(self._sessions.items()):
