@@ -113,13 +113,24 @@ def test_preview_publication_requires_native_moonraker_integration() -> None:
     assert 'CI: "true"' in integration
     assert 'KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"' in integration
     assert "run: sh scripts/test-moonraker-sim.sh" in integration
+    browser = job("browser")
+    assert "name: Secure embedded-frame browser boundary" in browser
+    assert "needs: fast" in browser
+    assert "permissions:\n      contents: read" in browser
+    assert 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"' in browser
+    assert "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5" in browser
+    assert 'node-version: "22.17.0"' in browser
+    assert "cache: npm" in browser and "cache-dependency-path: package-lock.json" in browser
+    assert "run: npm ci" in browser
+    assert "run: npx playwright install --with-deps chromium" in browser
+    assert "run: sh scripts/test-browser.sh" in browser
     exact_container = job("exact-container")
     assert "if: github.event_name == 'push' && github.ref_name == 'preview'" in exact_container
-    assert "needs: [fast, moonraker-sim]" in exact_container
+    assert "needs: [fast, browser, moonraker-sim]" in exact_container
     assert 'candidate="preview-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"' in exact_container
     assert 'docker push "${image}:${candidate}"' in exact_container
     assert 'imagetools create --tag "${image}:preview" "${image}@${digest}"' in exact_container
-    assert "needs: [fast, moonraker-sim]" in job("verify-preview")
+    assert "needs: [fast, browser, moonraker-sim]" in job("verify-preview")
 
 
 def test_container_and_compose_preserve_runtime_confinement() -> None:

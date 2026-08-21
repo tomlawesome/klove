@@ -57,10 +57,34 @@ jobs:
       - name: Exercise real Klipper, Moonraker, and Klove contract
         run: sh scripts/test-moonraker-sim.sh
 
+  browser:
+    name: Secure embedded-frame browser boundary
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CI: "true"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22.17.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install lockfile-pinned browser test dependencies
+        run: npm ci
+      - name: Install Playwright's lockfile-pinned Chromium runtime
+        run: npx playwright install --with-deps chromium
+      - name: Exercise the secure parent/frame boundary
+        run: sh scripts/test-browser.sh
+
   exact-container:
     name: Exact container contract
     if: github.event_name == 'push' && github.ref_name == 'preview'
-    needs: [fast, moonraker-sim]
+    needs: [fast, browser, moonraker-sim]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -144,7 +168,7 @@ jobs:
   verify-preview:
     name: Verify tested preview for stable merge
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    needs: [fast, moonraker-sim]
+    needs: [fast, browser, moonraker-sim]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

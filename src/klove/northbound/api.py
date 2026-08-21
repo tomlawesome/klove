@@ -20,10 +20,12 @@ from klove.northbound.onboarding_api import (
     owner_authenticator_key,
     owner_sessions_key,
 )
+from klove.northbound.secure_frame import install_secure_frame_routes
 from klove.orchestration.control import ControlService
 from klove.orchestration.onboarding import PrinterLifecycleService
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator, authorize
+from klove.security.frame_handshake import FrameHandshakeStore
 from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -39,12 +41,21 @@ def create_api(  # noqa: PLR0913 -- explicit composition dependencies.
     owner_authenticator: OwnerCredentialAuthenticator | None = None,
     owner_sessions: OwnerSessionStore | None = None,
     lifecycle: PrinterLifecycleService | None = None,
+    frame_handshakes: FrameHandshakeStore | None = None,
 ) -> web.Application:
     """Build the native monitoring and typed-control application."""
     if (owner_authenticator is None) is not (owner_sessions is None):
         raise ValueError("owner authentication and sessions must be configured together")
     if lifecycle is not None and owner_authenticator is None:
         raise ValueError("lifecycle routes require owner authentication and sessions")
+    if frame_handshakes is not None and (
+        owner_authenticator is None
+        or owner_sessions is None
+        or lifecycle is None
+        or owner_sessions.frame_origin is None
+        or owner_sessions.allowed_parent_origins != frame_handshakes.allowed_parent_origins
+    ):
+        raise ValueError("secure frame routes require matching owner-session configuration")
     app = web.Application(client_max_size=16 * 1024, middlewares=[onboarding_security_headers])
     app[registry_key] = registry
     app[authenticator_key] = authenticator
@@ -65,6 +76,8 @@ def create_api(  # noqa: PLR0913 -- explicit composition dependencies.
     )
     if lifecycle is not None:
         install_onboarding_routes(app)
+    if frame_handshakes is not None:
+        install_secure_frame_routes(app, frame_handshakes)
     return app
 
 

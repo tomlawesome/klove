@@ -1,0 +1,12 @@
+{
+  "name": "klove-browser-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser verification for Klove's embedded secure-frame boundary",
+  "scripts": {
+    "test:browser": "playwright test --config=playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

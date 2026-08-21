@@ -339,6 +339,39 @@ def test_loopback_exception_never_allows_remote_http() -> None:
         )
 
 
+def test_secure_frame_origin_is_exact_distinct_and_development_bounded() -> None:
+    assert OnboardingConfig.model_validate({"frame_origin": None}).frame_origin is None
+    common = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+        "allowed_grove_origins": ("https://grove.example.test",),
+    }
+    configured = OnboardingConfig.model_validate(
+        {**common, "frame_origin": "https://grove.example.test:8443"}
+    )
+    assert configured.frame_enabled
+    assert configured.frame_origin == "https://grove.example.test:8443"
+
+    for value in (
+        "https://grove.example.test",
+        "https://GROVE.example.test:8443",
+        "https://grove.example.test:8443/",
+        "http://grove.example.test:8443",
+        "https://klove.example.test:8443",
+    ):
+        with pytest.raises(ValidationError):
+            OnboardingConfig.model_validate({**common, "frame_origin": value})
+
+    loopback = OnboardingConfig(
+        enabled=True,
+        owner_credential_file=Path("/run/secrets/owner"),
+        allowed_grove_origins=("http://127.0.0.1:9011",),
+        frame_origin="http://127.0.0.1:9010",
+        allow_loopback_http=True,
+    )
+    assert loopback.frame_enabled and loopback.cookie_secure is False
+
+
 @pytest.mark.parametrize(
     "values",
     [

@@ -127,6 +127,7 @@ class OnboardingConfig(BaseModel):
     enabled: bool = False
     owner_credential_file: Path | None = None
     allowed_grove_origins: tuple[str, ...] = ()
+    frame_origin: str | None = None
     allow_loopback_http: bool = False
     session_capacity: int = Field(default=128, ge=1, le=10_000)
     session_inactivity_seconds: int = Field(default=900, ge=1, le=900)
@@ -136,6 +137,11 @@ class OnboardingConfig(BaseModel):
     def cookie_secure(self) -> bool:
         """Use secure cookies except in the explicit loopback HTTP dev mode."""
         return not self.allow_loopback_http
+
+    @property
+    def frame_enabled(self) -> bool:
+        """Return whether an exact Klove browser origin enables embedded frame routes."""
+        return self.frame_origin is not None
 
     @field_validator("owner_credential_file")
     @classmethod
@@ -155,6 +161,13 @@ class OnboardingConfig(BaseModel):
             _validate_exact_origin(value)
         return values
 
+    @field_validator("frame_origin")
+    @classmethod
+    def frame_origin_is_exact(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_exact_origin(value)
+        return value
+
     @model_validator(mode="after")
     def enabled_policy_is_complete(self) -> OnboardingConfig:
         if self.session_inactivity_seconds > self.session_absolute_seconds:
@@ -163,6 +176,7 @@ class OnboardingConfig(BaseModel):
             if (
                 self.owner_credential_file is not None
                 or self.allowed_grove_origins
+                or self.frame_origin is not None
                 or self.allow_loopback_http
             ):
                 raise ValueError("disabled onboarding cannot contain active configuration")
@@ -171,7 +185,22 @@ class OnboardingConfig(BaseModel):
             raise ValueError("enabled onboarding requires an owner credential file")
         if not self.allowed_grove_origins:
             raise ValueError("enabled onboarding requires at least one Grove origin")
-        for origin in self.allowed_grove_origins:
+        frame_origins = self.allowed_grove_origins
+        if self.frame_origin is not None:
+            if self.frame_origin in self.allowed_grove_origins:
+                raise ValueError("frame origin must remain distinct from Grove parent origins")
+            frame = urlsplit(self.frame_origin)
+            if any(
+                (parent := urlsplit(origin)).scheme != frame.scheme
+                or parent.hostname != frame.hostname
+                for origin in self.allowed_grove_origins
+            ):
+                raise ValueError(
+                    "frame and Grove parent origins must share one exact trusted-site "
+                    "host and scheme"
+                )
+            frame_origins += (self.frame_origin,)
+        for origin in frame_origins:
             parsed = urlsplit(origin)
             if parsed.scheme == "http" and (
                 not self.allow_loopback_http or not _is_loopback(parsed.hostname or "")

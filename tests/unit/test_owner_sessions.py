@@ -118,6 +118,9 @@ def test_owner_credential_is_independent_exact_and_redacted() -> None:
         {"absolute_timeout_seconds": 1.0},
         {"inactivity_timeout_seconds": 20, "absolute_timeout_seconds": 10},
         {"cookie_secure": cast(Any, 1)},
+        {"frame_origin": ""},
+        {"frame_origin": " https://klove.invalid"},
+        {"frame_origin": cast(Any, 1)},
     ],
 )
 def test_session_store_rejects_unbounded_or_ambiguous_limits(overrides: dict[str, object]) -> None:
@@ -323,6 +326,9 @@ def test_unknown_or_unclaimed_internal_lease_cannot_change_state() -> None:
     unknown = OwnerSessionLease(sessions, hashlib.sha256(b"unknown").digest())
     with pytest.raises(OwnerSessionDenied):
         unknown.release()
+    unknown_parent = OwnerSessionLease(sessions, hashlib.sha256(b"unknown-parent").digest())
+    with pytest.raises(OwnerSessionDenied):
+        _ = unknown_parent.parent_origin
 
     digest = hashlib.sha256(b"klove-owner-session-v1\x00" + grant.cookie_value.encode()).digest()
     unclaimed = OwnerSessionLease(sessions, digest)
@@ -336,3 +342,61 @@ def test_unknown_origin_or_untyped_operation_never_issues_material() -> None:
         sessions.issue("https://other.invalid", OnboardingOperation.CREATE)
     with pytest.raises(OwnerSessionDenied):
         sessions.issue(ORIGIN, cast(Any, "create"))
+
+
+def test_framed_session_binds_the_browser_request_and_parent_origins_separately() -> None:
+    frame_origin = "https://grove.example.invalid:8443"
+    sessions = OwnerSessionStore(
+        frozenset({ORIGIN}),
+        capacity=2,
+        inactivity_timeout_seconds=900,
+        absolute_timeout_seconds=1_800,
+        frame_origin=frame_origin,
+        token_factory=token_sequence(1, 2, 3),
+    )
+    grant = sessions.issue_framed(parent_origin=ORIGIN, operation=OnboardingOperation.CREATE)
+    lease = sessions.authorize(
+        cookie_headers=[f"{SESSION_COOKIE_NAME}={grant.cookie_value}"],
+        csrf_headers=[grant.csrf_token],
+        origin_headers=[frame_origin],
+        operation=OnboardingOperation.CREATE,
+        flow_nonce=grant.flow_nonce,
+    )
+
+    assert sessions.frame_origin == frame_origin
+    assert sessions.allowed_parent_origins == frozenset({ORIGIN})
+    assert lease.parent_origin == ORIGIN
+    lease.release()
+    with pytest.raises(OwnerSessionDenied):
+        _ = lease.parent_origin
+
+
+@pytest.mark.parametrize(
+    "frame_origin",
+    (
+        ORIGIN,
+        "https://grove.example.invalid:443",
+        "http://grove.example.invalid:8443",
+        "https://other.example.invalid:8443",
+        "https://grove.example.invalid/path",
+        "https://grove.example.invalid:invalid",
+    ),
+)
+def test_framed_sessions_reject_cross_site_or_ambiguous_composition(frame_origin: str) -> None:
+    with pytest.raises(ValueError, match="exact and same-site"):
+        OwnerSessionStore(
+            frozenset({ORIGIN}),
+            capacity=2,
+            inactivity_timeout_seconds=900,
+            absolute_timeout_seconds=1_800,
+            frame_origin=frame_origin,
+        )
+
+
+def test_framed_session_is_disabled_without_an_exact_frame_origin() -> None:
+    sessions = store(token_factory=token_sequence(1, 2, 3))
+
+    assert sessions.frame_origin is None
+    assert sessions.allowed_parent_origins == frozenset({ORIGIN})
+    with pytest.raises(OwnerSessionDenied):
+        sessions.issue_framed(parent_origin=ORIGIN, operation=OnboardingOperation.CREATE)
