@@ -460,10 +460,18 @@ before any product caller can reach it. The complete contract is
   it reserves streamed hostile input before reading it, retains an owner-only
   exact source and durable coordinator row, composes qualification/upload/start
   under shared admission, and closes restart ambiguity without a blind retry.
+- [x] Implement #76 — native dispatch proof in the confined real Moonraker
+  fixture. It starts only from a bracketed coherent idle state, drives the
+  production coordinator/upload/start/journal/admission stack with one bounded
+  test artifact, proves grant/profile/source-byte/idempotency binding,
+  cancellation, duplicate/substitution and cross-printer isolation, then
+  resolves a deliberately lost typed-start response from a fresh process
+  without another upload or start. Local native acceptance passed; CI validation
+  remains pending.
 
 Exit criterion: #75 — dispatch coordinator is implemented without a northbound
-adapter or additional actuator. #76 — native dispatch proof is next: it must
-prove that internal lifecycle against the real native Moonraker fixture.
+adapter or additional actuator. #76 — native dispatch proof must pass against
+the real pinned Moonraker fixture before it is complete.
 
 ## Next slices
 

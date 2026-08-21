@@ -170,12 +170,21 @@ def test_container_and_compose_preserve_runtime_confinement() -> None:
     assert "volumes:\n  klove-state:" in compose
 
 
-def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
+def test_native_moonraker_simulation_is_confined_and_test_only() -> None:  # noqa: PLR0915 -- explicit safety-policy assertions are auditable.
     fixture = ROOT / "tests" / "integration" / "moonraker-sim"
     compose = (fixture / "compose.yml").read_text(encoding="utf-8")
     dockerfile = (fixture / "Dockerfile").read_text(encoding="utf-8")
+    dispatch_dockerfile = (fixture / "dispatch.Dockerfile").read_text(encoding="utf-8")
+    dispatch_dockerignore = (fixture / "dispatch.Dockerfile.dockerignore").read_text(
+        encoding="utf-8"
+    )
     host = (fixture / "fixture" / "host.py").read_text(encoding="utf-8")
     contract = (fixture / "fixture" / "exercise_contract.py").read_text(encoding="utf-8")
+    dispatch = (fixture / "fixture" / "dispatch_contract.py").read_text(encoding="utf-8")
+    dispatch_reconnect = (fixture / "fixture" / "dispatch_reconnect_contract.py").read_text(
+        encoding="utf-8"
+    )
+    sdcard_reset = (fixture / "fixture" / "sdcard_reset.py").read_text(encoding="utf-8")
     moonraker = (fixture / "fixture" / "moonraker.conf").read_text(encoding="utf-8")
     script_library = (ROOT / "scripts" / "moonraker-sim-lib.sh").read_text(encoding="utf-8")
     up = (ROOT / "scripts" / "moonraker-sim-up.sh").read_text(encoding="utf-8")
@@ -188,14 +197,15 @@ def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
     assert "container_name:" not in compose
     assert "/var/run/docker.sock" not in compose
     assert "/dev/" not in compose
-    assert compose.count("read_only: true") == 5
-    assert compose.count("cap_drop:\n      - ALL") == 5
-    assert compose.count("no-new-privileges:true") == 5
-    assert compose.count("pids_limit:") == 5
-    assert compose.count("mem_limit:") == 5
-    assert compose.count("cpus:") == 5
+    assert compose.count("read_only: true") == 7
+    assert compose.count("cap_drop:\n      - ALL") == 7
+    assert compose.count("no-new-privileges:true") == 7
+    assert compose.count("pids_limit:") == 7
+    assert compose.count("mem_limit:") == 7
+    assert compose.count("cpus:") == 7
     assert compose.count("runtime-state:/run/printer-state") == 1
     assert "runtime-secrets:/run/klove-secrets:ro" in compose
+    assert compose.count("dispatch-state:/var/lib/klove") == 2
 
     from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert len(from_lines) == 2
@@ -206,6 +216,18 @@ def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
     assert "git -C /opt/moonraker rev-parse HEAD" in dockerfile
     assert "sha256sum --check /fixture/SHA256SUMS" in dockerfile
     assert "USER 10001:10001" in dockerfile
+    assert "FROM klove-moonraker-sim-klove:local" in dispatch_dockerfile
+    assert "USER 10001:10001" in dispatch_dockerfile
+    assert "/fixture/dispatch_contract.py" in dispatch_dockerfile
+    assert "/fixture/dispatch_reconnect_contract.py" in dispatch_dockerfile
+    assert "/fixture/sdcard_reset.py" in dispatch_dockerfile
+    assert dispatch_dockerignore.startswith("*\n")
+    assert "!tests/integration/moonraker-sim/fixture/dispatch_contract.py" in dispatch_dockerignore
+    assert (
+        "!tests/integration/moonraker-sim/fixture/dispatch_reconnect_contract.py"
+        in dispatch_dockerignore
+    )
+    assert "!tests/integration/moonraker-sim/fixture/sdcard_reset.py" in dispatch_dockerignore
 
     assert 'MOONRAKER = "http://127.0.0.1:7125"' in host
     assert 'STATE_DIR = Path("/run/printer-state")' in host
@@ -213,6 +235,15 @@ def test_native_moonraker_simulation_is_confined_and_test_only() -> None:
     assert "0o600" in host
     assert "printer/print/start" not in host
     assert "printer/print/start" in contract
+    assert "DispatchCoordinator" in dispatch
+    assert "MoonrakerUploadTransport" in dispatch
+    assert "MoonrakerStartTransport" in dispatch
+    assert "printer.gcode.script" not in dispatch
+    assert "coordinator.submit" not in dispatch_reconnect
+    assert "printer.gcode.script" not in dispatch_reconnect
+    assert sdcard_reset.count("printer/gcode/script") == 1
+    assert sdcard_reset.count("SDCARD_RESET_FILE") == 1
+    assert "script: str" not in sdcard_reset
     assert "  127.0.0.1" in moonraker
     assert "0.0.0.0/0" not in moonraker
     assert "docker context show" in script_library

@@ -25,6 +25,10 @@ _COMMAND = re.compile(
     rb"^(?:/[ \t]*)?(?:N[0-9]+[ \t]*)?([GMT][0-9]+(?:\.[0-9]+)?)",
     re.IGNORECASE,
 )
+_MOTION_AXIS = re.compile(
+    rb"(?:^|[ \t])[XYZE][+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?=$|[ \t]|[XYZEFS])",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +145,9 @@ class _GcodeScanner:
                         ArtifactBoundary.SELECTED_PLATE,
                         ArtifactFailureCode.INCOMPATIBLE_GCODE,
                     )
-                if command in {b"G0", b"G00", b"G1", b"G01"}:
+                if command in {b"G0", b"G00", b"G1", b"G01"} and _MOTION_AXIS.search(
+                    code[match.end() :]
+                ):
                     self._motion_seen = True
 
 

@@ -31,6 +31,17 @@ show_logs() {
         --no-color --tail 200 printer-host moonraker-proxy klove >&2
 }
 
+if ! timeout 300 docker compose --project-name "$project" --file "$compose_file" \
+    --profile contract run --build --rm --no-deps dispatch-contract; then
+    show_logs
+    exit 1
+fi
+if ! timeout 180 docker compose --project-name "$project" --file "$compose_file" \
+    --profile contract run --rm --no-deps dispatch-reconnect-contract; then
+    show_logs
+    exit 1
+fi
+
 if ! timeout 180 docker compose --project-name "$project" --file "$compose_file" \
     --profile contract run --rm --no-deps contract; then
     show_logs

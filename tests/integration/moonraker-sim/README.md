@@ -64,6 +64,25 @@ start capability and does not bypass either contract. Production code contains
 no generic G-code path. The complete production intake/upload/start lifecycle
 belongs to issue #12 rather than this control-focused fixture.
 
+Before that control runner, the native dispatch runner exercises the production
+internal ADR 0007 coordinator, ADR 0004 upload transport, ADR 0005 start
+transport, shared admission gate, spool, and both durable journals. Its only
+artifact is an in-memory, bounded 3MF containing `G1 X0 Y0` plus finite dwell
+commands. Pinned `kinematics: none` has no steppers and Klipper discards this
+zero-distance move before queueing it; the artifact is uploaded through the
+production file-only path and starts through the production typed start path.
+It adds no Klove route, generic G-code interface, or print-control surface.
+Between its two independent start scenarios, one isolated fixture helper sends
+the fixed `SDCARD_RESET_FILE` command only after exact completed live/history
+evidence, then requires true standby with the same immutable history identity.
+The helper accepts no caller-supplied script and is not included in production.
+The first runner observes the durable uncertain-start fence directly, without
+triggering reconciliation through the public read-only result lookup.
+A separate fresh runner process uses the persistent test-only dispatch volume
+to reconcile the deliberately lost start response read-only, and both runners
+return Moonraker to a coherently idle state before the existing control contract
+starts.
+
 The contract verifies:
 
 - invalid Klove bearer and Moonraker API keys are rejected;
@@ -78,6 +97,15 @@ The contract verifies:
   running; and
 - a Klove restart creates a new boot epoch, so the prior token is denied
   without dispatch.
+- the native coordinator accepts only the exact authenticated grant, registry
+  profile, declared archive bytes, and idempotency identity; a source digest
+  mismatch is denied before upload, duplicate delivery performs one
+  upload/start, substitution conflicts, and cross-principal/printer reads do
+  not enumerate an operation;
+- pre-upload dispatch cancellation is durable and sends no upload; and
+- a dropped typed-start response becomes `outcome_unknown`; a fresh coordinator
+  process resolves it only from exact current/history evidence to completion,
+  without another upload or start.
 
 RatOS host, kernel, systemd, udev, configurator, board, and physical macro
 semantics are outside this fixture. Follow `docs/ratos-acceptance.md` for that
