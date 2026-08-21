@@ -144,10 +144,9 @@ fail closed.
 The artifact contract, hostile validator, exact target qualification, bounded
 upload, and durable print-start components are complete through #9 — durable
 print start. ADR 0006 freezes the product-onboarding boundary. #62 — registry
-storage, #63 — onboarding core, #64 — runtime fleet, and #71 — owner session
-are implemented. The immediate dependent slices are #72 — lifecycle routes and
-#73 — runtime handoff, which complete #65 — protected onboarding API. That
-chain unblocks #75 — dispatch coordinator under
+storage, #63 — onboarding core, #64 — runtime fleet, #71 — owner session, #72
+— lifecycle routes, and #73 — runtime handoff are implemented, completing #65
+— protected onboarding API. That chain unblocks #75 — dispatch coordinator under
 [#12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
 without making Grove or the browser part of that internal safety proof.
 

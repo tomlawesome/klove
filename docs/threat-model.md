@@ -54,10 +54,10 @@ ADR 0006 accepts the boundary below. Issue #62 — registry storage and issue
 evidence. Issue #68 — runtime supervisor, issue #69 — shared runtime gate, and
 issue #70 — runtime bootstrap implement canonical runtime wiring. Issue #71 —
 owner session implements the independent credential, exact-origin/CSRF request
-evidence, and bounded restart-invalidated session substrate. Issue #72 —
-lifecycle routes implements the strict secret-free HTTP boundary. Issue #73 —
-runtime handoff and #59 — embedded setup/recovery remain required before Klove
-claims product onboarding.
+evidence, and bounded restart-invalidated session substrate. Issues #72 —
+lifecycle routes and #73 — runtime handoff implement the strict secret-free
+HTTP boundary and gate-bound runtime activation. Issue #59 — embedded
+setup/recovery remains required before Klove claims product onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,
@@ -97,8 +97,12 @@ claims product onboarding.
   than values. Secret creation, registry commit, rotation, disable/removal,
   backup, and restore cannot discard unresolved control or dispatch fences.
   Every existing-printer mutation requires a current composite fence proof;
-  issue #64 must serialize that proof and commit with all new actuator admission
-  through one shared per-printer runtime gate.
+  issue #64 — runtime fleet serializes that proof and commits with all new
+  actuator admission through one shared per-printer runtime gate. A committed
+  mutation activates, replaces, or withdraws runtime admission only while that
+  gate remains held;
+  activation ambiguity withdraws the exact monitor and control transport until
+  durable-result recovery or startup reconciliation proves the current record.
   Interrupted cleanup proves its target references are disjoint from every
   active or disabled printer before deleting anything. The database snapshot,
   complete secret directory and HMAC key, and separate durable actuator journals

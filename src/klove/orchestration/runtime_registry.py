@@ -116,45 +116,113 @@ class RegistryRuntimeSupervisor:
             raise
 
     async def _refresh(self) -> tuple[str, ...]:
-        async with self._lock:
-            if self._closed:
-                raise RegistryRuntimeError
-            try:
-                records = self._store.list(include_removed=True)
-            except Exception as exc:
-                await self._deactivate_all()
-                await self._remove_unmanaged_routes()
-                raise RegistryRuntimeError from exc
-            desired = self._desired(records)
-            for printer_id in tuple(self._active):
-                async with self._admissions.hold(printer_id):
-                    active = self._active[printer_id]
-                    replacement = desired.get(printer_id)
-                    if replacement is not None and not self._candidate_is_current(replacement):
-                        replacement = None
-                    if (
-                        replacement is None
-                        or active.task.done()
-                        or active.record != replacement.record
-                        or active.api_key != replacement.api_key
-                    ):
-                        await self._deactivate(printer_id)
+        if await self._is_closed():
+            raise RegistryRuntimeError
+        try:
+            records = self._store.list(include_removed=True)
+        except Exception as exc:
+            await self._deactivate_all()
             await self._remove_unmanaged_routes()
-            for printer_id, candidate in desired.items():
-                async with self._admissions.hold(printer_id):
-                    if printer_id not in self._active and self._candidate_is_current(candidate):
-                        await self._activate(candidate)
-            return tuple(sorted(self._active))
+            raise RegistryRuntimeError from exc
+        desired = self._desired(records)
+        for printer_id in tuple(self._active):
+            async with self._admissions.hold(printer_id):
+                active = self._active.get(printer_id)
+                if active is None:
+                    continue
+                replacement = desired.get(printer_id)
+                if replacement is not None and not self._candidate_is_current(replacement):
+                    replacement = None
+                if (
+                    replacement is None
+                    or active.task.done()
+                    or active.record != replacement.record
+                    or active.api_key != replacement.api_key
+                ):
+                    await self._deactivate(printer_id)
+        await self._remove_unmanaged_routes()
+        for printer_id, candidate in desired.items():
+            async with self._admissions.hold(printer_id):
+                if await self._is_closed():
+                    raise RegistryRuntimeError
+                if printer_id not in self._active and self._candidate_is_current(candidate):
+                    await self._activate(candidate)
+                if await self._is_closed():
+                    await self._withdraw(printer_id)
+                    raise RegistryRuntimeError
+        return tuple(sorted(self._active))
 
     async def _shutdown(self) -> None:
         async with self._lock:
             if self._closed:
                 return
             self._closed = True
-            await self._deactivate_all()
-            await self._remove_unmanaged_routes()
+        await self._deactivate_all()
+        await self._remove_unmanaged_routes()
         if self._cleanup_tasks:
             await asyncio.gather(*tuple(self._cleanup_tasks), return_exceptions=True)
+
+    async def reconcile_committed(self, record: RegisteredPrinter) -> None:
+        """Apply one committed result while the lifecycle caller holds its gate.
+
+        A failed or cancelled handoff withdraws the exact printer route before
+        reporting uncertainty; a later durable-result lookup or restart can
+        safely reconcile the same authoritative record again.
+        """
+        operation = asyncio.create_task(
+            self._reconcile_committed(record),
+            name=f"registry-runtime-committed:{record.printer_uuid}",
+        )
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await operation
+            raise
+
+    async def _reconcile_committed(self, record: RegisteredPrinter) -> None:
+        printer_id = record.printer_uuid
+        try:
+            if await self._is_closed():
+                raise RegistryRuntimeError
+            records = self._store.list(include_removed=True)
+            if self._store.get(printer_id) != record:
+                raise RegistryRuntimeError
+            if record.lifecycle is not PrinterLifecycle.ACTIVE:
+                await self._withdraw(printer_id)
+                return
+            candidate = self._desired(records).get(printer_id)
+            if (
+                candidate is None
+                or candidate.record != record
+                or not self._candidate_is_current(candidate)
+            ):
+                raise RegistryRuntimeError
+            active = self._active.get(printer_id)
+            if active is not None and (
+                active.task.done()
+                or active.record != candidate.record
+                or active.api_key != candidate.api_key
+            ):
+                await self._deactivate(printer_id)
+            if printer_id not in self._active and not await self._activate(candidate):
+                raise RegistryRuntimeError
+            active = self._active.get(printer_id)
+            if active is None or active.record != record:
+                raise RegistryRuntimeError
+            if await self._is_closed():
+                await self._withdraw(printer_id)
+                raise RegistryRuntimeError
+        except Exception as exc:
+            with suppress(Exception):
+                await self._withdraw(printer_id)
+            if isinstance(exc, RegistryRuntimeError):
+                raise
+            raise RegistryRuntimeError from exc
+
+    async def _is_closed(self) -> bool:
+        async with self._lock:
+            return self._closed
 
     def _desired(self, records: tuple[RegisteredPrinter, ...]) -> dict[str, _DesiredMonitor]:
         valid_records = [record for record in records if type(record) is RegisteredPrinter]
@@ -178,7 +246,7 @@ class RegistryRuntimeSupervisor:
             desired[record.printer_uuid] = _DesiredMonitor(record=record, api_key=api_key)
         return desired
 
-    async def _activate(self, candidate: _DesiredMonitor) -> None:
+    async def _activate(self, candidate: _DesiredMonitor) -> bool:
         printer_id = candidate.record.printer_uuid
         config = _RuntimeMonitorConfig(
             id=printer_id,
@@ -220,7 +288,7 @@ class RegistryRuntimeSupervisor:
             if registered:
                 await self._registry.unregister(printer_id)
             LOGGER.error("registry runtime could not activate printer=%s", printer_id)
-            return
+            return False
         self._active[printer_id] = _ActiveMonitor(
             record=candidate.record,
             api_key=candidate.api_key,
@@ -228,6 +296,7 @@ class RegistryRuntimeSupervisor:
             task=task,
         )
         task.add_done_callback(lambda completed: self._schedule_cleanup(printer_id, completed))
+        return True
 
     async def _deactivate(self, printer_id: str) -> None:
         active = self._active.pop(printer_id)
@@ -241,7 +310,17 @@ class RegistryRuntimeSupervisor:
     async def _deactivate_all(self) -> None:
         for printer_id in tuple(self._active):
             async with self._admissions.hold(printer_id):
-                await self._deactivate(printer_id)
+                if printer_id in self._active:
+                    await self._deactivate(printer_id)
+
+    async def _withdraw(self, printer_id: str) -> None:
+        """Remove all exact runtime admission for a printer after uncertainty."""
+        if printer_id in self._active:
+            await self._deactivate(printer_id)
+            return
+        if self._controls is not None:
+            self._controls.unregister_transport(printer_id)
+        await self._registry.unregister(printer_id)
 
     async def _remove_unmanaged_routes(self) -> None:
         for snapshot in await self._registry.list():
@@ -283,7 +362,7 @@ class RegistryRuntimeSupervisor:
         printer_id: str,
         completed: asyncio.Task[None],
     ) -> None:
-        async with self._lock, self._admissions.hold(printer_id):
+        async with self._admissions.hold(printer_id):
             active = self._active.get(printer_id)
             if active is None or active.task is not completed:
                 return

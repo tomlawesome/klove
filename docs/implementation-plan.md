@@ -42,8 +42,8 @@ Last updated: 2026-08-21
 - [#58 — registry epic](https://github.com/tomlawesome/klove/issues/58) is split
   into #62 — registry storage, #63 — onboarding core, #64 — runtime fleet, and
   #65 — protected onboarding API. Storage, core, and runtime bootstrap are
-  implemented; #71 — owner session is merged. #72 — lifecycle routes and #73 —
-  runtime handoff remain before #65 — protected onboarding API is complete.
+  implemented; #71 — owner session, #72 — lifecycle routes, and #73 — runtime
+  handoff complete #65 — protected onboarding API.
   #59 — embedded setup/recovery and #60 — minimal Grove contribution follow
   under #32 — Grove bridge.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
@@ -473,9 +473,9 @@ registry-backed monitor activation is implemented under #68 — runtime
 supervisor, and shared admission is implemented under #69 — shared runtime
 gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
 owner authentication and request security are implemented under #71 — owner
-session. Strict secret-free lifecycle routes are implemented under #72 —
-lifecycle routes. Runtime handoff remains #73 — runtime handoff within #65 —
-protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
+session. Strict secret-free lifecycle routes and committed runtime handoff are
+implemented under #72 — lifecycle routes and #73 — runtime handoff within #65
+— protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
 After that protected API chain completes, ADR 0007's accepted ingress is
 implemented by #75 — dispatch coordinator and #76 — native dispatch proof under
 #12 — end-to-end dispatch. The end-to-end lifecycle proof in #12 — onboarded

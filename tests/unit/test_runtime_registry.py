@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from typing import cast
 
 import aiohttp
@@ -10,7 +11,11 @@ from klove.adapters.moonraker.client import MoonrakerMonitorConfig
 from klove.domain.onboarding import MoonrakerEndpoint, PrinterLifecycle, RegisteredPrinter
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.control import ControlService, ControlTransport
-from klove.orchestration.runtime_registry import RegistryRuntimeError, RegistryRuntimeSupervisor
+from klove.orchestration.runtime_registry import (
+    RegistryRuntimeError,
+    RegistryRuntimeSupervisor,
+    _ActiveMonitor,
+)
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
 from klove.registry import PrinterRegistry
@@ -648,6 +653,321 @@ async def test_refresh_finishes_safely_when_its_caller_is_cancelled() -> None:
         await refresh
     assert await registry.get(PRINTER_UUID) is not None
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_replaces_route_only_under_the_shared_gate() -> None:
+    admissions = PrinterAdmissionGates()
+    store = FakeStore((printer(),))
+    registry = PrinterRegistry([])
+    factory = RecordingFactory()
+    runtime = supervisor(store, FakeSecrets(secret_values()), registry, factory, admissions)
+    assert await runtime.refresh() == (PRINTER_UUID,)
+    await asyncio.sleep(0)
+
+    replacement = printer(revision=2, updated_at_unix_ms=1_100)
+    store.records = (replacement,)
+    async with admissions.hold(PRINTER_UUID):
+        await runtime.reconcile_committed(replacement)
+
+    assert factory.monitors[0].stopped.is_set()
+    assert len(factory.monitors) == 2
+    assert await registry.get(PRINTER_UUID) is not None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_non_active_committed_handoff_withdraws_the_exact_route() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    store = FakeStore((active,))
+    registry = PrinterRegistry([])
+    factory = RecordingFactory()
+    runtime = supervisor(store, FakeSecrets(secret_values()), registry, factory, admissions)
+    await runtime.refresh()
+    await asyncio.sleep(0)
+
+    disabled = active.model_copy(
+        update={
+            "lifecycle": PrinterLifecycle.DISABLED,
+            "control_enabled": False,
+            "dispatch_enabled": False,
+            "revision": 2,
+            "updated_at_unix_ms": 1_100,
+        }
+    )
+    store.records = (disabled,)
+    async with admissions.hold(PRINTER_UUID):
+        await runtime.reconcile_committed(disabled)
+
+    assert factory.monitors[0].stopped.is_set()
+    assert await registry.get(PRINTER_UUID) is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_committed_handoff_withdraws_the_old_route() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    store = FakeStore((active,))
+    registry = PrinterRegistry([])
+    factory = RecordingFactory()
+    runtime = supervisor(store, FakeSecrets(secret_values()), registry, factory, admissions)
+    await runtime.refresh()
+    await asyncio.sleep(0)
+
+    replacement = active.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    store.records = (replacement,)
+    factory.constructor_failure = PRINTER_UUID
+    async with admissions.hold(PRINTER_UUID):
+        with pytest.raises(RegistryRuntimeError):
+            await runtime.reconcile_committed(replacement)
+
+    assert factory.monitors[0].stopped.is_set()
+    assert await registry.get(PRINTER_UUID) is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_cancellation_finishes_the_exact_activation() -> None:
+    registry = BlockingRegistry()
+    registry.block_register = True
+    runtime = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        registry,
+        RecordingFactory(),
+    )
+    handoff = asyncio.create_task(runtime.reconcile_committed(printer()))
+    await registry.register_entered.wait()
+    handoff.cancel()
+    registry.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await handoff
+    assert await registry.get(PRINTER_UUID) is not None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_denies_closed_mismatched_and_incomplete_records() -> None:
+    closed = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        PrinterRegistry([]),
+        RecordingFactory(),
+    )
+    await closed.shutdown()
+    with pytest.raises(RegistryRuntimeError):
+        await closed.reconcile_committed(printer())
+
+    record = printer()
+    changed = record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    mismatched = supervisor(
+        FakeStore((changed,)),
+        FakeSecrets(secret_values()),
+        PrinterRegistry([]),
+        RecordingFactory(),
+    )
+    with pytest.raises(RegistryRuntimeError):
+        await mismatched.reconcile_committed(record)
+    await mismatched.shutdown()
+
+    values = secret_values()
+    values.pop(MOONRAKER_REF)
+    incomplete = supervisor(
+        FakeStore((record,)),
+        FakeSecrets(values),
+        PrinterRegistry([]),
+        RecordingFactory(),
+    )
+    with pytest.raises(RegistryRuntimeError):
+        await incomplete.reconcile_committed(record)
+    await incomplete.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_withdraws_when_runtime_activation_is_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        PrinterRegistry([]),
+        RecordingFactory(),
+    )
+
+    async def incomplete_activation(_candidate: object) -> bool:
+        return True
+
+    monkeypatch.setattr(runtime, "_activate", incomplete_activation)
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.reconcile_committed(printer())
+    assert await runtime._registry.get(PRINTER_UUID) is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_handoff_and_refresh_defensive_race_paths_fail_closed() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = PrinterRegistry([])
+    runtime = supervisor(
+        FakeStore((printer(),)),
+        FakeSecrets(secret_values()),
+        registry,
+        RecordingFactory(),
+        admissions,
+    )
+    await runtime.refresh()
+    await asyncio.sleep(0)
+
+    class VanishingActive(dict[str, _ActiveMonitor]):
+        def __iter__(self) -> Iterator[str]:
+            keys = tuple(super().keys())
+            self.clear()
+            return iter(keys)
+
+    runtime._active = VanishingActive(runtime._active)
+    assert await runtime.refresh() == (PRINTER_UUID,)
+    await runtime.shutdown()
+
+    class SignallingStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__((printer(),))
+            self.list_called = asyncio.Event()
+
+        def list(self, *, include_removed: bool = False) -> tuple[RegisteredPrinter, ...]:
+            self.list_called.set()
+            return super().list(include_removed=include_removed)
+
+    closing_store = SignallingStore()
+    closing = supervisor(
+        closing_store,
+        FakeSecrets(secret_values()),
+        PrinterRegistry([]),
+        RecordingFactory(),
+        admissions,
+    )
+    async with admissions.hold(PRINTER_UUID):
+        closing_refresh = asyncio.create_task(closing.refresh())
+        await closing_store.list_called.wait()
+        async with closing._lock:
+            closing._closed = True
+    with pytest.raises(RegistryRuntimeError):
+        await closing_refresh
+    await closing._deactivate_all()
+
+    class GoneActive(dict[str, _ActiveMonitor]):
+        def __iter__(self) -> Iterator[str]:
+            return iter((PRINTER_UUID,))
+
+        def __contains__(self, _key: object) -> bool:
+            return False
+
+    closing._active = GoneActive()
+    await closing._deactivate_all()
+
+
+@pytest.mark.asyncio
+async def test_handoff_store_failure_and_stale_control_withdrawal_are_bounded() -> None:
+    store = FakeStore((printer(),))
+    admissions = PrinterAdmissionGates()
+    registry = PrinterRegistry([])
+    controls = control_service(registry, admissions)
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: cast(ControlTransport, object()),
+    )
+    controls.register_transport("stale", cast(ControlTransport, object()))
+    await runtime._withdraw("stale")
+    assert controls.unregister_transport("stale") is False
+
+    store.failure = ValueError()
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.reconcile_committed(printer())
+    await runtime.shutdown()
+
+
+async def _wait_until_closed(runtime: RegistryRuntimeSupervisor) -> None:
+    for _ in range(20):
+        if await runtime._is_closed():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("runtime did not begin shutdown")
+
+
+@pytest.mark.asyncio
+async def test_refresh_withdraws_a_route_activated_after_shutdown_begins() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = BlockingRegistry()
+    registry.block_register = True
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
+    factory = RecordingFactory()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((printer(),))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=factory,
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
+    )
+
+    refresh = asyncio.create_task(runtime.refresh())
+    await registry.register_entered.wait()
+    shutdown = asyncio.create_task(runtime.shutdown())
+    await _wait_until_closed(runtime)
+    registry.release.set()
+
+    with pytest.raises(RegistryRuntimeError):
+        await refresh
+    await shutdown
+    assert await registry.get(PRINTER_UUID) is None
+    assert not factory.monitors[0].started.is_set() or factory.monitors[0].stopped.is_set()
+    assert runtime._active == {}
+    assert controls.unregister_transport(PRINTER_UUID) is False
+
+
+@pytest.mark.asyncio
+async def test_committed_handoff_withdraws_route_activated_after_shutdown_begins() -> None:
+    admissions = PrinterAdmissionGates()
+    registry = BlockingRegistry()
+    registry.block_register = True
+    controls = control_service(registry, admissions)
+    transport = cast(ControlTransport, object())
+    factory = RecordingFactory()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((printer(),))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        registry,
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=factory,
+        controls=controls,
+        control_transport_factory=lambda _record, _key, _session: transport,
+    )
+
+    async with admissions.hold(PRINTER_UUID):
+        handoff = asyncio.create_task(runtime.reconcile_committed(printer()))
+        await registry.register_entered.wait()
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await _wait_until_closed(runtime)
+        registry.release.set()
+    with pytest.raises(RegistryRuntimeError):
+        await handoff
+    await shutdown
+    assert await registry.get(PRINTER_UUID) is None
+    assert not factory.monitors[0].started.is_set() or factory.monitors[0].stopped.is_set()
+    assert runtime._active == {}
+    assert controls.unregister_transport(PRINTER_UUID) is False
 
 
 @pytest.mark.asyncio

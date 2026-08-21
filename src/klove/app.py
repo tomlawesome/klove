@@ -57,14 +57,6 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
         idempotency_capacity=config.control.idempotency_capacity,
         admissions=admissions,
     )
-    lifecycle = PrinterLifecycleService(
-        store,
-        secrets,
-        MoonrakerOnboardingProbe(EndpointAddressPolicy(config.registry.allowed_probe_cidrs)),
-        CompositeActuatorFenceInspector(controls, start_journal),
-        admissions=admissions,
-    )
-    await FileBootstrapImporter(lifecycle, store).import_all(config.printers)
     timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=50)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         runtime = RegistryRuntimeSupervisor(
@@ -88,6 +80,15 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
                 else None
             ),
         )
+        lifecycle = PrinterLifecycleService(
+            store,
+            secrets,
+            MoonrakerOnboardingProbe(EndpointAddressPolicy(config.registry.allowed_probe_cidrs)),
+            CompositeActuatorFenceInspector(controls, start_journal),
+            admissions=admissions,
+            runtime=runtime,
+        )
+        await FileBootstrapImporter(lifecycle, store).import_all(config.printers)
         scopes = {"printers:read"}
         if config.control.enabled:
             scopes.add("printers:control")
