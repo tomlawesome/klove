@@ -1,0 +1,133 @@
+{
+  "profile_version": 1,
+  "transport": "implicit-ftps",
+  "upstream_revision": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
+  "observed": {
+    "successful_client_flow": true,
+    "sessions": [
+      {
+        "purpose": "pre_upload_cleanup",
+        "control_tls_version": "TLSv1.3",
+        "server_replies": [
+          {
+            "event": "implicit_tls_greeting",
+            "code": 220,
+            "category": "service_ready"
+          },
+          {
+            "event": "user",
+            "code": 331,
+            "category": "password_required"
+          },
+          {
+            "event": "pass",
+            "code": 230,
+            "category": "login_successful"
+          },
+          {
+            "event": "pbsz",
+            "code": 200,
+            "category": "command_successful"
+          },
+          {
+            "event": "prot",
+            "code": 200,
+            "category": "command_successful"
+          },
+          {
+            "event": "dele",
+            "code": 250,
+            "category": "path_action_successful"
+          },
+          {
+            "event": "quit",
+            "code": 221,
+            "category": "service_closing"
+          }
+        ],
+        "accepted_completion_order": [
+          "dele_reply",
+          "quit_reply",
+          "control_close"
+        ]
+      },
+      {
+        "purpose": "protected_upload",
+        "control_tls_version": "TLSv1.3",
+        "server_replies": [
+          {
+            "event": "implicit_tls_greeting",
+            "code": 220,
+            "category": "service_ready"
+          },
+          {
+            "event": "user",
+            "code": 331,
+            "category": "password_required"
+          },
+          {
+            "event": "pass",
+            "code": 230,
+            "category": "login_successful"
+          },
+          {
+            "event": "pbsz",
+            "code": 200,
+            "category": "command_successful"
+          },
+          {
+            "event": "prot",
+            "code": 200,
+            "category": "command_successful"
+          },
+          {
+            "event": "pasv",
+            "code": 227,
+            "category": "passive_endpoint_ready"
+          },
+          {
+            "event": "stor_preliminary",
+            "code": 150,
+            "category": "transfer_starting"
+          },
+          {
+            "event": "stor_complete",
+            "code": 226,
+            "category": "transfer_complete"
+          },
+          {
+            "event": "quit",
+            "code": 221,
+            "category": "service_closing"
+          }
+        ],
+        "passive_endpoint": {
+          "advertised_address_matches_control_local_address": true,
+          "advertised_port_matches_open_listener": true,
+          "data_peer_matches_control_peer": true,
+          "control_peer_matches_cleanup_session": true
+        },
+        "data_tls_version": "TLSv1.3",
+        "data_channel_close": "transport_reset_after_payload",
+        "upload": {
+          "byte_count": 1112,
+          "sha256": "sha256:5bf528c0bdc046d63d9e575a38fd8788b852c77b6d7dbe6cc62542310a84a354"
+        },
+        "accepted_completion_order": [
+          "stor_preliminary_reply",
+          "protected_data_close",
+          "stor_completion_reply",
+          "quit_reply",
+          "control_close"
+        ]
+      }
+    ]
+  },
+  "not_observed": [
+    "client behavior for alternate FTP reply codes",
+    "client behavior after control or data disconnect",
+    "client retry timing after a wire failure",
+    "host-published, NAT, or multi-address passive deployment",
+    "multiple or concurrent transfer behavior"
+  ]
+}
