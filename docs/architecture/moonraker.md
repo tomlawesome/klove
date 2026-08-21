@@ -23,7 +23,11 @@ For every configured printer Klove should:
    coherent idle preflight and durable SQLite/WAL reservation. Startup/reconnect
    reconciliation is read-only and unresolved rows fence their printer without
    retry.
-8. Use Moonraker metadata and history to estimate remaining time and reconcile
+8. [ADR 0007](../decisions/0007-authenticated-dispatch-ingress.md) accepts one
+   internal coordinator that composes exact qualification, upload, start, and
+   terminal history under a shared durable operation identity. No northbound
+   adapter exists yet.
+9. Use Moonraker metadata and history to estimate remaining time and reconcile
    jobs after either side restarts when the relevant slice is authorized.
 
 Minimum required Klipper objects for farm dispatch are `virtual_sdcard`,

@@ -1,7 +1,7 @@
 # Klove implementation plan
 
 Status: active  
-Last updated: 2026-08-14
+Last updated: 2026-08-21
 
 ## Delivery policy
 
@@ -57,8 +57,9 @@ Last updated: 2026-08-14
   [PR #55](https://github.com/tomlawesome/klove/pull/55) are complete on
   protected `develop`.
 - [Durable print-start issue #9](https://github.com/tomlawesome/klove/issues/9)
-  is implemented under accepted ADR 0005 with no northbound route; issue #12
-  remains the end-to-end lifecycle slice.
+  is implemented under accepted ADR 0005 with no northbound route. ADR 0007
+  accepts the one authenticated dispatch-ingress contract; issue #12 —
+  end-to-end dispatch remains the implementation and proof chain.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
   are complete on protected `develop`.
@@ -416,11 +417,32 @@ printer lifecycle from fresh direct evidence, while #64–#65 remain required
 before any product caller can reach it. The complete contract is
 `docs/onboarding-core.md`.
 
+## Accepted decision: authenticated dispatch ingress
+
+- [x] Accept one asynchronous internal contract spanning intake,
+  qualification, verified upload, durable start, and exact terminal history.
+- [x] Require an independently authenticated `printers:dispatch` principal
+  bound to one canonical active registry printer; Grove, browser, setup,
+  private-network, model, name, and caller target claims grant nothing.
+- [x] Freeze strict operation/idempotency identity, exact current
+  target/profile binding, bounded streamed input, private spool ownership,
+  retention, durable result lookup, and non-enumerating authorization.
+- [x] Make `uploading` a durable no-retry boundary, preserve ADR 0005's start
+  journal authority, and require read-only restart/completion reconciliation.
+- [x] Limit cancellation to preventing an upload or start that has not crossed
+  its durable action boundary; it never becomes remote cleanup or a second job
+  cancel path.
+
+Exit criterion: ADR 0007 fixes one fail-closed ingress contract for issue #75 —
+dispatch coordinator and issue #76 — native dispatch proof without exposing a
+northbound adapter or adding an actuator.
+
 ## Next slices
 
-The completed authorized component slices are #5, #8, #9, #62, and #63. ADR
-0006 makes the secure runtime registry the current implementation chain. Its
-private persistence
+The completed authorized component slices are #5 — target qualification, #8 —
+verified upload, #9 — durable print start, #62 — registry storage, and #63 —
+onboarding core. ADR 0006 makes the secure runtime registry the current
+implementation chain. Its private persistence
 and secret-store foundation is implemented under #62 — registry storage, the direct
 probe/orchestration library is implemented under #63 — onboarding core, and
 registry-backed monitor activation is implemented under #68 — runtime
@@ -429,12 +451,13 @@ gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
 owner authentication and request security are implemented under #71 — owner
 session. Strict lifecycle routes and runtime handoff remain #72 — lifecycle
 routes and #73 — runtime handoff within #65 — protected onboarding API. The
-exact substrate is `docs/owner-session-security.md`. The end-to-end lifecycle
-proof in #12 — onboarded lifecycle
-proof consumes that canonical onboarded printer.
+exact substrate is `docs/owner-session-security.md`. After that protected API
+chain completes, ADR 0007's accepted ingress is implemented by #75 — dispatch
+coordinator and #76 — native dispatch proof under #12 — end-to-end dispatch.
 The implemented RatOS contract fixture remains a separate incomplete
-exact-release acceptance follow-up under #51 and does not block focused
-development. Each safety-critical prerequisite is delivered through its own
+exact-release acceptance follow-up under #51 — RatOS contract and does not
+block focused development. Each safety-critical prerequisite is delivered
+through its own
 protected `develop` pull request and must merge with required checks green
 before work begins on the next dependent implementation. ADR 0004 upload
 remains non-actuating by itself; ADR 0005 print start is internal and is not a

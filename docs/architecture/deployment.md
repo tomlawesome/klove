@@ -37,20 +37,21 @@ post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 ### Phase 3: runtime registry and safe file dispatch
 
 - Complete ADR 0006's one canonical runtime printer registry chain under issue
-  #58. Issue #62 implements its exact-schema SQLite/WAL foundation, external
-  owner-only secret store, typed lifecycle journal, crash reconciliation, and
-  backup boundary. Issue #63 implements direct probing and lifecycle
-  orchestration. Issues #64–#65 add dynamic runtime activation with shared
-  lifecycle/actuator admission and the protected API without adding an actuator
-  or dashboard.
+  #58 — registry epic. Issue #62 — registry storage implements its exact-schema
+  SQLite/WAL foundation, external owner-only secret store, typed lifecycle
+  journal, crash reconciliation, and backup boundary. Issue #63 — onboarding
+  core implements direct probing and lifecycle orchestration. Issue #64 —
+  runtime fleet and issue #65 — protected onboarding API add dynamic runtime
+  activation, shared lifecycle/actuator admission, and protected routes without
+  adding a dashboard.
 - ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
   durable at-most-once typed print start as separate internal components.
-- Implement hostile-3MF validation, target manifest/profile checks, Moonraker
-  upload/metadata/start, dedupe, acknowledgement, and restart reconciliation in
-  separately gated slices.
-- Complete their authenticated intake-through-completion integration under
-  [issue #12](https://github.com/tomlawesome/klove/issues/12) before claiming
-  this phase's exit criterion.
+- ADR 0007 accepts their one authenticated exact-printer ingress contract.
+  Implement its durable coordinator under issue #75 — dispatch coordinator and
+  prove the native lifecycle under issue #76 — native dispatch proof.
+- Complete that integration under
+  [issue #12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
+  before claiming this phase's exit criterion.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
 Exit: one canonically registered target-tagged job can be queued, started,
