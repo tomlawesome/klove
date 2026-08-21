@@ -112,6 +112,38 @@ def test_ratos_readiness_record_redacts_hostile_remote_values(
     assert record["printer"]["message_bytes"] == len(hostile_message.encode())
 
 
+def test_ratos_readiness_transport_failure_retains_server_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    clocks = iter((0.0, 0.0, 0.0, 1.0, 1.0))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(tool.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(tool.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        tool,
+        "_http_json",
+        lambda *_args, **_kwargs: {"result": {"klippy_connected": True, "klippy_state": "ready"}},
+    )
+    monkeypatch.setattr(
+        tool, "_http_request", lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError())
+    )
+    monkeypatch.setattr(tool, "_socket_evidence", lambda: {"kind": "absent"})
+    monkeypatch.setattr(tool, "READINESS_FAILURE", Path("/unused"))
+    monkeypatch.setattr(tool, "_write_readiness_failure", lambda **kwargs: captured.update(kwargs))
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        tool._wait_printer_ready(1, failure_stage="after_printer_restart", config=b"fixture")
+
+    assert captured["server"] == {"status": "ok", "klippy_state": "ready", "klippy_connected": True}
+    assert captured["printer"] == {
+        "status": "unavailable",
+        "message": "unknown",
+        "message_sha256": None,
+        "message_bytes": 0,
+    }
+
+
 @pytest.mark.parametrize(
     "configuration",
     (
