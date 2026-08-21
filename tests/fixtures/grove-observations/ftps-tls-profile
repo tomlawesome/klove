@@ -1,0 +1,22 @@
+{
+  "profile_version": 1,
+  "transport": "implicit-ftps",
+  "upstream_revision": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
+  "generated_serial": "00M00A391800001",
+  "observed": {
+    "control_port": 990,
+    "tls_versions": ["TLSv1.2"],
+    "cipher": "ECDHE-RSA-AES256-GCM-SHA384",
+    "passive_ports": "50000-50009",
+    "server_started": true,
+    "client_transfer": false
+  },
+  "not_observed": [
+    "Grove client login field mapping",
+    "FTP command ordering",
+    "passive data address and protection commands",
+    "canonical upload filename",
+    "successful upload acknowledgement",
+    "retry and disconnect flow"
+  ]
+}

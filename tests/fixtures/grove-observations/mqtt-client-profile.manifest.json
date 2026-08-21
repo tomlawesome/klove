@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "fixture": "mqtt-client-profile",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove Bambu MQTT client connected to an isolated Grove virtual printer",
+    "scenario": "Generated archive-mode virtual printer; two normal client connections and status bootstrap"
+  },
+  "capture": {
+    "harness_revision": "00814f652a82f880fa566840d3acb0d4b7509e47",
+    "command": "docker build -t grove-observer:cdf6b829 .; docker run --loopback-only; register generated virtual printer and printer through public API",
+    "tool_versions": {
+      "docker": "29.7.2",
+      "openssl": "OpenSSL 3.x",
+      "git": "pinned checkout verified by git rev-parse"
+    },
+    "captured_at_utc": "2026-08-21T16:57:53Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "replace the generated serial with the literal {serial} in topic templates",
+    "retain only protocol tokens and externally observed scalar bounds",
+    "exclude payload bodies, source text, logs, certificates, and credentials"
+  ],
+  "media_type": "application/json",
+  "byte_count": 856,
+  "sha256": "sha256:31994d0ca94957a27442330c286b208e4640e865200c6b1d42b4fca803c18cd8",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.keepalive_seconds", "classification": "externally_observed_fact"},
+    {"locator": "observed.subscriptions", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_commands", "classification": "required_protocol_token"}
+  ]
+}

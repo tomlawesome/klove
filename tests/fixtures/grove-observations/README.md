@@ -1,7 +1,9 @@
 # Grove black-box observation fixtures
 
 This directory is reserved for independently captured, sanitized Grove
-protocol observations. It intentionally contains no observation fixtures yet.
+protocol observations. The retained profiles record only externally observed,
+sanitized facts; each profile's `not_observed` list remains an explicit gate on
+production compatibility work.
 
 Every future regular fixture must have a sibling
 `<fixture-name>.manifest.json`. Run

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "fixture": "ftps-tls-profile",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove virtual printer implicit FTPS endpoint",
+    "scenario": "Generated archive-mode virtual printer TLS endpoint and passive range"
+  },
+  "capture": {
+    "harness_revision": "00814f652a82f880fa566840d3acb0d4b7509e47",
+    "command": "docker build -t grove-observer:cdf6b829 .; docker run --loopback-only; openssl s_client against local port 990",
+    "tool_versions": {
+      "docker": "29.7.2",
+      "openssl": "OpenSSL 3.x",
+      "git": "pinned checkout verified by git rev-parse"
+    },
+    "captured_at_utc": "2026-08-21T16:58:00Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "retain TLS negotiation and listener bounds only",
+    "exclude certificate material, private keys, credentials, FTP text, and raw traces",
+    "record client-transfer absence explicitly rather than infer an upload profile"
+  ],
+  "media_type": "application/json",
+  "byte_count": 635,
+  "sha256": "sha256:7a78b1d8b0aa23dac428a69945eded09482c04865d5d5af65cb07d0c9bef5113",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "control_port", "classification": "required_protocol_token"},
+    {"locator": "observed.tls_versions", "classification": "externally_observed_fact"},
+    {"locator": "observed.passive_ports", "classification": "externally_observed_fact"},
+    {"locator": "observed.client_transfer", "classification": "externally_observed_fact"}
+  ]
+}
