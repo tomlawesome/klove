@@ -219,6 +219,9 @@ until actually executed.
 - [x] Prepare the fixture for protected `develop` with clean fast and native
   integration validation, without treating partial emulation evidence as
   acceptance.
+- [x] Split the RatOS orchestration shell into explicit ownership, QEMU,
+  evidence, preparation, probe, contract, and teardown boundaries without
+  changing the accepted lane or consuming a QEMU boot.
 
 Exit criterion: one exact source-bound run archives `contract-passed` after all
 positive, negative, idempotency, stale-token, and lost-response assertions, then
@@ -486,8 +489,7 @@ generic G-code path exists.
 1. Finish [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
    only after focused diagnosis justifies one fresh-COW exact-release run. The
    run must prove the lost-response fence and archive `contract-passed`.
-   #81 — RatOS orchestration split follows without consuming a QEMU boot merely
-   for refactoring. Supported hardware remains release-acceptance authority.
+   Supported hardware remains release-acceptance authority.
 2. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
    Obtain exact ADR-0008-compliant black-box wire evidence before accepting and
    implementing proposed ADR 0009 under #10 — MQTT facade or proposed ADR 0010

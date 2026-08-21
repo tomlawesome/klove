@@ -348,7 +348,15 @@ def test_ratos_contract_fixture_is_exact_and_non_actuating() -> None:
 
 
 def test_ratos_emulation_lifecycle_is_confined() -> None:
-    script_library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+    script_library = "\n".join(
+        (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        for name in (
+            "ratos-emulation-lib.sh",
+            "ratos-emulation-ownership.sh",
+            "ratos-emulation-qemu.sh",
+            "ratos-emulation-evidence.sh",
+        )
+    )
     up = (ROOT / "scripts" / "ratos-emulation-up.sh").read_text(encoding="utf-8")
     probe = (ROOT / "scripts" / "ratos-emulation-probe.sh").read_text(encoding="utf-8")
     down = (ROOT / "scripts" / "ratos-emulation-down.sh").read_text(encoding="utf-8")
@@ -410,6 +418,23 @@ def test_ratos_emulation_lifecycle_is_confined() -> None:
     assert "console" not in down
 
 
+def test_ratos_emulation_library_has_explicit_owned_stage_boundaries() -> None:
+    library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+
+    assert '. "$ratos_stage_dir/ratos-emulation-ownership.sh"' in library
+    assert '. "$ratos_stage_dir/ratos-emulation-qemu.sh"' in library
+    assert '. "$ratos_stage_dir/ratos-emulation-evidence.sh"' in library
+    assert "ratos_capture_source_state()" in (
+        ROOT / "scripts" / "ratos-emulation-ownership.sh"
+    ).read_text(encoding="utf-8")
+    assert "ratos_require_active()" in (ROOT / "scripts" / "ratos-emulation-qemu.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ratos_archive_runtime()" in (
+        ROOT / "scripts" / "ratos-emulation-evidence.sh"
+    ).read_text(encoding="utf-8")
+
+
 def test_ratos_cleanup_traps_exit_on_signals() -> None:
     script_paths = (
         ROOT / "scripts" / "ratos-emulation-prepare.sh",
@@ -432,7 +457,15 @@ def test_ratos_cleanup_traps_exit_on_signals() -> None:
 
 def test_ratos_contract_runner_command_paths_match_and_are_exact() -> None:
     contract_script = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
-    library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+    library = "\n".join(
+        (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        for name in (
+            "ratos-emulation-lib.sh",
+            "ratos-emulation-ownership.sh",
+            "ratos-emulation-qemu.sh",
+            "ratos-emulation-evidence.sh",
+        )
+    )
 
     expected_command = "/opt/klove-ratos/contract/ratos_exercise_contract.py"
     launcher_command = f"/usr/local/bin/python {expected_command}"
@@ -534,7 +567,15 @@ def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
 
 
 def test_ratos_emulation_evidence_is_self_binding() -> None:
-    script_library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+    script_library = "\n".join(
+        (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        for name in (
+            "ratos-emulation-lib.sh",
+            "ratos-emulation-ownership.sh",
+            "ratos-emulation-qemu.sh",
+            "ratos-emulation-evidence.sh",
+        )
+    )
     prepare = (ROOT / "scripts" / "ratos-emulation-prepare.sh").read_text(encoding="utf-8")
     probe = (ROOT / "scripts" / "ratos-emulation-probe.sh").read_text(encoding="utf-8")
     contract = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
