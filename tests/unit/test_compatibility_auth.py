@@ -391,6 +391,15 @@ async def test_revalidate_is_serialized_with_lifecycle_gate() -> None:
     assert not await pending
 
 
+@pytest.mark.asyncio
+async def test_revalidate_composes_under_the_shared_admission_lease() -> None:
+    gates = PrinterAdmissionGates()
+    auth, _, _ = authenticator(gates=gates)
+
+    async with gates.lease(PRINTER_UUID) as lease:
+        assert await auth.revalidate(expected_principal(), admission_lease=lease)
+
+
 def test_principal_repr_and_shape_contain_no_secret_material() -> None:
     principal = expected_principal()
     rendered = repr(principal)

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from klove.domain.onboarding import PrinterLifecycle, RegisteredPrinter
-from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.admission import PrinterAdmissionGates, PrinterAdmissionLease
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
 
@@ -53,13 +53,21 @@ class CompatibilityAuthenticator:
         """Resolve one unique active printer from its exact FTPS access code."""
         return await self._authenticate(access_code, proxy_serial=None)
 
-    async def revalidate(self, principal: CompatibilityPrincipal) -> bool:
+    async def revalidate(
+        self,
+        principal: CompatibilityPrincipal,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
+    ) -> bool:
         """Confirm that a session principal still names the exact active revision."""
         if type(principal) is not CompatibilityPrincipal or not self._principal_is_shaped(
             principal
         ):
             return False
-        async with self._admissions.hold(principal.printer_uuid):
+        async with self._admissions.hold(
+            principal.printer_uuid,
+            lease=admission_lease,
+        ):
             try:
                 record = self._store.get(principal.printer_uuid)
             except Exception:
