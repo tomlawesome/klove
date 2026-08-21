@@ -118,10 +118,11 @@ Grove clean-room observations use the separate rootless-Docker lifecycle:
 `scripts/grove-observation-down.sh RUN_ID`. The scripts create only the exact
 same-name internal network and container for their validated run ID, record the
 Docker context and daemon identity in ignored state, and refuse cleanup if that
-origin or either recorded resource no longer matches. The generated virtual
-printer access code exists only in transient process memory; it is never shown
-or retained. This harness is observation infrastructure, not an MQTT or FTPS
-runtime implementation.
+origin or either recorded resource no longer matches. The isolated virtual
+printer uses the fixed, clearly fake observation-only access code `TEST0000` so
+every clean-room run is exactly reproducible; production code and configuration
+must never accept it. This harness is observation infrastructure, not an MQTT
+or FTPS runtime implementation.
 
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and

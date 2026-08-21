@@ -98,11 +98,7 @@ if ! printf '%s' '{"auth_enabled":false}' | timeout 15 docker exec --interactive
     exit 1
 fi
 
-access_code=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | sha256sum | cut -c 1-8)
-if [ "${#access_code}" -ne 8 ]; then
-    echo "Grove observation access-code generation failed" >&2
-    exit 1
-fi
+access_code=TEST0000
 if ! printf '%s' \
     "{\"name\":\"Klove Observation\",\"enabled\":true,\"mode\":\"archive\",\"model\":\"BL-P001\",\"access_code\":\"$access_code\",\"auto_dispatch\":false,\"queue_force_color_match\":false,\"gcode_injection\":false,\"bind_ip\":\"$container_ip\"}" \
     | timeout 15 docker exec --interactive "$resource_name" curl --fail --silent \
