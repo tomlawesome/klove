@@ -490,10 +490,13 @@ non-actuating by itself; ADR 0005 print start remains internal; no public or
 generic G-code path exists.
 
 1. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
-   Obtain exact ADR-0008-compliant black-box wire evidence before accepting and
-   implementing proposed ADR 0009 under #10 — MQTT facade or proposed ADR 0010
-   under #14 — FTPS ingress. Then deliver #60 — minimal Grove contribution and
-   #13 — deployment guidance against one pinned supported Grove revision.
+   Normal-session ADR-0008 MQTT and FTPS client captures are retained behind
+   strict disabled-runtime profile gates. Complete the remaining MQTT
+   schema/QoS fault matrix and FTPS reply/PASV/retry fault matrix before
+   accepting and implementing proposed ADR 0009 under #10 — MQTT facade or
+   proposed ADR 0010 under #14 — FTPS ingress. Then deliver #60 — minimal Grove
+   contribution and #13 — deployment guidance against one pinned supported
+   Grove revision.
 2. Finish the supplemental
    [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
    only after focused diagnosis justifies one fresh-COW exact-release run. The

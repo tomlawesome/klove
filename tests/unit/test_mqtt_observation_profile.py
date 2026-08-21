@@ -27,7 +27,13 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
     assert assessment.profile == MqttObservationProfile(
         upstream_revision="cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
         tls_version="TLSv1.3",
+        mqtt_protocol_level=4,
+        clean_session=True,
         keepalive_seconds=30,
+        client_id_pattern="bambuddy_{serial}_{printer-id}_{session-counter}",
+        username="bblp",
+        password_is_access_code=True,
+        will_present=False,
         subscriptions=frozenset(
             {
                 ("device/{serial}/report", 0),
@@ -35,7 +41,12 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
             }
         ),
         server_to_client_topics=frozenset({"device/{serial}/request"}),
+        publish_qos=1,
+        publish_retain=False,
+        publish_dup=False,
+        next_packet_before_first_puback=True,
         initial_commands=frozenset({"pushall", "get_version", "extrusion_cali_get"}),
+        initial_publish_payload_bytes=(35, 56, 109),
     )
     assert mqtt_listener_disposition(assessment.profile).enabled is False
     assert mqtt_listener_disposition(assessment.profile).code == "mqtt_runtime_disabled"
@@ -50,7 +61,24 @@ def test_exact_retained_profile_is_accepted_but_cannot_enable_a_listener() -> No
         lambda document: document.__setitem__("not_observed", []),
         lambda document: document.__setitem__("observed", []),
         lambda document: document["observed"].__setitem__("keepalive_seconds", True),
-        lambda document: document["observed"].__setitem__("mqtt_protocol_level", 5),
+        lambda document: document["observed"].__setitem__("mqtt_protocol_name", "MQIsdp"),
+        lambda document: document["observed"].__setitem__("mqtt_protocol_level", 4.0),
+        lambda document: document["observed"].__setitem__("clean_session", 1),
+        lambda document: document["observed"].__setitem__("client_id_pattern", "bambuddy_{serial}"),
+        lambda document: document["observed"].__setitem__("username", "guest"),
+        lambda document: document["observed"].__setitem__("password_is_access_code", False),
+        lambda document: document["observed"].__setitem__("will_present", True),
+        lambda document: document["observed"].__setitem__("publish_qos", 1.0),
+        lambda document: document["observed"].__setitem__("publish_retain", True),
+        lambda document: document["observed"].__setitem__("publish_dup", True),
+        lambda document: document["observed"].__setitem__("next_packet_before_first_puback", False),
+        lambda document: document["observed"].__setitem__(
+            "initial_publish_payload_bytes", [35, 56]
+        ),
+        lambda document: document["observed"].__setitem__(
+            "initial_publish_payload_bytes", [35.0, 56, 109]
+        ),
+        lambda document: document["observed"].__setitem__("client_sessions_observed", 2.0),
         lambda document: document["observed"].__setitem__("subscriptions", []),
         lambda document: document["observed"].__setitem__(
             "subscriptions", ["not a subscription", "also not a subscription"]
@@ -109,3 +137,13 @@ def test_arbitrary_bounded_bytes_never_raise_or_open_mqtt(raw: bytes) -> None:
         assert mqtt_listener_disposition(assessment.profile).enabled is False
     else:
         assert assessment.code == "profile_invalid"
+
+
+def test_deeply_nested_bounded_json_fails_closed() -> None:
+    raw = ("[" * 10_000 + "]" * 10_000).encode()
+
+    assessment = assess_mqtt_observation_profile(raw)
+
+    assert assessment.accepted is False
+    assert assessment.profile is None
+    assert assessment.code == "profile_invalid"

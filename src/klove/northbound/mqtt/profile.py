@@ -10,15 +10,10 @@ MAX_PROFILE_BYTES: Final = 64 * 1024
 _PROFILE_VERSION: Final = 1
 _TRANSPORT: Final = "mqtt-over-tls"
 _UPSTREAM_REVISION: Final = "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
-_NOT_RETAINED_PROTOCOL_LEVEL: Final = "not retained: encrypted CONNECT packet was not persisted"
 _REQUIRED_NOT_OBSERVED: Final = frozenset(
     {
-        "CONNECT client identifier",
-        "clean-session flag",
-        "access-code field encoding",
-        "publish QoS and retain flags",
-        "acknowledgement ordering",
-        "request payload bounds",
+        "QoS 1 retransmission timing after withheld acknowledgements",
+        "request payload upper bound",
     }
 )
 _REQUIRED_SUBSCRIPTIONS: Final = frozenset(
@@ -35,10 +30,21 @@ class MqttObservationProfile:
 
     upstream_revision: str
     tls_version: str
+    mqtt_protocol_level: int
+    clean_session: bool
     keepalive_seconds: int
+    client_id_pattern: str
+    username: str
+    password_is_access_code: bool
+    will_present: bool
     subscriptions: frozenset[tuple[str, int]]
     server_to_client_topics: frozenset[str]
+    publish_qos: int
+    publish_retain: bool
+    publish_dup: bool
+    next_packet_before_first_puback: bool
     initial_commands: frozenset[str]
+    initial_publish_payload_bytes: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +72,7 @@ def assess_mqtt_observation_profile(raw: bytes) -> MqttProfileAssessment:
         document = json.loads(
             raw.decode("utf-8", errors="strict"), object_pairs_hook=_unique_object
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
         return MqttProfileAssessment(accepted=False, code="profile_invalid")
     profile = _decode_profile(document)
     if profile is None:
@@ -125,23 +131,52 @@ def _valid_not_observed(value: object) -> bool:
 def _decode_observed(value: object) -> MqttObservationProfile | None:
     if not isinstance(value, dict) or set(value) != {
         "tls_versions",
+        "mqtt_protocol_name",
         "mqtt_protocol_level",
+        "clean_session",
         "keepalive_seconds",
+        "client_id_pattern",
+        "username",
+        "password_is_access_code",
+        "will_present",
         "subscriptions",
         "server_to_client_topics",
+        "publish_qos",
+        "publish_retain",
+        "publish_dup",
+        "next_packet_before_first_puback",
         "initial_commands",
+        "initial_publish_payload_bytes",
         "client_sessions_observed",
     }:
         return None
     tls_versions = value["tls_versions"]
     keepalive = value["keepalive_seconds"]
+    protocol_level = value["mqtt_protocol_level"]
+    publish_qos = value["publish_qos"]
+    payload_bytes = value["initial_publish_payload_bytes"]
     sessions = value["client_sessions_observed"]
     if (
         tls_versions != ["TLSv1.3"]
-        or value["mqtt_protocol_level"] != _NOT_RETAINED_PROTOCOL_LEVEL
-        or isinstance(keepalive, bool)
+        or value["mqtt_protocol_name"] != "MQTT"
+        or type(protocol_level) is not int
+        or protocol_level != 4
+        or value["clean_session"] is not True
+        or type(keepalive) is not int
         or keepalive != 30
-        or isinstance(sessions, bool)
+        or value["client_id_pattern"] != "bambuddy_{serial}_{printer-id}_{session-counter}"
+        or value["username"] != "bblp"
+        or value["password_is_access_code"] is not True
+        or value["will_present"] is not False
+        or type(publish_qos) is not int
+        or publish_qos != 1
+        or value["publish_retain"] is not False
+        or value["publish_dup"] is not False
+        or value["next_packet_before_first_puback"] is not True
+        or not isinstance(payload_bytes, list)
+        or any(type(item) is not int for item in payload_bytes)
+        or payload_bytes != [35, 56, 109]
+        or type(sessions) is not int
         or sessions != 2
     ):
         return None
@@ -155,10 +190,21 @@ def _decode_observed(value: object) -> MqttObservationProfile | None:
     return MqttObservationProfile(
         upstream_revision=_UPSTREAM_REVISION,
         tls_version="TLSv1.3",
+        mqtt_protocol_level=4,
+        clean_session=True,
         keepalive_seconds=30,
+        client_id_pattern="bambuddy_{serial}_{printer-id}_{session-counter}",
+        username="bblp",
+        password_is_access_code=True,
+        will_present=False,
         subscriptions=subscriptions,
         server_to_client_topics=topics,
+        publish_qos=1,
+        publish_retain=False,
+        publish_dup=False,
+        next_packet_before_first_puback=True,
         initial_commands=commands,
+        initial_publish_payload_bytes=(35, 56, 109),
     )
 
 
