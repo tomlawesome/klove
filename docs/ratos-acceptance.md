@@ -4,7 +4,7 @@ Status: supplemental exact-release service emulation executed and the
 controlled host-MCU contract lane implemented; its full atomic contract record
 is still pending, and conclusive acceptance still requires supported ARM
 hardware under the attended procedure below. Service emulation is tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50) and the controlled
+[issue #50 — RatOS emulation feasibility](https://github.com/tomlawesome/klove/issues/50) and the controlled
 contract in [issue #51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51).
 
 RatOS acceptance is deliberately separate from Klove's native
@@ -35,7 +35,7 @@ systemd service graph, udev, and hardware integration that make the release
 RatOS; it does not count as a RatOS test.
 
 The rootless full-system experiment is tracked in
-[issue #50](https://github.com/tomlawesome/klove/issues/50) and is acceptable
+[issue #50 — RatOS emulation feasibility](https://github.com/tomlawesome/klove/issues/50) and is acceptable
 only if it:
 
 - verifies and boots the exact release image without modifying its contents;
