@@ -2,8 +2,8 @@
 
 #77 — secure frame establishes the browser authorization boundary. #78 — setup
 and recovery flow extends it with only the owner choices needed for canonical
-lifecycle operations. #79 adds the one-time completion handoff into Grove's
-existing printer-create flow. It remains neither a dashboard nor a
+lifecycle operations. #79 — completion handoff adds the one-time exchange into
+Grove's existing printer-create flow. It remains neither a dashboard nor a
 printer-control surface.
 
 ## Deployment boundary
