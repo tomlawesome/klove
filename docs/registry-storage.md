@@ -80,8 +80,9 @@ quiesced state:
 - a consistent SQLite snapshot produced by `PrinterStore.backup`;
 - the complete owner-only secret directory, including `.request-hmac-key` and
   every referenced credential file; and
-- the existing durable print-start journal and any other unresolved operation
-  fence stored elsewhere in Klove state.
+- the durable print-start journal, dispatch coordinator journal, and complete
+  owner-only dispatch spool; and
+- any other unresolved operation fence stored elsewhere in Klove state.
 
 The SQLite snapshot deliberately does not copy secret values. Stop Klove or
 otherwise quiesce registry mutations before copying the secret directory and
@@ -91,11 +92,13 @@ directory from another time or installation.
 
 Restore the complete set before starting Klove. The registry and credential
 files must be owner-owned regular files with no group or other permissions; the
-secret directory must likewise be owner-only. Initialization then validates the
-HMAC-key identity, reconciles interrupted local secret work, validates every
-active reference and secret length, and rejects any orphan or omission. It
-never invents a credential, drops a tombstone, or clears a control/dispatch
-fence to make a restore start.
+secret directory and dispatch spool must likewise be owner-only. Initialization
+then validates the HMAC-key identity, reconciles interrupted local secret work,
+and validates every active reference, secret length, coordinator row, and
+retained exact source. It rejects any orphan, omission, or mismatched
+coordinator journal/spool pair. It never invents a credential, drops a
+tombstone, discards a retained source, or clears a control/dispatch fence to
+make a restore start.
 
 Operational backup/restore commands and container-volume guidance remain a
 later operations slice. Until those commands exist, this document defines the

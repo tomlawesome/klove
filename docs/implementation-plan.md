@@ -456,10 +456,14 @@ before any product caller can reach it. The complete contract is
 - [x] Limit cancellation to preventing an upload or start that has not crossed
   its durable action boundary; it never becomes remote cleanup or a second job
   cancel path.
+- [x] Implement #75 — dispatch coordinator as the internal composition layer:
+  it reserves streamed hostile input before reading it, retains an owner-only
+  exact source and durable coordinator row, composes qualification/upload/start
+  under shared admission, and closes restart ambiguity without a blind retry.
 
-Exit criterion: ADR 0007 fixes one fail-closed ingress contract for issue #75 —
-dispatch coordinator and issue #76 — native dispatch proof without exposing a
-northbound adapter or adding an actuator.
+Exit criterion: #75 — dispatch coordinator is implemented without a northbound
+adapter or additional actuator. #76 — native dispatch proof is next: it must
+prove that internal lifecycle against the real native Moonraker fixture.
 
 ## Next slices
 
@@ -476,12 +480,13 @@ owner authentication and request security are implemented under #71 — owner
 session. Strict secret-free lifecycle routes and committed runtime handoff are
 implemented under #72 — lifecycle routes and #73 — runtime handoff within #65
 — protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
-After that protected API chain completes, ADR 0007's accepted ingress is
-implemented by #75 — dispatch coordinator and #76 — native dispatch proof under
-#12 — end-to-end dispatch. The end-to-end lifecycle proof in #12 — onboarded
-lifecycle proof consumes that canonical onboarded printer.
+After that protected API chain completes, #75 — dispatch coordinator implements
+ADR 0007's accepted internal ingress under #12 — end-to-end dispatch. #76 —
+native dispatch proof is the next dependent slice; it proves the coordinator
+against the native Moonraker lifecycle. The end-to-end lifecycle proof in #12
+— end-to-end dispatch consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
-exact-release acceptance follow-up under #51 — RatOS contract and does not
+exact-release acceptance follow-up under #51 — RatOS virtual-MCU proof and does not
 block focused development. Each safety-critical prerequisite is delivered
 through its own
 protected `develop` pull request and must merge with required checks green

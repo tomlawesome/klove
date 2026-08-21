@@ -36,6 +36,7 @@ from klove.domain.upload import (
     UploadState,
 )
 from klove.errors import UploadTransportError
+from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.upload import UploadService
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "artifacts"
@@ -214,6 +215,7 @@ def service(
             metadata_poll_interval_seconds=0.1,
             upload_idempotency_capacity=capacity,
         ),
+        admissions=PrinterAdmissionGates(),
         clock=fake_clock,
         sleep=fake_clock.sleep,
     )
@@ -273,6 +275,27 @@ async def test_caller_cancellation_is_shielded_and_duplicate_completes_original(
 
     assert (await duplicate).state is UploadState.VERIFIED
     assert len(transport.uploads) == 1
+
+
+@pytest.mark.asyncio
+async def test_lease_composition_rejects_an_unleased_inflight_duplicate() -> None:
+    candidate, qualification = candidate_and_qualification()
+    transport = FakeTransport()
+    transport.release_upload.clear()
+    uploader = service(transport)
+
+    original = asyncio.create_task(uploader.execute(candidate, qualification))
+    await transport.upload_entered.wait()
+    duplicate = await uploader.execute(candidate, qualification, admission_lease=object())  # type: ignore[arg-type]
+
+    assert_failure(
+        duplicate,
+        UploadState.DENIED,
+        UploadBoundary.IDEMPOTENCY,
+        UploadFailureCode.IDEMPOTENCY_CONFLICT,
+    )
+    transport.release_upload.set()
+    assert (await original).state is UploadState.VERIFIED
 
 
 @pytest.mark.asyncio

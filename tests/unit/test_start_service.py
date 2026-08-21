@@ -10,6 +10,7 @@ from klove.config import PrinterConfig
 from klove.domain.models import JobIdentitySnapshot, PrinterPhase
 from klove.domain.start import (
     StartBoundary,
+    StartConfirmation,
     StartFailure,
     StartFailureCode,
     StartJournalRecord,
@@ -164,6 +165,118 @@ async def test_start_admission_waits_for_the_shared_printer_gate(tmp_path: Path)
         await asyncio.sleep(0)
         assert not transport.query_entered.is_set()
     assert (await task).state is StartState.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_start_read_only_reconciliation_observation_and_lease_duplicate_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified = verified_upload()
+    transport = FakeTransport()
+    service = make_service(tmp_path, transport)
+    await service.initialize()
+
+    service._journal_available = False
+    unavailable = await service.reconcile(verified)
+    assert_failure(
+        unavailable,
+        StartState.DENIED,
+        StartBoundary.JOURNAL,
+        StartFailureCode.JOURNAL_UNAVAILABLE,
+    )
+    service._journal_available = True
+
+    class LookupJournal:
+        def __init__(self, value: StartJournalRecord | Exception | None) -> None:
+            self.value = value
+
+        def lookup(self, _verified: VerifiedUpload) -> StartJournalRecord | None:
+            if isinstance(self.value, Exception):
+                raise self.value
+            return self.value
+
+    for failure, code in (
+        (JournalConflictError(), StartFailureCode.IDEMPOTENCY_CONFLICT),
+        (JournalError(), StartFailureCode.JOURNAL_UNAVAILABLE),
+        (None, StartFailureCode.RECONCILIATION_PENDING),
+    ):
+        service._journal_available = True
+        service._journal = LookupJournal(failure)  # type: ignore[assignment]
+        result = await service.reconcile(verified)
+        assert result.failure is not None and result.failure.code is code
+    service._journal_available = True
+
+    confirmation = StartConfirmation(
+        path=verified.path,
+        eventtime=1,
+        phase=PrinterPhase.PRINTING,
+        file_position=1,
+        job=history_job(filename=verified.path),
+    )
+    confirmed = StartJournalRecord.model_construct(
+        operation_id=verified.qualification.operation_id,
+        idempotency_key=verified.qualification.idempotency_key,
+        printer_uuid=verified.qualification.target.printer_uuid,
+        verified=verified,
+        preflight=preflight(),
+        state=StartJournalState.CONFIRMED,
+        failure=None,
+        confirmation=confirmation,
+    )
+    service._journal = LookupJournal(confirmed)  # type: ignore[assignment]
+    result = await service.reconcile(verified)
+    assert result.state is StartState.CONFIRMED and result.confirmation == confirmation
+
+    dispatching = confirmed.model_copy(
+        update={"state": StartJournalState.DISPATCHING, "confirmation": None}
+    )
+    service._journal = LookupJournal(dispatching)  # type: ignore[assignment]
+
+    async def confirm(_record: StartJournalRecord) -> StartOperationResult:
+        return StartOperationResult(
+            operation_id=verified.qualification.operation_id,
+            idempotency_key=verified.qualification.idempotency_key,
+            state=StartState.DENIED,
+            failure=StartFailure(
+                boundary=StartBoundary.RECONCILIATION,
+                code=StartFailureCode.RECONCILIATION_PENDING,
+            ),
+        )
+
+    monkeypatch.setattr(service, "_confirm", confirm)
+    assert (await service.reconcile(verified)).failure is not None
+
+    monkeypatch.setattr(service, "_current_profile", lambda _verified: None)
+    assert await service.observe(verified) is None
+    monkeypatch.setattr(service, "_current_profile", lambda _verified: safety_profile())
+    transport.query_values = [StartTransportError(), observation()]
+    assert await service.observe(verified) is None
+    assert await service.observe(verified) == observation()
+
+    release = asyncio.Event()
+
+    async def blocked() -> StartOperationResult:
+        await release.wait()
+        return unavailable
+
+    task = asyncio.create_task(blocked())
+    entry = start_module._TaskEntry(start_module._StartRequest(verified), task, None)
+    service._by_key[verified.qualification.idempotency_key] = entry
+    service._by_operation[verified.qualification.operation_id] = entry
+    duplicate = await service.execute(verified, admission_lease=object())  # type: ignore[arg-type]
+    assert_failure(
+        duplicate,
+        StartState.DENIED,
+        StartBoundary.IDEMPOTENCY,
+        StartFailureCode.IDEMPOTENCY_CONFLICT,
+    )
+    service._forget_task(
+        verified.qualification.operation_id,
+        verified.qualification.idempotency_key,
+        asyncio.ensure_future(asyncio.sleep(0, result=duplicate)),
+    )
+    release.set()
+    await task
 
 
 @pytest.mark.asyncio
