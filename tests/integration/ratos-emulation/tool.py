@@ -1158,7 +1158,7 @@ def contract_evidence() -> None:
         },
         "moonraker": {
             "api_version_string": server["api_version_string"],
-            "authorization_config_sha256": moonraker_config_sha256,
+            "authorization_config_sha256": _digest_bytes(moonraker_config),
             "moonraker_version": server["moonraker_version"],
         },
         "printer": {
