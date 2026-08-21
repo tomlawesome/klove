@@ -8,6 +8,7 @@ from klove.config import (
     AppConfig,
     ControlConfig,
     DispatchConfig,
+    GroveBridgeConfig,
     OnboardingConfig,
     PrinterConfig,
     RegistryConfig,
@@ -126,6 +127,7 @@ z_micrometres = 350000
     assert result.dispatch.request_timeout_seconds == 9.0
     assert result.dispatch.confirmation_timeout_seconds == 8.0
     assert result.dispatch.poll_interval_seconds == 0.2
+    assert result.grove_bridge == GroveBridgeConfig()
     assert result.onboarding == OnboardingConfig()
     assert result.printers[0].id == "voron-24"
     assert result.printers[0].dispatch_enabled is True
@@ -219,6 +221,92 @@ def test_registry_storage_boundaries_cannot_overlap(
             api=ApiConfig(token_file=Path("token")),
             registry=registry,
             dispatch=DispatchConfig(journal_file=journal),
+        )
+
+
+def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() -> None:
+    assert GroveBridgeConfig().enabled is False
+    assert GroveBridgeConfig(ftps_advertised_ipv4=None).ftps_advertised_ipv4 is None
+    configured = GroveBridgeConfig(
+        enabled=True,
+        listen_host="0.0.0.0",  # noqa: S104 -- explicit container bridge bind under test.
+        ftps_advertised_ipv4="192.0.2.20",
+        tls_certificate_file=Path("/run/secrets/bridge.crt"),
+        tls_private_key_file=Path("/run/secrets/bridge.key"),
+    )
+
+    assert configured.mqtt_port == 8883
+    assert configured.ftps_control_port == 990
+    assert tuple(
+        range(configured.ftps_passive_port_min, configured.ftps_passive_port_max + 1)
+    ) == tuple(range(50000, 50010))
+    assert configured.max_sessions_per_printer == 2
+
+    for values in (
+        {"enabled": True},
+        {
+            "enabled": True,
+            "ftps_advertised_ipv4": "192.0.2.20",
+            "tls_certificate_file": Path("/run/secrets/shared"),
+            "tls_private_key_file": Path("/run/secrets/shared"),
+        },
+        {"tls_certificate_file": Path("/run/secrets/bridge.crt")},
+    ):
+        with pytest.raises(ValidationError):
+            GroveBridgeConfig.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"listen_host": "localhost"},
+        {"listen_host": "127.0.0.01"},
+        {"listen_host": "::1"},
+        {"ftps_advertised_ipv4": "0.0.0.0"},  # noqa: S104 -- rejected policy input.
+        {"ftps_advertised_ipv4": "224.0.0.1"},
+        {"ftps_advertised_ipv4": "192.0.2.020"},
+        {"mqtt_journal_file": Path("relative.sqlite3")},
+        {"staging_directory": Path("relative")},
+        {"tls_certificate_file": Path("relative.crt")},
+        {"ftps_passive_port_min": 50010, "ftps_passive_port_max": 50000},
+        {"ftps_passive_port_min": 50000, "ftps_passive_port_max": 50064},
+        {"mqtt_port": 990},
+        {"mqtt_port": 50000},
+        {"ftps_control_port": 50009},
+        {"max_sessions": 1, "max_sessions_per_printer": 2},
+        {
+            "mqtt_journal_file": Path("/var/lib/klove/ftps-staging/ingress.sqlite3"),
+        },
+    ],
+)
+def test_grove_bridge_rejects_ambiguous_or_overlapping_policy(
+    values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        GroveBridgeConfig.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "bridge",
+    [
+        GroveBridgeConfig(mqtt_journal_file=Path("/state/registry.sqlite3")),
+        GroveBridgeConfig(staging_directory=Path("/state/start.sqlite3")),
+        GroveBridgeConfig(mqtt_journal_file=Path("/state/secrets/ingress.sqlite3")),
+        GroveBridgeConfig(staging_directory=Path("/state/secrets/staging")),
+    ],
+)
+def test_bridge_storage_cannot_overlap_other_recovery_components(
+    bridge: GroveBridgeConfig,
+) -> None:
+    with pytest.raises(ValidationError):
+        AppConfig(
+            api=ApiConfig(token_file=Path("token")),
+            registry=RegistryConfig(
+                database_file=Path("/state/registry.sqlite3"),
+                secret_directory=Path("/state/secrets"),
+            ),
+            dispatch=DispatchConfig(journal_file=Path("/state/start.sqlite3")),
+            grove_bridge=bridge,
         )
 
 
