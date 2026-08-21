@@ -86,7 +86,7 @@ async def onboarding_security_headers(
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
     """Redact onboarding HTTP failures and mark every response private."""
-    if not request.path.startswith("/v1/onboarding"):
+    if not (request.path.startswith("/v1/onboarding") or request.path.startswith("/onboarding/")):
         return await handler(request)
     try:
         response = await handler(request)
@@ -299,7 +299,6 @@ async def _run(  # noqa: PLR0913,PLR0917 -- all request-security inputs stay exp
     lease = _authorize(request, operation, flow_nonce)
     if lease is None:
         return _error(HTTPStatus.FORBIDDEN, "owner_denied")
-    origin = _one_header(request, "Origin")
     values: dict[str, object] = {**payload, **(extra or {})}
     profiles = values.get("safety_profiles")
     if isinstance(profiles, list):
@@ -312,7 +311,7 @@ async def _run(  # noqa: PLR0913,PLR0917 -- all request-security inputs stay exp
             lease.release()
             return _error(HTTPStatus.BAD_REQUEST, "invalid_request")
         values["idempotency_key"] = key
-    values.update({"actor": _ACTOR, "request_origin": origin})
+    values.update({"actor": _ACTOR, "request_origin": lease.parent_origin})
     try:
         typed = model.model_validate(values)
     except (ValidationError, ValueError):

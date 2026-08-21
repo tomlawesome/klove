@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from klove.errors import KloveError
 
@@ -90,7 +91,8 @@ class OwnerSessionGrant:
 
 @dataclass(slots=True)
 class _Session:
-    origin: str
+    parent_origin: str
+    request_origin: str
     flow_nonce: str
     operation: OnboardingOperation
     csrf_digest: bytes
@@ -121,6 +123,13 @@ class OwnerSessionLease:
         self._closed = True
         self._store._invalidate(self._session_digest)
 
+    @property
+    def parent_origin(self) -> str:
+        """Return the exact configured parent origin bound to this active lease."""
+        if self._closed:
+            raise OwnerSessionDenied
+        return self._store._parent_origin(self._session_digest)
+
 
 class OwnerSessionStore:
     """In-memory, restart-invalidated, capacity-bounded owner sessions."""
@@ -133,6 +142,7 @@ class OwnerSessionStore:
         inactivity_timeout_seconds: int,
         absolute_timeout_seconds: int,
         cookie_secure: bool = True,
+        frame_origin: str | None = None,
         clock: Callable[[], float] = time.monotonic,
         token_factory: Callable[[int], str] = secrets.token_urlsafe,
     ) -> None:
@@ -156,23 +166,76 @@ class OwnerSessionStore:
             or absolute_timeout_seconds < inactivity_timeout_seconds
             or absolute_timeout_seconds > 1_800
             or type(cookie_secure) is not bool
+            or (
+                frame_origin is not None
+                and (
+                    not isinstance(frame_origin, str)
+                    or not frame_origin
+                    or not frame_origin.isascii()
+                    or frame_origin != frame_origin.strip()
+                )
+            )
         ):
             raise ValueError("owner session limits are invalid")
+        if frame_origin is not None and not _framed_origins_share_one_trusted_site(
+            allowed_origins, frame_origin
+        ):
+            raise ValueError("framed owner-session origins must be exact and same-site")
         self._allowed_origins = allowed_origins
         self._capacity = capacity
         self._inactivity_timeout = inactivity_timeout_seconds
         self._absolute_timeout = absolute_timeout_seconds
         self._cookie_secure = cookie_secure
+        self._frame_origin = frame_origin
         self._clock = clock
         self._token_factory = token_factory
         self._sessions: dict[bytes, _Session] = {}
 
     def issue(self, origin: str, operation: OnboardingOperation) -> OwnerSessionGrant:
         """Issue three independent unguessable values for one exact origin and operation."""
+        return self._issue(
+            parent_origin=origin,
+            request_origin=origin,
+            operation=operation,
+        )
+
+    def issue_framed(
+        self,
+        *,
+        parent_origin: str,
+        operation: OnboardingOperation,
+    ) -> OwnerSessionGrant:
+        """Issue a session for one configured parent after its one-time frame proof."""
+        if self._frame_origin is None:
+            raise OwnerSessionDenied
+        return self._issue(
+            parent_origin=parent_origin,
+            request_origin=self._frame_origin,
+            operation=operation,
+        )
+
+    @property
+    def frame_origin(self) -> str | None:
+        """Return the configured browser request origin, if frame routes are enabled."""
+        return self._frame_origin
+
+    @property
+    def allowed_parent_origins(self) -> frozenset[str]:
+        """Return the exact public origins that may own a framed session."""
+        return self._allowed_origins
+
+    def _issue(
+        self,
+        *,
+        parent_origin: str,
+        request_origin: str,
+        operation: OnboardingOperation,
+    ) -> OwnerSessionGrant:
+        """Create a session with separate parent and browser request origins."""
         now = self._now()
         self._purge_expired(now)
         if (
-            origin not in self._allowed_origins
+            parent_origin not in self._allowed_origins
             or not isinstance(operation, OnboardingOperation)
             or len(self._sessions) >= self._capacity
         ):
@@ -185,7 +248,8 @@ class OwnerSessionStore:
             if session_digest in self._sessions or len({cookie_value, csrf_token, flow_nonce}) != 3:
                 continue
             self._sessions[session_digest] = _Session(
-                origin=origin,
+                parent_origin=parent_origin,
+                request_origin=request_origin,
                 flow_nonce=flow_nonce,
                 operation=operation,
                 csrf_digest=_digest(_CSRF_DOMAIN, csrf_token),
@@ -198,7 +262,7 @@ class OwnerSessionStore:
                 flow_nonce=flow_nonce,
                 operation=operation,
                 max_age_seconds=self._absolute_timeout,
-                cookie_secure=self._cookie_secure or origin.startswith("https://"),
+                cookie_secure=self._cookie_secure or request_origin.startswith("https://"),
             )
         raise OwnerSessionDenied
 
@@ -233,7 +297,7 @@ class OwnerSessionStore:
             raise OwnerSessionDenied
         if (
             session.in_use
-            or session.origin != origin
+            or session.request_origin != origin
             or session.operation is not operation
             or not hmac.compare_digest(session.flow_nonce, flow_nonce)
             or not hmac.compare_digest(session.csrf_digest, _digest(_CSRF_DOMAIN, csrf_token))
@@ -262,6 +326,12 @@ class OwnerSessionStore:
         session = self._sessions.pop(digest, None)
         if session is None or not session.in_use:
             raise OwnerSessionDenied
+
+    def _parent_origin(self, digest: bytes) -> str:
+        session = self._sessions.get(digest)
+        if session is None or not session.in_use:
+            raise OwnerSessionDenied
+        return session.parent_origin
 
     def _purge_expired(self, now: float) -> None:
         for digest, session in tuple(self._sessions.items()):
@@ -297,6 +367,43 @@ class OwnerSessionStore:
         if not isinstance(token, str) or not _valid_token(token):
             raise OwnerSessionDenied
         return token
+
+
+def _framed_origins_share_one_trusted_site(
+    parent_origins: frozenset[str], frame_origin: str
+) -> bool:
+    frame = _origin_parts(frame_origin)
+    if frame is None:
+        return False
+    return all(
+        (parent := _origin_parts(origin)) is not None
+        and parent[:2] == frame[:2]
+        and parent != frame
+        for origin in parent_origins
+    )
+
+
+def _origin_parts(origin: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return (
+        parsed.scheme,
+        parsed.hostname,
+        port if port is not None else (443 if parsed.scheme == "https" else 80),
+    )
 
 
 def _bounded_ascii_token(value: str) -> bytes | None:

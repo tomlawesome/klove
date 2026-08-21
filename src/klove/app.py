@@ -27,6 +27,7 @@ from klove.persistence.secret_store import SecretStore
 from klove.persistence.start_journal import StartJournal
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
+from klove.security.frame_handshake import FrameHandshakeStore
 from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
 LOGGER = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
         scopes = {"printers:read"}
         if config.control.enabled:
             scopes.add("printers:control")
-        owner_authenticator, owner_sessions = _owner_security(config.onboarding)
+        owner_authenticator, owner_sessions, frame_handshakes = _owner_security(config.onboarding)
         app = create_api(
             registry,
             BearerAuthenticator(read_secret(config.api.token_file), scopes=frozenset(scopes)),
@@ -100,6 +101,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
             owner_authenticator=owner_authenticator,
             owner_sessions=owner_sessions,
             lifecycle=lifecycle if owner_sessions is not None else None,
+            frame_handshakes=frame_handshakes,
         )
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
@@ -137,10 +139,14 @@ def _control_transport(
 
 def _owner_security(
     config: OnboardingConfig,
-) -> tuple[OwnerCredentialAuthenticator | None, OwnerSessionStore | None]:
+) -> tuple[
+    OwnerCredentialAuthenticator | None,
+    OwnerSessionStore | None,
+    FrameHandshakeStore | None,
+]:
     """Compose independent owner security only when explicitly enabled."""
     if not config.enabled:
-        return None, None
+        return None, None, None
     credential_file = cast(Path, config.owner_credential_file)
     authenticator = OwnerCredentialAuthenticator(read_secret(credential_file))
     sessions = OwnerSessionStore(
@@ -149,5 +155,14 @@ def _owner_security(
         inactivity_timeout_seconds=config.session_inactivity_seconds,
         absolute_timeout_seconds=config.session_absolute_seconds,
         cookie_secure=config.cookie_secure,
+        frame_origin=config.frame_origin,
     )
-    return authenticator, sessions
+    handshakes = (
+        FrameHandshakeStore(
+            frozenset(config.allowed_grove_origins),
+            capacity=config.session_capacity,
+        )
+        if config.frame_enabled
+        else None
+    )
+    return authenticator, sessions, handshakes
