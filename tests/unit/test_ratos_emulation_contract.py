@@ -62,9 +62,23 @@ def test_ratos_contract_installs_controlled_printer_before_first_ready_wait() ->
     assert (
         preparation.index("api_key = _moonraker_api_key()")
         < preparation.index('filename="printer.cfg"')
-        < preparation.index("_wait_printer_ready(900)")
+        < preparation.index('failure_stage="after_printer_restart"')
         < preparation.index("moonraker_config = _replace_moonraker_configuration(api_key)")
     )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        ("Config error", "config-parse"),
+        ("MCU connect socket", "mcu-connect-socket"),
+        ("MCU protocol mismatch", "mcu-protocol"),
+        ("restart requested", "restart-pending"),
+        ("private unexpected text", "unknown"),
+    ),
+)
+def test_ratos_klippy_message_classification_is_closed(message: str, expected: str) -> None:
+    assert _load_tool()._classify_klippy_message(message) == expected
 
 
 @pytest.mark.parametrize(

@@ -45,6 +45,7 @@ RUNTIME_KERNEL: Final = INPUTS / "kernel8.Image"
 RUNTIME_DTB: Final = INPUTS / "bcm2710-rpi-3-b.dtb"
 EXTRACTED: Final = PREPARE_WORK / "extracted"
 OVERLAY: Final = RUN_STATE / OVERLAY_NAME
+READINESS_FAILURE: Final = RUN_STATE / "contract-prepare-failure.json"
 
 EXPECTED_SSH_BANNER_PREFIX: Final = "SSH-2.0-OpenSSH_8.4p1 Raspbian-5+deb11u5"
 EXPECTED_MOONRAKER_VERSION: Final = "v0.9.1-0-g63578ae"
@@ -617,22 +618,124 @@ def _verify_remote_contract_file(
         raise RuntimeError("Moonraker returned mismatched contract file bytes")
 
 
-def _wait_printer_ready(timeout_seconds: float, api_key: str | None = None) -> None:
+def _classify_klippy_message(value: str) -> str:
+    folded = value.casefold()
+    if "config" in folded and ("error" in folded or "parse" in folded):
+        return "config-parse"
+    if "mcu" in folded and ("socket" in folded or "connect" in folded):
+        return "mcu-connect-socket"
+    if "mcu" in folded and ("protocol" in folded or "version" in folded):
+        return "mcu-protocol"
+    if "restart" in folded:
+        return "restart-pending"
+    return "unknown"
+
+
+def _socket_evidence() -> dict[str, object]:
+    path = Path("/tmp/klipper_host_mcu")  # noqa: S108 - exact fixture endpoint
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"kind": "absent"}
+    return {
+        "kind": "socket" if stat.S_ISSOCK(metadata.st_mode) else "other",
+        "mode": stat.S_IMODE(metadata.st_mode),
+    }
+
+
+def _write_readiness_failure(  # noqa: PLR0913 - fixed retained evidence schema
+    *,
+    stage: str,
+    elapsed_seconds: float,
+    cycle: dict[str, bool],
+    config: bytes,
+    server: dict[str, object],
+    printer: dict[str, object],
+) -> None:
+    # Deliberately retain no response body or raw Klippy message.
+    evidence = {
+        "stage": stage,
+        "elapsed_bucket_seconds": int(elapsed_seconds // 30) * 30,
+        "connection_cycle": cycle,
+        "config_sha256": _digest_bytes(config),
+        "server": server,
+        "printer": printer,
+        "host_mcu_socket": _socket_evidence(),
+    }
+    partial = READINESS_FAILURE.with_suffix(".partial")
+    partial.write_text(json.dumps(evidence, sort_keys=True), encoding="utf-8")
+    partial.chmod(0o600)
+    partial.replace(READINESS_FAILURE)
+
+
+def _wait_printer_ready(
+    timeout_seconds: float,
+    api_key: str | None = None,
+    *,
+    failure_stage: str | None = None,
+    config: bytes | None = None,
+    restart_acknowledged: bool = False,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     headers = None if api_key is None else _api_headers(api_key)
+    cycle = {
+        "restart_acknowledged": restart_acknowledged,
+        "disconnect_observed": False,
+        "reconnect_observed": False,
+    }
+    start = time.monotonic()
+    last_server: dict[str, object] = {"status": "unavailable", "klippy_state": "unknown"}
+    last_printer: dict[str, object] = {
+        "status": "unavailable",
+        "message": "unknown",
+        "message_sha256": None,
+        "message_bytes": 0,
+    }
     while time.monotonic() < deadline:
         try:
             server = _result(_http_json("/server/info", headers=headers), "/server/info")
-            printer = _result(_http_json("/printer/info", headers=headers), "/printer/info")
-            if (
-                server.get("klippy_connected") is True
-                and server.get("klippy_state") == "ready"
-                and printer.get("state") == "ready"
-            ):
-                return
+            last_server = {
+                "status": "ok",
+                "klippy_state": server.get("klippy_state", "unknown"),
+                "klippy_connected": server.get("klippy_connected") is True,
+            }
+            if server.get("klippy_connected") is False:
+                cycle["disconnect_observed"] = True
+            if cycle["disconnect_observed"] and server.get("klippy_connected") is True:
+                cycle["reconnect_observed"] = True
         except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
-            pass
+            server = {}
+        status, body = _http_request(
+            18080, "/printer/info", headers=headers, host_header="ratos.local"
+        )
+        last_printer = {
+            "status": f"http-{status}",
+            "message": "unknown",
+            "message_sha256": _digest_bytes(body),
+            "message_bytes": len(body),
+        }
+        if status == 200:
+            try:
+                printer = _result(_parse_json(body, "/printer/info"), "/printer/info")
+                last_printer["state"] = printer.get("state", "unknown")
+                if (
+                    server.get("klippy_connected") is True
+                    and server.get("klippy_state") == "ready"
+                    and printer.get("state") == "ready"
+                ):
+                    return
+            except (RuntimeError, json.JSONDecodeError):
+                pass
         time.sleep(2)
+    if failure_stage is not None and config is not None:
+        _write_readiness_failure(
+            stage=failure_stage,
+            elapsed_seconds=time.monotonic() - start,
+            cycle=cycle,
+            config=config,
+            server=last_server,
+            printer=last_printer,
+        )
     raise RuntimeError("RatOS Klippy did not become ready within the fixed deadline")
 
 
@@ -878,9 +981,17 @@ def contract_prepare() -> None:
     )
     if restart.get("result") != "ok":
         raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
-    _wait_printer_ready(900)
+    _wait_printer_ready(
+        900, failure_stage="after_printer_restart", config=printer_config, restart_acknowledged=True
+    )
     moonraker_config = _replace_moonraker_configuration(api_key)
-    _wait_printer_ready(300, api_key)
+    _wait_printer_ready(
+        300,
+        api_key,
+        failure_stage="after_moonraker_auth_restart",
+        config=printer_config,
+        restart_acknowledged=True,
+    )
     invalid_status, _invalid_body = _http_request(
         18080,
         "/printer/objects/query?print_stats",
@@ -907,7 +1018,13 @@ def contract_prepare() -> None:
     )
     if restart.get("result") != "ok":
         raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
-    _wait_printer_ready(300)
+    _wait_printer_ready(
+        300,
+        api_key,
+        failure_stage="after_final_printer_restart",
+        config=printer_config,
+        restart_acknowledged=True,
+    )
     printer_evidence = _contract_status(api_key, expected_phase="standby")
     _verify_remote_contract_file(
         api_key, root="config", filename="printer.cfg", expected=printer_config

@@ -93,6 +93,16 @@ snapshot and raw guest serial output is not retained. The lane is deliberately
 excluded from routine CI because the download and ARM-on-x86 TCG boot are large
 and slow.
 
+On a controlled-printer readiness timeout, the lane may retain one atomic,
+owner-only diagnostic record: stage, 30-second elapsed bucket, acknowledged
+restart and observed disconnect/reconnect booleans, status enums, the exact
+fixture-config SHA-256, and `/tmp/klipper_host_mcu` classification
+(`absent`, `socket`, or `other` with mode). A transient Klippy message is
+reduced locally to the closed `config-parse`, `mcu-connect-socket`,
+`mcu-protocol`, `restart-pending`, or `unknown` enum plus byte length and
+SHA-256; its text is never retained. `unknown` proves nothing and forbids a
+retry. This record contains no API key, configuration bytes, serial, or logs.
+
 Before starting Klove, the COW-only preparation obtains the per-run API key over
 the initially trusted isolated route, replaces exactly the one
 `[authorization]` `trusted_clients` setting with TEST-NET-1, restarts Moonraker,

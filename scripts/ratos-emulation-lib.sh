@@ -621,7 +621,7 @@ ratos_archive_runtime() {
     ratos_require_private_file "$ratos_state_dir/identities.json" 600
     ratos_require_private_file "$ratos_runtime_dir/$ratos_overlay_name" 666
     for ratos_runtime_file in \
-        active contract-prepared.json contract-succeeded contract.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json \
         firstboot-required firstboot-restarted probe-succeeded probe.json
     do
         if [ -e "$ratos_runtime_dir/$ratos_runtime_file" ] \
@@ -648,7 +648,7 @@ ratos_archive_runtime() {
     ratos_require_absent "$ratos_runtime_dir/$ratos_overlay_name"
 
     for ratos_runtime_file in \
-        active contract-prepared.json contract-succeeded contract.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json \
         firstboot-required firstboot-restarted probe-succeeded probe.json
     do
         if [ -e "$ratos_runtime_dir/$ratos_runtime_file" ]; then
@@ -659,7 +659,7 @@ ratos_archive_runtime() {
 
     ratos_checksums=$(mktemp "$ratos_archived_run/checksums.XXXXXX")
     for ratos_evidence_file in \
-        active contract-prepared.json contract-succeeded contract.json identities.json \
+        active contract-prepared.json contract-prepare-failure.json contract-succeeded contract.json identities.json \
         firstboot-required firstboot-restarted origin probe-succeeded probe.json
     do
         if [ -e "$ratos_archived_run/$ratos_evidence_file" ]; then
