@@ -66,6 +66,8 @@ EXPECTED_CONTRACT_COUNTS: Final = {
 }
 HTTP_BODY_LIMIT: Final = 1024 * 1024
 HTTP_TIMEOUT_SECONDS: Final = 60
+# Klippy restarts are slower than ordinary fixture JSON traffic under TCG.
+PRINTER_RESTART_TIMEOUT_SECONDS: Final = 300
 
 BOOT_FILES: Final[dict[str, tuple[int, str]]] = {
     "kernel8.img": (
@@ -325,13 +327,14 @@ def _parse_json(body: bytes, path: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], parsed)
 
 
-def _http_json(
+def _http_json(  # noqa: PLR0913 -- bounded internal HTTP fixture primitive.
     path: str,
     *,
     method: str = "GET",
     body: bytes | None = None,
     headers: Mapping[str, str] | None = None,
     expected_status: int = 200,
+    timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> Mapping[str, object]:
     status, response_body = _http_request(
         18080,
@@ -340,6 +343,7 @@ def _http_json(
         body=body,
         headers=headers,
         host_header="ratos.local",
+        timeout=timeout,
     )
     if status != expected_status:
         raise RuntimeError(f"{path} returned HTTP {status}")
@@ -1005,6 +1009,7 @@ def contract_prepare() -> None:
         method="POST",
         body=b"{}",
         headers=_api_headers(api_key, content_type="application/json"),
+        timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
     )
     if restart.get("result") != "ok":
         raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
@@ -1042,6 +1047,7 @@ def contract_prepare() -> None:
         method="POST",
         body=b"{}",
         headers=_api_headers(api_key, content_type="application/json"),
+        timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
     )
     if restart.get("result") != "ok":
         raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
