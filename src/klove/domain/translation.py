@@ -46,6 +46,22 @@ _COMMANDS = {
     "stop": CommandKind.CANCEL,
 }
 _ALLOWED_FIELDS = frozenset({"command", "sequence_id"})
+_MAX_REQUEST_BYTES = 4096
+
+
+def decode_grove_request_bytes(raw: object) -> DecodeResult:
+    """Bound and uniquely decode one hostile MQTT JSON payload before translation."""
+    if type(raw) is not bytes or len(raw) > _MAX_REQUEST_BYTES:
+        return CommandDenial(code="invalid_json")
+    try:
+        payload = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError):
+        return CommandDenial(code="invalid_json")
+    return decode_grove_request(payload)
 
 
 def decode_grove_request(payload: object) -> DecodeResult:
@@ -79,3 +95,16 @@ def decode_grove_request(payload: object) -> DecodeResult:
 def deny_actuation(_command: DecodedCommand) -> CommandDenial:
     """Keep the first implementation slice physically incapable of actuation."""
     return CommandDenial(code="actuation_disabled")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
