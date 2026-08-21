@@ -55,6 +55,7 @@ ratos_capture_source_state() {
         tests/integration/ratos-emulation/SHA256SUMS \
         tests/integration/ratos-emulation/contract/klove.toml \
         tests/integration/ratos-emulation/contract/printer.cfg \
+        tests/integration/ratos-emulation/contract/ratos_exercise_contract.py \
         tests/integration/ratos-emulation/debian.sources \
         tests/integration/ratos-emulation/tool.py \
         tests/integration/moonraker-sim/fixture/contract.gcode \

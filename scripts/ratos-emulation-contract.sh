@@ -145,9 +145,8 @@ if ! timeout 600 docker run \
     --env KLOVE_TEST_MOONRAKER_PROXY_URL=http://127.0.0.1:27125 \
     --env KLOVE_TEST_PROXY_CONTROL_URL=http://127.0.0.1:9126 \
     --env KLOVE_TEST_MOONRAKER_HOST_HEADER=ratos.local \
-    --env KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION=trusted \
     "$ratos_tool_image_id" \
-    /usr/local/bin/python /opt/klove-ratos/contract/exercise_contract.py \
+    /usr/local/bin/python /opt/klove-ratos/contract/ratos_exercise_contract.py \
     > "$contract_output"; then
     echo "RatOS production Klove contract failed; retain runtime for exact teardown" >&2
     exit 1
@@ -155,8 +154,9 @@ fi
 ratos_require_contract_container \
     "$ratos_contract_container" "$ratos_tool_image_id" contract-runner
 
-if ! timeout 180 docker exec "$ratos_container" \
+if ! timeout 180 docker exec --interactive "$ratos_container" \
     /usr/local/bin/python /opt/klove-ratos/tool.py contract-evidence \
+    < "$contract_output" \
     > "$contract_partial"; then
     echo "RatOS production contract evidence reconciliation failed" >&2
     exit 1

@@ -270,6 +270,7 @@ def test_ratos_contract_fixture_is_exact_and_non_actuating() -> None:
 
     assert "tests/integration/moonraker-sim/fixture/proxy.py" in dockerfile
     assert "tests/integration/moonraker-sim/fixture/exercise_contract.py" in dockerfile
+    assert "tests/integration/ratos-emulation/contract/ratos_exercise_contract.py" in dockerfile
     assert "tests/integration/moonraker-sim/fixture/contract.gcode" in dockerfile
     assert "sha256sum --check /opt/klove-ratos/contract/SHA256SUMS" in dockerfile
     assert dockerignore.startswith("*\n")
@@ -282,8 +283,11 @@ def test_ratos_contract_fixture_is_exact_and_non_actuating() -> None:
     assert "contract secret volume must be empty before preparation" in tool
     assert "identity != (10001, 10001, 0o600)" in tool
     assert 'expected_phase="standby"' in tool
-    assert 'expected_phase="paused"' in tool
+    assert 'expected_phase="cancelled"' in tool
     assert 'filename="contract.gcode"' in tool
+    assert "_untrust_moonraker_clients" in tool
+    assert "RatOS did not reject an invalid Moonraker API key" in tool
+    assert "terminal Moonraker history identity differs from faulted-pause evidence" in tool
     assert "secrets.compare_digest(actual, expected)" in tool
     assert "os.O_NOFOLLOW" in tool
     assert "serial: /tmp/klipper_host_mcu" in printer_config
@@ -384,7 +388,9 @@ def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
     down = (ROOT / "scripts" / "ratos-emulation-down.sh").read_text(encoding="utf-8")
 
     assert contract.count("--log-opt max-file=2") == 3
-    assert "--env KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION=trusted" in contract
+    assert "--env KLOVE_TEST_MOONRAKER_AUTH_EXPECTATION=trusted" not in contract
+    assert "/opt/klove-ratos/contract/ratos_exercise_contract.py" in contract
+    assert 'docker exec --interactive "$ratos_container"' in contract
     wrapper = (ROOT / "scripts" / "test-ratos-emulation.sh").read_text(encoding="utf-8")
 
     assert "ratos_require_active" in contract
@@ -410,7 +416,7 @@ def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
     assert "KLOVE_TEST_MOONRAKER_HOST_HEADER=ratos.local" in contract
     assert "/opt/klove-ratos/tool.py contract-prepare" in contract
     assert "/opt/klove-ratos/tool.py contract-evidence" in contract
-    assert "/opt/klove-ratos/contract/exercise_contract.py" in contract
+    assert "/opt/klove-ratos/contract/ratos_exercise_contract.py" in contract
     assert "ratos_require_contract_container \\" in contract
     assert '"$repo_root/scripts/ratos-emulation-contract.sh"' in wrapper
 

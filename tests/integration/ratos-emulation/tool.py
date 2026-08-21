@@ -103,6 +103,10 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _digest_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
 def _verify(path: Path, expected_size: int, expected_sha256: str) -> None:
     metadata = _regular_file(path)
     if metadata.st_size != expected_size:
@@ -362,8 +366,9 @@ def _probe_ssh() -> str:
     return banner
 
 
-def _probe_moonraker() -> dict[str, object]:
-    server = _result(_http_json("/server/info"), "/server/info")
+def _probe_moonraker(api_key: str | None = None) -> dict[str, object]:
+    headers = None if api_key is None else _api_headers(api_key)
+    server = _result(_http_json("/server/info", headers=headers), "/server/info")
     moonraker_version = server.get("moonraker_version")
     components = server.get("components")
     if moonraker_version != EXPECTED_MOONRAKER_VERSION:
@@ -548,6 +553,43 @@ def _upload_contract_file(
             raise RuntimeError("Moonraker unexpectedly queued the uploaded file")
 
 
+def _replace_moonraker_configuration(api_key: str) -> bytes:
+    existing = _download_contract_file(api_key, root="config", filename="moonraker.conf")
+    replacement = _untrust_moonraker_clients(existing)
+    content_type, body = _multipart_upload_body("config", "moonraker.conf", replacement)
+    response = _http_json(
+        "/server/files/upload",
+        method="POST",
+        body=body,
+        headers=_api_headers(api_key, content_type=content_type),
+        expected_status=201,
+    )
+    result = _mapping(response, "Moonraker configuration upload result")
+    if set(result) != {"item", "action"} or result.get("action") != "modify_file":
+        raise RuntimeError("Moonraker did not replace its exact configuration file")
+    item = _mapping(result.get("item"), "Moonraker configuration upload item")
+    if (
+        set(item) != {"root", "path", "modified", "size", "permissions"}
+        or item.get("root") != "config"
+        or item.get("path") != "moonraker.conf"
+        or item.get("size") != len(replacement)
+        or item.get("permissions") != "rw"
+    ):
+        raise RuntimeError("Moonraker returned a mismatched configuration upload")
+    _verify_remote_contract_file(
+        api_key, root="config", filename="moonraker.conf", expected=replacement
+    )
+    restart = _http_json(
+        "/server/restart",
+        method="POST",
+        body=b"{}",
+        headers=_api_headers(api_key, content_type="application/json"),
+    )
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected service restart result")
+    return replacement
+
+
 def _download_contract_file(api_key: str, *, root: str, filename: str) -> bytes:
     quoted = urllib.parse.quote(filename, safe="")
     status, body = _http_request(
@@ -569,12 +611,13 @@ def _verify_remote_contract_file(
         raise RuntimeError("Moonraker returned mismatched contract file bytes")
 
 
-def _wait_printer_ready(timeout_seconds: float) -> None:
+def _wait_printer_ready(timeout_seconds: float, api_key: str | None = None) -> None:
     deadline = time.monotonic() + timeout_seconds
+    headers = None if api_key is None else _api_headers(api_key)
     while time.monotonic() < deadline:
         try:
-            server = _result(_http_json("/server/info"), "/server/info")
-            printer = _result(_http_json("/printer/info"), "/printer/info")
+            server = _result(_http_json("/server/info", headers=headers), "/server/info")
+            printer = _result(_http_json("/printer/info", headers=headers), "/printer/info")
             if (
                 server.get("klippy_connected") is True
                 and server.get("klippy_state") == "ready"
@@ -585,6 +628,53 @@ def _wait_printer_ready(timeout_seconds: float) -> None:
             pass
         time.sleep(2)
     raise RuntimeError("RatOS Klippy did not become ready within the fixed deadline")
+
+
+def _untrust_moonraker_clients(value: bytes) -> bytes:
+    """Replace only the configured authorization allowlist with TEST-NET-1."""
+    try:
+        text = value.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("Moonraker configuration is not UTF-8") from error
+    if "\r" in text:
+        raise RuntimeError("Moonraker configuration uses unsupported line endings")
+    lines = text.splitlines(keepends=True)
+    authorization = [
+        index
+        for index, line in enumerate(lines)
+        if line.rstrip("\n").strip().casefold() == "[authorization]"
+    ]
+    if len(authorization) != 1:
+        raise RuntimeError("Moonraker configuration must contain one authorization section")
+    start = authorization[0] + 1
+    end = next(
+        (
+            index
+            for index in range(start, len(lines))
+            if lines[index].lstrip() == lines[index]
+            and lines[index].rstrip("\n").startswith("[")
+            and lines[index].rstrip("\n").endswith("]")
+        ),
+        len(lines),
+    )
+    trusted = [
+        index
+        for index in range(start, end)
+        if lines[index].casefold().startswith("trusted_clients:")
+    ]
+    if len(trusted) != 1:
+        raise RuntimeError("Moonraker configuration must contain one trusted-client setting")
+    option = trusted[0]
+    continuation_end = option + 1
+    while continuation_end < end and lines[continuation_end][:1] in {" ", "\t"}:
+        continuation_end += 1
+    return b"".join(
+        [
+            *[line.encode("utf-8") for line in lines[:option]],
+            b"trusted_clients:\n  192.0.2.0/24\n",
+            *[line.encode("utf-8") for line in lines[continuation_end:]],
+        ]
+    )
 
 
 def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
@@ -620,7 +710,10 @@ def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
         raise RuntimeError("RatOS returned an inconsistent pause state")
     if expected_phase == "standby" and virtual_sdcard.get("is_active") is not False:
         raise RuntimeError("RatOS unexpectedly reported an active virtual SD job")
-    if expected_phase == "paused" and print_stats.get("filename") != "contract.gcode":
+    if (
+        expected_phase in {"paused", "cancelled"}
+        and print_stats.get("filename") != "contract.gcode"
+    ):
         raise RuntimeError("RatOS returned the wrong contract job identity")
     return {
         "config_sections": sorted(str(section) for section in settings),
@@ -628,6 +721,69 @@ def _contract_status(api_key: str, *, expected_phase: str) -> dict[str, object]:
         "mcu_version": EXPECTED_MCU_VERSION,
         "phase": expected_phase,
     }
+
+
+def _history_identity(api_key: str, *, expected_status: str) -> tuple[str, float]:
+    result = _result(
+        _http_json(
+            "/server/history/list?limit=1&start=0&order=desc",
+            headers=_api_headers(api_key),
+        ),
+        "/server/history/list",
+    )
+    count = result.get("count")
+    jobs = result.get("jobs")
+    if type(count) is not int or count != 1 or not isinstance(jobs, list) or len(jobs) != 1:
+        raise RuntimeError("Moonraker did not return one current history job")
+    job = _mapping(jobs[0], "history job")
+    job_id = job.get("job_id")
+    start_time = job.get("start_time")
+    if (
+        not isinstance(job_id, str)
+        or not 6 <= len(job_id) <= 16
+        or any(character not in "0123456789ABCDEF" for character in job_id)
+        or isinstance(start_time, bool)
+        or not isinstance(start_time, (int, float))
+        or start_time < 0
+        or job.get("filename") != "contract.gcode"
+        or job.get("status") != expected_status
+    ):
+        raise RuntimeError("Moonraker returned an unexpected immutable history identity")
+    return job_id, float(start_time)
+
+
+def _runner_history_evidence() -> tuple[str, float]:
+    raw = sys.stdin.buffer.read(HTTP_BODY_LIMIT + 1)
+    if not raw or len(raw) > HTTP_BODY_LIMIT:
+        raise RuntimeError("RatOS contract runner history evidence is missing or oversized")
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("RatOS contract runner history evidence is malformed") from error
+    if not isinstance(document, dict) or set(document) != {"history"}:
+        raise RuntimeError("RatOS contract runner history evidence has unexpected fields")
+    history = _mapping(document["history"], "contract runner history")
+    if set(history) != {"job_id", "phases", "start_time"}:
+        raise RuntimeError("RatOS contract runner history identity has unexpected fields")
+    phases = _mapping(history["phases"], "contract runner history phases")
+    if phases != {
+        "started": "in_progress",
+        "faulted_pause": "in_progress",
+        "cancelled": "cancelled",
+    }:
+        raise RuntimeError("RatOS contract runner history phases are inconsistent")
+    job_id = history["job_id"]
+    start_time = history["start_time"]
+    if (
+        not isinstance(job_id, str)
+        or not 6 <= len(job_id) <= 16
+        or any(character not in "0123456789ABCDEF" for character in job_id)
+        or isinstance(start_time, bool)
+        or not isinstance(start_time, (int, float))
+        or start_time < 0
+    ):
+        raise RuntimeError("RatOS contract runner history identity is malformed")
+    return job_id, float(start_time)
 
 
 def _write_private(destination: Path, value: bytes) -> None:
@@ -697,6 +853,16 @@ def contract_prepare() -> None:
     contract_gcode = _contract_source(CONTRACT_GCODE)
     _wait_printer_ready(900)
     api_key = _moonraker_api_key()
+    moonraker_config = _replace_moonraker_configuration(api_key)
+    _wait_printer_ready(300, api_key)
+    invalid_status, _invalid_body = _http_request(
+        18080,
+        "/printer/objects/query?print_stats",
+        headers=_api_headers("0" * 32),
+        host_header="ratos.local",
+    )
+    if invalid_status != 401:
+        raise RuntimeError("RatOS did not reject an invalid Moonraker API key")
     _upload_contract_file(
         api_key,
         root="config",
@@ -735,11 +901,15 @@ def contract_prepare() -> None:
     )
 
     _write_private(SECRETS / "moonraker-api-key", f"{api_key}\n".encode())
+    _write_private(
+        SECRETS / "moonraker-config-sha256", f"{_digest_bytes(moonraker_config)}\n".encode()
+    )
     _write_private(SECRETS / "klove-token", f"{secrets.token_hex(32)}\n".encode())
     _write_private(SECRETS / "config.toml", klove_config)
     evidence = {
         "contract_gcode": _contract_identity(CONTRACT_GCODE),
         "klove_config": _contract_identity(CONTRACT_KLOVE_CONFIG),
+        "moonraker_config": {"sha256": _digest_bytes(moonraker_config)},
         "printer": printer_evidence,
         "printer_config": _contract_identity(CONTRACT_PRINTER_CONFIG),
     }
@@ -767,6 +937,12 @@ def wait_service(service: str) -> None:
 
 def contract_evidence() -> None:
     api_key = _read_secret("moonraker-api-key")
+    runner_history = _runner_history_evidence()
+    moonraker_config_sha256 = _read_secret("moonraker-config-sha256")
+    if len(moonraker_config_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in moonraker_config_sha256
+    ):
+        raise RuntimeError("Moonraker configuration fingerprint is malformed")
     printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
     contract_gcode = _contract_source(CONTRACT_GCODE)
     _verify_remote_contract_file(
@@ -775,7 +951,17 @@ def contract_evidence() -> None:
     _verify_remote_contract_file(
         api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
     )
-    printer = _contract_status(api_key, expected_phase="paused")
+    moonraker_config = _download_contract_file(api_key, root="config", filename="moonraker.conf")
+    if _digest_bytes(moonraker_config) != moonraker_config_sha256:
+        raise RuntimeError(
+            "RatOS Moonraker authorization configuration changed during the contract"
+        )
+    printer = _contract_status(api_key, expected_phase="cancelled")
+    terminal_history = _history_identity(api_key, expected_status="cancelled")
+    if terminal_history != runner_history:
+        raise RuntimeError(
+            "terminal Moonraker history identity differs from faulted-pause evidence"
+        )
     status, body = _http_request(9126, "/stats")
     if status != 200:
         raise RuntimeError("the contract proxy did not return dispatch counts")
@@ -783,11 +969,21 @@ def contract_evidence() -> None:
     counts = _mapping(proxy_result.get("counts"), "contract dispatch counts")
     if counts != EXPECTED_CONTRACT_COUNTS:
         raise RuntimeError("the contract proxy returned unexpected dispatch counts")
-    server = _probe_moonraker()
+    server = _probe_moonraker(api_key)
     evidence = {
         "dispatch_counts": dict(sorted(EXPECTED_CONTRACT_COUNTS.items())),
+        "history": {
+            "job_id": terminal_history[0],
+            "phases": {
+                "cancelled": "cancelled",
+                "faulted_pause": "in_progress",
+                "started": "in_progress",
+            },
+            "start_time": terminal_history[1],
+        },
         "moonraker": {
             "api_version_string": server["api_version_string"],
+            "authorization_config_sha256": moonraker_config_sha256,
             "moonraker_version": server["moonraker_version"],
         },
         "printer": printer,

@@ -93,14 +93,22 @@ upload or print-start surface.
 
 The production Klove image and the shared fault proxy run as unprivileged,
 read-only sidecars in the outer QEMU container's otherwise networkless namespace.
-The test runner—not Klove—starts the harmless finite-dwell job, then proves real
+The test runner—not Klove—starts one harmless finite-dwell job, then proves real
 observation, pause/resume/cancel, stale-token denial, same-key replay, cross-key
-fencing, invalid northbound authentication, and a deliberately dropped Moonraker
-response becoming `outcome_unknown` after exactly one dispatch. Stock RatOS
-classifies the isolated slirp/loopback path as a trusted Moonraker client, so the
-runner explicitly requires that trusted response instead of claiming invalid
-API-key rejection. The native Moonraker simulation retains the downstream
-invalid-key test on a non-trusted transport.
+fencing, invalid northbound and Moonraker API-key authentication, and a
+deliberately dropped Moonraker pause response becoming `outcome_unknown` after
+exactly one dispatch. The final
+cancel consumes that same paused job, so the contract never depends on a second
+RatOS history record becoming available within an arbitrary TCG timing window.
+Before Klove starts, the COW-only helper reads the existing `[authorization]`
+section through the initially trusted route, replaces exactly its one
+`trusted_clients` setting with documentation-only TEST-NET-1, restarts
+Moonraker, and verifies that the run API key still works while a known-invalid
+key receives `401`. The modified configuration is re-read and fingerprinted in
+the retained evidence; it is never written to the immutable release image.
+The runner records the same Moonraker immutable job ID/start time at job start,
+after the faulted pause, and after final cancellation; evidence reconciliation
+re-queries that terminal identity before marking the contract passed.
 
 Teardown is bound to the recorded daemon, exact image IDs, state path, names,
 network namespace, mounts, and labels. It stops and removes only those containers,
@@ -161,5 +169,5 @@ container is the relevant host confinement boundary. QEMU documents the
 limited Raspberry Pi models in its
 [Arm board guide](https://www.qemu.org/docs/master/system/arm/raspi.html).
 Follow `docs/ratos-acceptance.md` for attended hardware acceptance and
-[issue #51](https://github.com/tomlawesome/klove/issues/51) for the tracked
+[issue #51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51) for the tracked
 contract slice.
