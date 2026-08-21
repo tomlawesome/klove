@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -439,6 +440,58 @@ def test_ratos_contract_runner_command_paths_match_and_are_exact() -> None:
 
     assert launcher_command in contract_script
     assert verifier_command in library
+
+
+def test_ratos_manifest_matches_the_tracked_source_bytes() -> None:
+    manifest = (ROOT / "tests" / "integration" / "ratos-emulation" / "SHA256SUMS").read_text(
+        encoding="utf-8"
+    )
+    source_by_target = {
+        "opt/klove-ratos/contract/printer.cfg": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "printer.cfg",
+        "opt/klove-ratos/contract/klove.toml": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "klove.toml",
+        "opt/klove-ratos/contract/contract.gcode": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "contract.gcode",
+        "opt/klove-ratos/contract/proxy.py": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "proxy.py",
+        "opt/klove-ratos/contract/exercise_contract.py": ROOT
+        / "tests"
+        / "integration"
+        / "moonraker-sim"
+        / "fixture"
+        / "exercise_contract.py",
+        "opt/klove-ratos/contract/ratos_exercise_contract.py": ROOT
+        / "tests"
+        / "integration"
+        / "ratos-emulation"
+        / "contract"
+        / "ratos_exercise_contract.py",
+    }
+
+    manifest_targets = set()
+    for line in manifest.splitlines():
+        digest, target = line.split("  ", 1)
+        manifest_targets.add(target)
+        source = source_by_target[target]
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
+    assert manifest_targets == set(source_by_target)
 
 
 def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
