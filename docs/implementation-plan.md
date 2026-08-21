@@ -506,6 +506,10 @@ generic G-code path exists.
 5. Harden fleet recovery, fault isolation, observability, backup/restore,
    migrations, and soak behavior under
    [#34 — fleet hardening](https://github.com/tomlawesome/klove/issues/34).
+   ADR 0011 accepts the first ordered boundary: registry-only transactional
+   migrations and an immutable exact-version harness, with no production schema
+   change in the framework slice. Later profile/mapping history, cross-service
+   fence references, and operational recovery remain separate work.
 6. Evaluate exclude-object, richer cameras, MMU/toolchanger support, an
    outbound host agent, and other printer stacks only through separately
    accepted adapter boundaries under

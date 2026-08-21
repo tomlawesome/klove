@@ -89,6 +89,10 @@ tests.
 
 ### Phase 6: fleet hardening
 
+- ADR 0011 freezes the registry-only transactional migration contract and exact
+  historical-schema harness before any fleet schema extension. Profile and
+  mapping history, cross-service fence references, and operational
+  backup/restore remain separate ordered slices.
 - Multi-printer routing, per-printer credentials/policies, job journal, cameras
   via external URLs, metrics, backups, migration tests, and upgrade/rollback.
 - Docker Compose examples for bridge and host-network constraints.
