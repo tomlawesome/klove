@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 import uuid
 from pathlib import Path
@@ -49,9 +50,20 @@ def test_ratos_authorization_replacement_removes_trusted_loopback() -> None:
     rewritten = tool._untrust_moonraker_clients(
         b"[server]\nport: 7125\n\n[authorization]\ntrusted_clients:\n  127.0.0.1\n\n[history]\n"
     )
-
     assert rewritten == (
         b"[server]\nport: 7125\n\n[authorization]\ntrusted_clients:\n  192.0.2.0/24\n\n[history]\n"
+    )
+
+
+def test_ratos_contract_installs_controlled_printer_before_first_ready_wait() -> None:
+    tool = _load_tool()
+    preparation = inspect.getsource(tool.contract_prepare)
+
+    assert (
+        preparation.index("api_key = _moonraker_api_key()")
+        < preparation.index('filename="printer.cfg"')
+        < preparation.index("_wait_printer_ready(900)")
+        < preparation.index("moonraker_config = _replace_moonraker_configuration(api_key)")
     )
 
 

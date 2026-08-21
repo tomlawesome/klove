@@ -857,8 +857,28 @@ def contract_prepare() -> None:
     printer_config = _contract_source(CONTRACT_PRINTER_CONFIG)
     klove_config = _contract_source(CONTRACT_KLOVE_CONFIG)
     contract_gcode = _contract_source(CONTRACT_GCODE)
-    _wait_printer_ready(900)
     api_key = _moonraker_api_key()
+    # A stock RatOS image has no configured virtual printer, so Klippy cannot
+    # be ready until this exact COW-only fixture is installed and restarted.
+    _upload_contract_file(
+        api_key,
+        root="config",
+        filename="printer.cfg",
+        content=printer_config,
+        expect_print_status=False,
+    )
+    _verify_remote_contract_file(
+        api_key, root="config", filename="printer.cfg", expected=printer_config
+    )
+    restart = _http_json(
+        "/printer/restart",
+        method="POST",
+        body=b"{}",
+        headers=_api_headers(api_key, content_type="application/json"),
+    )
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    _wait_printer_ready(900)
     moonraker_config = _replace_moonraker_configuration(api_key)
     _wait_printer_ready(300, api_key)
     invalid_status, _invalid_body = _http_request(
@@ -871,20 +891,10 @@ def contract_prepare() -> None:
         raise RuntimeError("RatOS did not reject an invalid Moonraker API key")
     _upload_contract_file(
         api_key,
-        root="config",
-        filename="printer.cfg",
-        content=printer_config,
-        expect_print_status=False,
-    )
-    _upload_contract_file(
-        api_key,
         root="gcodes",
         filename="contract.gcode",
         content=contract_gcode,
         expect_print_status=True,
-    )
-    _verify_remote_contract_file(
-        api_key, root="config", filename="printer.cfg", expected=printer_config
     )
     _verify_remote_contract_file(
         api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
