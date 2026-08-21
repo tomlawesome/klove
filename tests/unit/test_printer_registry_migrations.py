@@ -10,18 +10,55 @@ from pathlib import Path
 
 import pytest
 
-from klove.domain.onboarding import RegisteredPrinter, RegistryOperationRecord
+from klove.domain.onboarding import (
+    RegisteredPrinter,
+    RegistryOperationRecord,
+    RegistryOperationState,
+)
+from klove.domain.registry_history import canonical_identity_json, mapping_fingerprint
 from klove.persistence.printer_registry import PrinterStore, _operation_row, _printer_row
 from klove.persistence.printer_registry_errors import RegistryStoreError
 from klove.persistence.printer_registry_migrations import (
+    V1_TO_V2,
     RegistryMigrationStep,
     _apply_plan,
+    _read_v1_records,
     _user_version,
+    _validate_history,
+    _validate_profile_history,
     ensure_registry_schema,
+    validate_v1_source,
+    validate_v2,
+)
+from klove.persistence.printer_registry_schema import (
+    _MAPPING_HISTORY_COLUMNS,
+    _METADATA_TABLE_SQL,
+    _OPERATION_INDEX_SQL,
+    _OPERATION_TABLE_SQL,
+    _PRINTER_TABLE_SQL,
+    _PROFILE_HISTORY_COLUMNS,
+    _SCHEMA_VERSION_V1,
+    _SCHEMA_VERSION_V2,
+    _initialize_schema_v2,
+    _validate_schema_v2_structure,
 )
 from klove.persistence.secret_store import SecretStore
 
+from ..onboarding_helpers import OTHER_PRINTER_UUID, operation, printer, safety_profile
+
 FIXTURE_DIRECTORY = Path(__file__).parents[1] / "fixtures" / "registry-migrations"
+
+
+def _initialize_v1(connection: sqlite3.Connection, key_identity: str) -> None:
+    connection.execute(_PRINTER_TABLE_SQL)
+    connection.execute(_OPERATION_TABLE_SQL)
+    connection.execute(_OPERATION_INDEX_SQL)
+    connection.execute(_METADATA_TABLE_SQL)
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("request_hmac_key_sha256", key_identity),
+    )
+    connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V1}")
 
 
 def _version(connection: sqlite3.Connection) -> int:
@@ -319,8 +356,10 @@ def test_v1_fixture_digest_records_and_ephemeral_secrets_are_exact(tmp_path: Pat
     assert printer.moonraker_credential_ref is not None
     assert printer.compatibility_credential_ref is not None
     database = tmp_path / "registry.sqlite3"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        _initialize_v1(connection, secret_store.key_identity)
+    database.chmod(0o600)
     store = PrinterStore(database, secret_store)
-    store.initialize()
     secret_store.write(printer.moonraker_credential_ref, moonraker_value, minimum_length=32)
     secret_store.write(
         printer.compatibility_credential_ref,
@@ -355,3 +394,459 @@ def test_v1_fixture_digest_records_and_ephemeral_secrets_are_exact(tmp_path: Pat
     )
     assert compatibility_value.encode() not in fixture_bytes
     assert compatibility_value.encode() not in database.read_bytes()
+
+
+def test_v2_schema_has_exact_composite_keys_and_immutable_triggers() -> None:
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_schema_v2(connection, "a" * 64)
+    _validate_schema_v2_structure(connection)
+    assert tuple(
+        row[1] for row in connection.execute("PRAGMA table_info(registry_mapping_history)")
+    ) == (*_MAPPING_HISTORY_COLUMNS,)
+    assert tuple(
+        row[5] for row in connection.execute("PRAGMA table_info(registry_mapping_history)")
+    ) == (
+        1,
+        2,
+        0,
+        0,
+        0,
+    )
+    assert tuple(
+        row[1] for row in connection.execute("PRAGMA table_info(registry_profile_history)")
+    ) == (*_PROFILE_HISTORY_COLUMNS,)
+    assert tuple(
+        row[5] for row in connection.execute("PRAGMA table_info(registry_profile_history)")
+    ) == (
+        1,
+        2,
+        3,
+        0,
+        0,
+        4,
+        0,
+    )
+    connection.execute(
+        """
+        INSERT INTO registry_mapping_history VALUES (?, ?, ?, ?, ?)
+        """,
+        ("11111111-1111-4111-8111-111111111111", 1, 0, "a" * 64, "{}"),
+    )
+    connection.execute(
+        """
+        INSERT INTO registry_profile_history VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            "profile",
+            1,
+            "b" * 64,
+            "baseline",
+            "{}",
+        ),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("UPDATE registry_mapping_history SET mapping_json = '{}'")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("DELETE FROM registry_mapping_history")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("UPDATE registry_profile_history SET profile_json = '{}' ")
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("DELETE FROM registry_profile_history")
+    connection.close()
+
+
+def test_v1_to_v2_backfill_is_fixture_bound_and_reopens_exactly(tmp_path: Path) -> None:
+    fixture_path = FIXTURE_DIRECTORY / "v2.json"
+    assert (
+        hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        == ((FIXTURE_DIRECTORY / "v2.sha256").read_text(encoding="ascii").split()[0])
+    )
+    document = json.loads((FIXTURE_DIRECTORY / "v1.json").read_bytes())
+    printer = RegisteredPrinter.model_validate_json(json.dumps(document["printer"]))
+    operation = RegistryOperationRecord.model_validate_json(json.dumps(document["operation"]))
+    secret_directory = tmp_path / "registry-secrets"
+    secret_directory.mkdir(mode=0o700)
+    secrets = SecretStore(secret_directory, random_bytes=lambda length: b"k" * length)
+    secrets.initialize()
+    database = tmp_path / "registry.sqlite3"
+    with closing(sqlite3.connect(tmp_path / "registry.sqlite3")) as connection, connection:
+        _initialize_v1(connection, secrets.key_identity)
+        connection.execute(
+            "INSERT INTO registry_printers VALUES (?, ?, ?, ?, ?, ?, ?)", _printer_row(printer)
+        )
+        connection.execute(
+            "INSERT INTO registry_operations VALUES (?, ?, ?, ?, ?, ?)", _operation_row(operation)
+        )
+    database.chmod(0o600)
+    with closing(
+        sqlite3.connect(tmp_path / "registry.sqlite3", isolation_level=None)
+    ) as connection:
+        ensure_registry_schema(
+            connection,
+            current_version=_SCHEMA_VERSION_V2,
+            initialize_current=lambda _target: None,
+            validators={_SCHEMA_VERSION_V1: validate_v1_source, _SCHEMA_VERSION_V2: validate_v2},
+            steps=(V1_TO_V2,),
+        )
+        assert _version(connection) == _SCHEMA_VERSION_V2
+        expected = json.loads((FIXTURE_DIRECTORY / "v2.json").read_bytes())
+        mapping = connection.execute(
+            """
+            SELECT printer_uuid, registry_revision, observed_at_unix_ms,
+                   mapping_fingerprint, mapping_json
+            FROM registry_mapping_history
+            """
+        ).fetchall()
+        profiles = connection.execute(
+            """
+            SELECT printer_uuid, registry_revision, slicer_profile_id,
+                   generation, profile_fingerprint, event, profile_json
+            FROM registry_profile_history
+            """
+        ).fetchall()
+        expected_mapping = expected["mapping_history"][0]
+        assert mapping == [
+            (
+                expected_mapping["printer_uuid"],
+                expected_mapping["registry_revision"],
+                expected_mapping["observed_at_unix_ms"],
+                expected_mapping["mapping_fingerprint"],
+                expected_mapping["mapping_json"],
+            )
+        ]
+        expected_profile = expected["profile_history"][0]
+        assert profiles == [
+            (
+                expected_profile["printer_uuid"],
+                expected_profile["registry_revision"],
+                expected_profile["slicer_profile_id"],
+                expected_profile["generation"],
+                expected_profile["profile_fingerprint"],
+                expected_profile["event"],
+                expected_profile["profile_json"],
+            )
+        ]
+        validate_v2(connection)
+    store = PrinterStore(database, secrets)
+    assert store.get(printer.printer_uuid) == printer
+
+
+def _fixture_v2_connection() -> tuple[sqlite3.Connection, RegisteredPrinter]:
+    document = json.loads((FIXTURE_DIRECTORY / "v1.json").read_bytes())
+    fixture_printer = RegisteredPrinter.model_validate_json(json.dumps(document["printer"]))
+    fixture_operation = RegistryOperationRecord.model_validate_json(
+        json.dumps(document["operation"])
+    )
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_v1(connection, "a" * 64)
+    connection.execute(
+        "INSERT INTO registry_printers VALUES (?, ?, ?, ?, ?, ?, ?)",
+        _printer_row(fixture_printer),
+    )
+    connection.execute(
+        "INSERT INTO registry_operations VALUES (?, ?, ?, ?, ?, ?)",
+        _operation_row(fixture_operation),
+    )
+    ensure_registry_schema(
+        connection,
+        current_version=_SCHEMA_VERSION_V2,
+        initialize_current=lambda _target: None,
+        validators={_SCHEMA_VERSION_V1: validate_v1_source, _SCHEMA_VERSION_V2: validate_v2},
+        steps=(V1_TO_V2,),
+    )
+    return connection, fixture_printer
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "noncanonical",
+        "observed",
+        "fingerprint",
+        "future_revision",
+        "unknown_printer",
+    ],
+)
+def test_v2_validator_rejects_mapping_corruption(case: str) -> None:
+    connection, fixture_printer = _fixture_v2_connection()
+    connection.execute("DROP TRIGGER registry_mapping_history_no_update")
+    connection.execute("DROP TRIGGER registry_mapping_history_no_delete")
+    if case == "missing":
+        connection.execute("DELETE FROM registry_mapping_history")
+    elif case == "noncanonical":
+        connection.execute("UPDATE registry_mapping_history SET mapping_json = mapping_json || ' '")
+    elif case == "observed":
+        connection.execute(
+            "UPDATE registry_mapping_history SET observed_at_unix_ms = observed_at_unix_ms + 1"
+        )
+    elif case == "fingerprint":
+        connection.execute(
+            "UPDATE registry_mapping_history SET mapping_fingerprint = ?", ("a" * 64,)
+        )
+    elif case == "future_revision":
+        connection.execute(
+            "UPDATE registry_mapping_history SET registry_revision = ?",
+            (fixture_printer.revision + 1,),
+        )
+    else:
+        connection.execute(
+            "UPDATE registry_mapping_history SET printer_uuid = ?", (OTHER_PRINTER_UUID,)
+        )
+    with pytest.raises(RegistryStoreError):
+        _validate_history(connection, (fixture_printer,))
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "noncanonical",
+        "generation",
+        "fingerprint",
+        "future_revision",
+        "unknown_printer",
+        "unknown_event",
+    ],
+)
+def test_v2_validator_rejects_profile_corruption(case: str) -> None:
+    connection, fixture_printer = _fixture_v2_connection()
+    connection.execute("DROP TRIGGER registry_profile_history_no_update")
+    connection.execute("DROP TRIGGER registry_profile_history_no_delete")
+    if case == "missing":
+        connection.execute("DELETE FROM registry_profile_history")
+    elif case == "noncanonical":
+        connection.execute("UPDATE registry_profile_history SET profile_json = profile_json || ' '")
+    elif case == "generation":
+        connection.execute("UPDATE registry_profile_history SET generation = generation + 1")
+    elif case == "fingerprint":
+        connection.execute(
+            "UPDATE registry_profile_history SET profile_fingerprint = ?", ("a" * 64,)
+        )
+    elif case == "future_revision":
+        connection.execute(
+            "UPDATE registry_profile_history SET registry_revision = ?",
+            (fixture_printer.revision + 1,),
+        )
+    elif case == "unknown_printer":
+        connection.execute(
+            "UPDATE registry_profile_history SET printer_uuid = ?", (OTHER_PRINTER_UUID,)
+        )
+    else:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute("UPDATE registry_profile_history SET event = 'unknown'")
+    with pytest.raises(RegistryStoreError):
+        _validate_history(connection, (fixture_printer,))
+    connection.close()
+
+
+def test_mapping_history_requires_strictly_ordered_changed_observations() -> None:
+    connection, fixture_printer = _fixture_v2_connection()
+    connection.execute("DROP TRIGGER registry_mapping_history_no_update")
+    changed = fixture_printer.identity.model_copy(
+        update={"server_hostname": "changed", "observed_at_unix_ms": 900}
+    )
+    connection.execute(
+        """
+        INSERT INTO registry_mapping_history VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            fixture_printer.printer_uuid,
+            fixture_printer.revision + 1,
+            changed.observed_at_unix_ms,
+            mapping_fingerprint(changed),
+            canonical_identity_json(changed),
+        ),
+    )
+    current = fixture_printer.model_copy(
+        update={"identity": changed, "revision": 2, "updated_at_unix_ms": 1_100}
+    )
+    with pytest.raises(RegistryStoreError):
+        _validate_history(connection, (current,))
+    connection.close()
+
+
+def test_mapping_history_must_end_at_current_mapping_and_not_postdate_it() -> None:
+    connection, fixture_printer = _fixture_v2_connection()
+    changed = fixture_printer.identity.model_copy(
+        update={"server_hostname": "changed", "observed_at_unix_ms": 901}
+    )
+    current = fixture_printer.model_copy(
+        update={"identity": changed, "revision": 2, "updated_at_unix_ms": 1_100}
+    )
+    with pytest.raises(RegistryStoreError):
+        _validate_history(connection, (current,))
+
+    older = fixture_printer.model_copy(
+        update={
+            "identity": fixture_printer.identity.model_copy(update={"observed_at_unix_ms": 899})
+        }
+    )
+    with pytest.raises(RegistryStoreError):
+        _validate_history(connection, (older,))
+    connection.close()
+
+
+def test_profile_history_state_machine_rejects_impossible_sequences() -> None:
+    original = safety_profile()
+    replacement = original.model_copy(update={"generation": 2})
+    identity_key = (original.printer_uuid, original.slicer_profile_id)
+    fingerprint = "a" * 64
+    invalid_histories = (
+        {
+            identity_key: [
+                (1, 1, fingerprint, "baseline", original),
+                (2, 1, fingerprint, "baseline", original),
+            ]
+        },
+        {identity_key: [(1, 1, fingerprint, "retired", original)]},
+        {
+            identity_key: [
+                (1, 1, fingerprint, "baseline", original),
+                (2, 2, fingerprint, "bound", replacement),
+            ]
+        },
+        {
+            identity_key: [
+                (1, 1, fingerprint, "baseline", original),
+                (2, 1, fingerprint, "retired", original),
+                (3, 1, fingerprint, "bound", original),
+            ]
+        },
+    )
+    for history in invalid_histories:
+        assert not _validate_profile_history(history, {original.printer_uuid: printer()})
+
+
+@pytest.mark.parametrize("case", ["extra_table", "extra_index", "missing_trigger", "wrong_trigger"])
+def test_v2_structure_rejects_catalog_drift(case: str) -> None:
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_schema_v2(connection, "a" * 64)
+    if case == "extra_table":
+        connection.execute("CREATE TABLE extra (value TEXT) STRICT")
+    elif case == "extra_index":
+        connection.execute(
+            "CREATE INDEX extra_history_index ON registry_mapping_history(observed_at_unix_ms)"
+        )
+    elif case == "missing_trigger":
+        connection.execute("DROP TRIGGER registry_mapping_history_no_update")
+    else:
+        connection.execute("DROP TRIGGER registry_mapping_history_no_update")
+        connection.execute(
+            """
+            CREATE TRIGGER registry_mapping_history_no_update
+            BEFORE UPDATE ON registry_mapping_history
+            BEGIN SELECT RAISE(ABORT, 'different'); END
+            """
+        )
+    with pytest.raises(RegistryStoreError):
+        _validate_schema_v2_structure(connection)
+    connection.close()
+
+
+def test_v1_aborted_create_without_printer_migrates_safely() -> None:
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_v1(connection, "a" * 64)
+    pending = operation()
+    aborted = RegistryOperationRecord.model_validate(
+        {
+            **pending.model_dump(mode="python"),
+            "state": RegistryOperationState.ABORTED,
+            "error_code": "interrupted",
+        }
+    )
+    connection.execute(
+        "INSERT INTO registry_operations VALUES (?, ?, ?, ?, ?, ?)", _operation_row(aborted)
+    )
+    ensure_registry_schema(
+        connection,
+        current_version=_SCHEMA_VERSION_V2,
+        initialize_current=lambda _target: None,
+        validators={_SCHEMA_VERSION_V1: validate_v1_source, _SCHEMA_VERSION_V2: validate_v2},
+        steps=(V1_TO_V2,),
+    )
+    assert _version(connection) == _SCHEMA_VERSION_V2
+    connection.close()
+
+
+def test_v1_record_reader_wraps_sql_failures() -> None:
+    class Broken:
+        def execute(self, *_args: object) -> None:
+            raise sqlite3.OperationalError
+
+    with pytest.raises(RegistryStoreError):
+        _read_v1_records(Broken())  # type: ignore[arg-type]
+
+
+class _StaticRows:
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self.rows = rows
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return self.rows
+
+
+class _HistoryRows:
+    def __init__(
+        self,
+        mapping_rows: list[tuple[object, ...]],
+        profile_rows: list[tuple[object, ...]],
+    ) -> None:
+        self.mapping_rows = mapping_rows
+        self.profile_rows = profile_rows
+
+    def execute(self, query: str, *_args: object) -> _StaticRows:
+        return _StaticRows(self.mapping_rows if "mapping_history" in query else self.profile_rows)
+
+
+def test_v2_history_validator_rejects_malformed_row_shapes_and_wraps_sql() -> None:
+    current = printer()
+    valid_mapping = (
+        current.printer_uuid,
+        current.revision,
+        current.identity.observed_at_unix_ms,
+        mapping_fingerprint(current.identity),
+        canonical_identity_json(current.identity),
+    )
+    with pytest.raises(RegistryStoreError):
+        _validate_history(_HistoryRows([()], []), (current,))  # type: ignore[arg-type]
+    with pytest.raises(RegistryStoreError):
+        _validate_history(
+            _HistoryRows([valid_mapping], [()]),  # type: ignore[arg-type]
+            (current,),
+        )
+
+    class Broken:
+        def execute(self, *_args: object) -> None:
+            raise sqlite3.OperationalError
+
+    with pytest.raises(RegistryStoreError):
+        _validate_history(Broken(), (current,))  # type: ignore[arg-type]
+
+
+def test_v1_reader_preserves_bounded_store_errors() -> None:
+    class Broken:
+        def execute(self, *_args: object) -> None:
+            raise RegistryStoreError
+
+    with pytest.raises(RegistryStoreError):
+        _read_v1_records(Broken())  # type: ignore[arg-type]
+
+
+def test_v1_and_v2_structure_reject_integrity_and_catalog_drift() -> None:
+    v1 = sqlite3.connect(":memory:", isolation_level=None)
+    _initialize_v1(v1, "a" * 64)
+    v1.execute("CREATE TABLE extra (value TEXT) STRICT")
+    with pytest.raises(RegistryStoreError):
+        validate_v1_source(v1)
+    v1.close()
+
+    class QuickCheckFailure:
+        def execute(self, *_args: object) -> _StaticRows:
+            return _StaticRows([("not-ok",)])
+
+    with pytest.raises(RegistryStoreError):
+        _validate_schema_v2_structure(QuickCheckFailure())  # type: ignore[arg-type]

@@ -8,7 +8,9 @@ from typing import Final, cast
 
 from klove.persistence.printer_registry_errors import RegistryStoreError
 
-_SCHEMA_VERSION: Final = 1
+_SCHEMA_VERSION: Final = 2
+_SCHEMA_VERSION_V1: Final = 1
+_SCHEMA_VERSION_V2: Final = 2
 _PRINTER_COLUMNS: Final = (
     "printer_uuid",
     "endpoint",
@@ -86,6 +88,94 @@ CREATE TABLE registry_metadata (
     value TEXT NOT NULL
 ) STRICT
 """
+_MAPPING_HISTORY_COLUMNS: Final = (
+    "printer_uuid",
+    "registry_revision",
+    "observed_at_unix_ms",
+    "mapping_fingerprint",
+    "mapping_json",
+)
+_MAPPING_HISTORY_DEFINITION: Final = (
+    ("printer_uuid", "TEXT", 1, 1),
+    ("registry_revision", "INTEGER", 1, 2),
+    ("observed_at_unix_ms", "INTEGER", 1, 0),
+    ("mapping_fingerprint", "TEXT", 1, 0),
+    ("mapping_json", "TEXT", 1, 0),
+)
+_MAPPING_HISTORY_TABLE_SQL: Final = """
+CREATE TABLE registry_mapping_history (
+    printer_uuid TEXT NOT NULL,
+    registry_revision INTEGER NOT NULL CHECK (registry_revision >= 1),
+    observed_at_unix_ms INTEGER NOT NULL CHECK (observed_at_unix_ms >= 0),
+    mapping_fingerprint TEXT NOT NULL CHECK (
+        length(mapping_fingerprint) = 64
+        AND mapping_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    mapping_json TEXT NOT NULL,
+    PRIMARY KEY (printer_uuid, registry_revision)
+) STRICT
+"""
+_PROFILE_HISTORY_COLUMNS: Final = (
+    "printer_uuid",
+    "registry_revision",
+    "slicer_profile_id",
+    "generation",
+    "profile_fingerprint",
+    "event",
+    "profile_json",
+)
+_PROFILE_HISTORY_DEFINITION: Final = (
+    ("printer_uuid", "TEXT", 1, 1),
+    ("registry_revision", "INTEGER", 1, 2),
+    ("slicer_profile_id", "TEXT", 1, 3),
+    ("generation", "INTEGER", 1, 0),
+    ("profile_fingerprint", "TEXT", 1, 0),
+    ("event", "TEXT", 1, 4),
+    ("profile_json", "TEXT", 1, 0),
+)
+_PROFILE_HISTORY_TABLE_SQL: Final = """
+CREATE TABLE registry_profile_history (
+    printer_uuid TEXT NOT NULL,
+    registry_revision INTEGER NOT NULL CHECK (registry_revision >= 1),
+    slicer_profile_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    profile_fingerprint TEXT NOT NULL CHECK (
+        length(profile_fingerprint) = 64
+        AND profile_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+    event TEXT NOT NULL CHECK (event IN ('baseline', 'bound', 'retired')),
+    profile_json TEXT NOT NULL,
+    PRIMARY KEY (printer_uuid, registry_revision, slicer_profile_id, event)
+) STRICT
+"""
+_MAPPING_HISTORY_UPDATE_TRIGGER_SQL: Final = """
+CREATE TRIGGER registry_mapping_history_no_update
+BEFORE UPDATE ON registry_mapping_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry mapping history is immutable');
+END
+"""
+_MAPPING_HISTORY_DELETE_TRIGGER_SQL: Final = """
+CREATE TRIGGER registry_mapping_history_no_delete
+BEFORE DELETE ON registry_mapping_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry mapping history is immutable');
+END
+"""
+_PROFILE_HISTORY_UPDATE_TRIGGER_SQL: Final = """
+CREATE TRIGGER registry_profile_history_no_update
+BEFORE UPDATE ON registry_profile_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry profile history is immutable');
+END
+"""
+_PROFILE_HISTORY_DELETE_TRIGGER_SQL: Final = """
+CREATE TRIGGER registry_profile_history_no_delete
+BEFORE DELETE ON registry_profile_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry profile history is immutable');
+END
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +215,44 @@ _OPERATION_SCHEMA: Final = _TableSchema(
     _OPERATION_TABLE_SQL,
     frozenset({(("idempotency_key",), True), (("printer_uuid",), False)}),
 )
+_MAPPING_HISTORY_SCHEMA: Final = _TableSchema(
+    "registry_mapping_history",
+    _MAPPING_HISTORY_COLUMNS,
+    _MAPPING_HISTORY_DEFINITION,
+    _MAPPING_HISTORY_TABLE_SQL,
+    frozenset({(("printer_uuid", "registry_revision"), True)}),
+)
+_PROFILE_HISTORY_SCHEMA: Final = _TableSchema(
+    "registry_profile_history",
+    _PROFILE_HISTORY_COLUMNS,
+    _PROFILE_HISTORY_DEFINITION,
+    _PROFILE_HISTORY_TABLE_SQL,
+    frozenset({(("printer_uuid", "registry_revision", "slicer_profile_id", "event"), True)}),
+)
+_V2_TRIGGER_SQL: Final = {
+    "registry_mapping_history_no_update": _MAPPING_HISTORY_UPDATE_TRIGGER_SQL,
+    "registry_mapping_history_no_delete": _MAPPING_HISTORY_DELETE_TRIGGER_SQL,
+    "registry_profile_history_no_update": _PROFILE_HISTORY_UPDATE_TRIGGER_SQL,
+    "registry_profile_history_no_delete": _PROFILE_HISTORY_DELETE_TRIGGER_SQL,
+}
+
+
+def _initialize_schema_v2(connection: sqlite3.Connection, key_identity: str) -> None:
+    """Create the complete empty v2 catalog inside the caller's transaction."""
+    connection.execute(_PRINTER_TABLE_SQL)
+    connection.execute(_OPERATION_TABLE_SQL)
+    connection.execute(_OPERATION_INDEX_SQL)
+    connection.execute(_METADATA_TABLE_SQL)
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("request_hmac_key_sha256", key_identity),
+    )
+    connection.execute(_MAPPING_HISTORY_TABLE_SQL)
+    connection.execute(_PROFILE_HISTORY_TABLE_SQL)
+    connection.execute(_MAPPING_HISTORY_UPDATE_TRIGGER_SQL)
+    connection.execute(_MAPPING_HISTORY_DELETE_TRIGGER_SQL)
+    connection.execute(_PROFILE_HISTORY_UPDATE_TRIGGER_SQL)
+    connection.execute(_PROFILE_HISTORY_DELETE_TRIGGER_SQL)
 
 
 def _pragma_integer(connection: sqlite3.Connection, name: str) -> int:
@@ -155,6 +283,52 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
     _validate_table(connection, _METADATA_SCHEMA)
     _validate_table(connection, _PRINTER_SCHEMA)
     _validate_table(connection, _OPERATION_SCHEMA)
+
+
+def _validate_schema_v2_structure(connection: sqlite3.Connection) -> None:
+    """Validate the exact v2 catalog without interpreting its row payloads."""
+    if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+        raise RegistryStoreError
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [
+        ("registry_mapping_history",),
+        ("registry_metadata",),
+        ("registry_operations",),
+        ("registry_printers",),
+        ("registry_profile_history",),
+    ]:
+        raise RegistryStoreError
+    _validate_table(connection, _METADATA_SCHEMA)
+    _validate_table(connection, _PRINTER_SCHEMA)
+    _validate_table(connection, _OPERATION_SCHEMA)
+    _validate_table(connection, _MAPPING_HISTORY_SCHEMA)
+    _validate_table(connection, _PROFILE_HISTORY_SCHEMA)
+    trigger_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'trigger'
+        ORDER BY name
+        """
+    ).fetchall()
+    if trigger_names != [(name,) for name in sorted(_V2_TRIGGER_SQL)]:
+        raise RegistryStoreError
+    for name, expected_sql in _V2_TRIGGER_SQL.items():
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)
+        ).fetchone()
+        if (
+            row is None
+            or len(row) != 1
+            or type(row[0]) is not str
+            or _normalize_sql(row[0]) != _normalize_sql(expected_sql)
+        ):
+            raise RegistryStoreError
 
 
 def _validate_table(connection: sqlite3.Connection, schema: _TableSchema) -> None:

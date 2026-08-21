@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -11,6 +12,12 @@ from klove.domain.onboarding import (
     RegisteredPrinter,
     RegistryOperationRecord,
     RegistryOperationState,
+)
+from klove.domain.registry_history import (
+    MappingHistoryCursor,
+    MappingHistoryRecord,
+    ProfileHistoryCursor,
+    ProfileHistoryRecord,
 )
 from klove.persistence.printer_registry_codec import (
     _decode_operation,
@@ -26,7 +33,13 @@ from klove.persistence.printer_registry_errors import (
     RegistryStoreError,
     RegistryTransitionError,
 )
-from klove.persistence.printer_registry_migrations import ensure_registry_schema
+from klove.persistence.printer_registry_history import SqliteRegistryHistory
+from klove.persistence.printer_registry_migrations import (
+    MIGRATION_STEPS,
+    ensure_registry_schema,
+    validate_v1_source,
+    validate_v2,
+)
 from klove.persistence.printer_registry_reconciliation import (
     _all_operations,
     _cleanup_operation,
@@ -35,10 +48,10 @@ from klove.persistence.printer_registry_reconciliation import (
 from klove.persistence.printer_registry_schema import (
     _METADATA_SCHEMA,
     _METADATA_TABLE_SQL,
-    _OPERATION_INDEX_SQL,
-    _OPERATION_TABLE_SQL,
-    _PRINTER_TABLE_SQL,
     _SCHEMA_VERSION,
+    _SCHEMA_VERSION_V1,
+    _SCHEMA_VERSION_V2,
+    _initialize_schema_v2,
     _pragma_integer,
     _validate_metadata,
     _validate_schema,
@@ -83,6 +96,8 @@ __all__ = (
     "_validate_transition",
 )
 
+_HISTORY = SqliteRegistryHistory()
+
 
 class PrinterStore:
     """Persist exact printer records and secret-free idempotent mutation evidence."""
@@ -100,24 +115,25 @@ class PrinterStore:
             try:
 
                 def initialize_current(target: sqlite3.Connection) -> None:
-                    target.execute(_PRINTER_TABLE_SQL)
-                    target.execute(_OPERATION_TABLE_SQL)
-                    target.execute(_OPERATION_INDEX_SQL)
-                    target.execute(_METADATA_TABLE_SQL)
-                    target.execute(
-                        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
-                        ("request_hmac_key_sha256", self._secrets.key_identity),
-                    )
+                    _initialize_schema_v2(target, self._secrets.key_identity)
+
+                def validate_v1(target: sqlite3.Connection) -> None:
+                    validate_v1_source(target)
+                    _validate_metadata(target, self._secrets.key_identity)
 
                 def validate_current(target: sqlite3.Connection) -> None:
-                    _validate_schema(target)
+                    validate_v2(target)
                     _validate_metadata(target, self._secrets.key_identity)
 
                 ensure_registry_schema(
                     connection,
                     current_version=_SCHEMA_VERSION,
                     initialize_current=initialize_current,
-                    validators={_SCHEMA_VERSION: validate_current},
+                    validators={
+                        _SCHEMA_VERSION_V1: validate_v1,
+                        _SCHEMA_VERSION_V2: validate_current,
+                    },
+                    steps=MIGRATION_STEPS,
                 )
             finally:
                 connection.close()
@@ -200,6 +216,54 @@ class PrinterStore:
                 (printer_uuid,),
             ).fetchall()
             return tuple(_decode_operation(row) for row in rows)
+        except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
+            raise RegistryStoreError from exc
+        finally:
+            connection.close()
+
+    def mapping_history(
+        self,
+        printer_uuid: str,
+        *,
+        cursor: MappingHistoryCursor | None = None,
+        limit: int = 100,
+    ) -> tuple[MappingHistoryRecord, ...]:
+        """Return one bounded stable audit page for an exact printer."""
+        printer_uuid = _require_printer_uuid(printer_uuid)
+        connection = self._connect()
+        try:
+            return _HISTORY.mapping_page(
+                connection,
+                printer_uuid,
+                cursor=cursor,
+                limit=limit,
+            )
+        except RegistryStoreError:
+            raise
+        except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
+            raise RegistryStoreError from exc
+        finally:
+            connection.close()
+
+    def profile_history(
+        self,
+        printer_uuid: str,
+        *,
+        cursor: ProfileHistoryCursor | None = None,
+        limit: int = 100,
+    ) -> tuple[ProfileHistoryRecord, ...]:
+        """Return one bounded stable profile-audit page for an exact printer."""
+        printer_uuid = _require_printer_uuid(printer_uuid)
+        connection = self._connect()
+        try:
+            return _HISTORY.profile_page(
+                connection,
+                printer_uuid,
+                cursor=cursor,
+                limit=limit,
+            )
+        except RegistryStoreError:
+            raise
         except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
             raise RegistryStoreError from exc
         finally:
@@ -304,7 +368,7 @@ class PrinterStore:
                 )
             except ValidationError as exc:
                 raise RegistryTransitionError from exc
-            _commit_transaction(connection, operation, result, committed)
+            _commit_transaction(connection, operation, result, committed, _HISTORY)
         except RegistryStoreError:
             raise
         except sqlite3.IntegrityError as exc:
@@ -359,7 +423,7 @@ class PrinterStore:
                 target = sqlite3.connect(destination, timeout=5, isolation_level=None)
                 try:
                     source.backup(target)
-                    _validate_schema(target)
+                    validate_v2(target)
                     _validate_metadata(target, self._secrets.key_identity)
                 finally:
                     target.close()
@@ -402,3 +466,15 @@ class PrinterStore:
             if isinstance(exc, RegistryStoreError):
                 raise
             raise RegistryStoreError from exc
+
+
+def _require_printer_uuid(value: str) -> str:
+    if type(value) is not str:
+        raise RegistryStoreError
+    try:
+        parsed = UUID(value)
+    except ValueError as exc:
+        raise RegistryStoreError from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise RegistryStoreError
+    return value

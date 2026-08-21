@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Protocol
 
 from pydantic import ValidationError
 
@@ -15,6 +15,11 @@ from klove.domain.onboarding import (
     RegisteredPrinter,
     RegistryOperationKind,
     RegistryOperationRecord,
+)
+from klove.domain.registry_history import (
+    RegistryHistoryAppendPlan,
+    RegistryHistoryValidationError,
+    build_registry_history_append_plan,
 )
 from klove.persistence.printer_registry_codec import (
     _decode_operation,
@@ -34,11 +39,31 @@ from klove.persistence.secret_store import SecretStore
 _COMPATIBILITY_SECRET_PATTERN: Final = re.compile(r"^[A-Za-z0-9_-]{20}$")
 
 
+class RegistryHistoryWriter(Protocol):
+    """Schema-owned adapter for append-only history inside this transaction."""
+
+    def retained_profile_generations(
+        self,
+        connection: sqlite3.Connection,
+        printer_uuid: str,
+        profile_ids: tuple[str, ...],
+    ) -> Mapping[str, int]:
+        """Return each exact profile id's maximum retained generation."""
+
+    def append(
+        self,
+        connection: sqlite3.Connection,
+        plan: RegistryHistoryAppendPlan,
+    ) -> None:
+        """Append the already validated rows without committing the transaction."""
+
+
 def _commit_transaction(
     connection: sqlite3.Connection,
     operation: RegistryOperationRecord,
     result: RegisteredPrinter,
     committed: RegistryOperationRecord,
+    history: RegistryHistoryWriter | None = None,
 ) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -62,6 +87,22 @@ def _commit_transaction(
         ).fetchone()
         current = None if current_row is None else _decode_printer(current_row)
         _validate_transition(operation, current, result)
+        history_plan = None
+        if history is not None:
+            profile_ids = tuple(
+                sorted(
+                    {
+                        profile.slicer_profile_id
+                        for printer in (current, result)
+                        if printer is not None
+                        for profile in printer.safety_profiles
+                    }
+                )
+            )
+            retained = history.retained_profile_generations(
+                connection, result.printer_uuid, profile_ids
+            )
+            history_plan = build_registry_history_append_plan(current, result, retained)
         if current is None:
             connection.execute(
                 """
@@ -84,6 +125,12 @@ def _commit_transaction(
             )
             if cursor.rowcount != 1:
                 raise RegistryConflictError
+        if (
+            history is not None
+            and history_plan is not None
+            and (history_plan.mapping is not None or history_plan.profiles)
+        ):
+            history.append(connection, history_plan)
         cursor = connection.execute(
             """
             UPDATE registry_operations
@@ -96,6 +143,9 @@ def _commit_transaction(
         if cursor.rowcount != 1:
             raise RegistryConflictError
         connection.execute("COMMIT")
+    except RegistryHistoryValidationError as exc:
+        connection.execute("ROLLBACK")
+        raise RegistryTransitionError from exc
     except (RegistryStoreError, sqlite3.Error, UnicodeError, ValidationError, ValueError):
         connection.execute("ROLLBACK")
         raise
