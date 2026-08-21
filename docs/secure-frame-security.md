@@ -1,10 +1,9 @@
 # Secure embedded-frame boundary
 
-#77 — secure frame implements only the browser authorization boundary required before
-setup or recovery work may begin. It does not collect printer details, invoke
-Moonraker, create a printer, expose a dashboard or controls, or hand a Grove
-create bundle to a parent. Those workflows and the completion handoff are
-separate slices.
+#77 — secure frame establishes the browser authorization boundary. #78 — setup
+and recovery flow extends it with only the owner choices needed for canonical
+lifecycle operations. It remains neither a dashboard nor a printer-control
+surface, and #79 — completion handoff remains a separate slice.
 
 ## Deployment boundary
 
@@ -76,6 +75,52 @@ After either cancellation or a failed owner exchange the controls remain
 disabled. A new challenge is rejected once a frame is pending, authorized, or
 cancelled.
 
+## Bounded setup and recovery actions
+
+Each frame route is fixed to exactly one lifecycle operation and its matching
+owner session. `/onboarding/setup` creates one printer; `/onboarding/recovery`
+repairs one endpoint/profile binding; the four recovery subroutes rotate the
+Moonraker credential, rotate private compatibility access, disable, or remove
+one printer. They never present a printer list, monitoring status, queue,
+generic settings editor, or controls.
+
+An endpoint displayed or supplied by discovery is advisory only. The owner may
+also enter one exact manual HTTP(S) origin. The browser calls no Moonraker
+address: create, update, and Moonraker-credential rotation call only their
+matching protected lifecycle route, whose canonical service repeats the direct
+bounded probe immediately before commit. The frame never calls `inspect` from a
+create, update, or rotation session; a future standalone inspection screen
+would require its own terminal `inspect` session.
+
+The create and update screens accept one exact UUID, name, endpoint, optional
+Klipper safety-profile binding, and explicit control/dispatch opt-ins. The
+profile fields are sent as the typed canonical profile; dispatch remains denied
+unless its profile and fresh positive capability evidence are present. Recovery
+screens require the exact registered UUID and current revision supplied by the
+owner. Compatibility rotation, disablement, and removal each require an
+explicit local acknowledgement; the lifecycle API remains the authorization
+and transition authority. Successful lifecycle
+responses display only the one public record needed to confirm the operation;
+they never expose credentials, opaque references, raw probe material, or a
+compatibility access value.
+
+An owner session is one operation only. Mutation idempotency is generated in
+transient frame memory, not browser storage, and the required secure UUIDs are
+generated before the owner-session exchange. A safe retry must reuse the same
+exact submitted evidence; changing evidence requires a new secure connection.
+The frame clears a submitted Moonraker credential input immediately after
+starting its same-origin request. Cancellation, terminal success, and uncertain
+cancellation remove lifecycle form DOM, clear owner/Moonraker inputs, and
+discard local session and nonce material. It creates no completion message and
+never sends lifecycle, Moonraker, or compatibility data through `postMessage`.
+
+Before it can issue a lifecycle request, the frame rejects malformed UUIDs,
+revisions, exact text, canonical origins, Moonraker credentials, and safety
+profile fields locally. These locally correctable errors neither dispatch an
+API request nor consume the exact owner session; the owner can correct the
+fields or cancel that same session. Any Moonraker credential input is cleared
+on a local validation failure as well.
+
 ## Browser policy and privacy
 
 Frame documents emit an exact, route-specific CSP with only configured
@@ -98,13 +143,14 @@ slice contains no completion-message encoder or access-code handoff.
 ## Verification and browser dependency
 
 `tests/unit/test_secure_frame.py` exercises the actual aiohttp routes,
-security headers, CORS decoding, cancellation, replay, and the separate
-parent/request-origin bindings. `tests/browser/secure-frame.spec.mjs` serves
-the shipped Klove JS/CSS through a temporary protocol harness to exercise a
-real Chromium parent/frame relationship, hostile and out-of-flow messages,
-expiry/restart/cancellation/parallel flows, top-level and cross-site refusal,
-privacy, keyboard operation, semantics, and responsive embedding. The harness
-is independently authored test infrastructure, not Grove code.
+security headers, CORS decoding, cancellation, replay, all fixed lifecycle
+frame documents, and the separate parent/request-origin bindings.
+`tests/browser/secure-frame.spec.mjs` serves the shipped Klove JS/CSS through a
+temporary protocol harness to exercise a real Chromium parent/frame
+relationship, hostile and out-of-flow messages, lifecycle errors, restart,
+cancellation, all bounded operation forms, privacy, keyboard operation,
+semantics, and responsive embedding. The harness is independently authored
+test infrastructure, not Grove code.
 
 Run browser verification with `npm ci`, `npx playwright install chromium`,
 and `sh scripts/test-browser.sh`. The lockfile records the exact official

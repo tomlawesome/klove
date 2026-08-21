@@ -57,6 +57,10 @@ def install_secure_frame_routes(app: web.Application, handshakes: FrameHandshake
     app.router.add_post(_FRAME_CANCEL_PATH, cancel_frame_handshake)
     app.router.add_get("/onboarding/setup", setup_frame)
     app.router.add_get("/onboarding/recovery", recovery_frame)
+    app.router.add_get("/onboarding/recovery/rotate-moonraker", rotate_moonraker_frame)
+    app.router.add_get("/onboarding/recovery/rotate-compatibility", rotate_compatibility_frame)
+    app.router.add_get("/onboarding/recovery/disable", disable_frame)
+    app.router.add_get("/onboarding/recovery/remove", remove_frame)
     app.router.add_get(f"{_ASSET_PREFIX}secure-frame.js", secure_frame_javascript)
     app.router.add_get(f"{_ASSET_PREFIX}secure-frame.css", secure_frame_stylesheet)
 
@@ -196,13 +200,41 @@ async def cancel_frame_handshake(request: web.Request) -> web.Response:
 
 
 async def setup_frame(request: web.Request) -> web.Response:
-    """Render the original, bounded setup authorization frame."""
-    return _frame_document(request, OnboardingOperation.CREATE, "Set up a printer")
+    """Render the bounded create flow, including direct-probe confirmation."""
+    return _frame_document(request, OnboardingOperation.CREATE, "Register a Klipper printer")
 
 
 async def recovery_frame(request: web.Request) -> web.Response:
-    """Render the original, bounded recovery authorization frame."""
-    return _frame_document(request, OnboardingOperation.UPDATE, "Recover a printer connection")
+    """Render the bounded endpoint/profile recovery flow."""
+    return _frame_document(request, OnboardingOperation.UPDATE, "Repair printer registration")
+
+
+async def rotate_moonraker_frame(request: web.Request) -> web.Response:
+    """Render the bounded Moonraker credential rotation flow."""
+    return _frame_document(
+        request,
+        OnboardingOperation.ROTATE_MOONRAKER,
+        "Replace Moonraker credential",
+    )
+
+
+async def rotate_compatibility_frame(request: web.Request) -> web.Response:
+    """Render the bounded compatibility credential rotation flow."""
+    return _frame_document(
+        request,
+        OnboardingOperation.ROTATE_COMPATIBILITY,
+        "Rotate compatibility access",
+    )
+
+
+async def disable_frame(request: web.Request) -> web.Response:
+    """Render the bounded exact-revision disable flow."""
+    return _frame_document(request, OnboardingOperation.DISABLE, "Disable a printer")
+
+
+async def remove_frame(request: web.Request) -> web.Response:
+    """Render the bounded exact-revision removal flow."""
+    return _frame_document(request, OnboardingOperation.REMOVE, "Remove a disabled printer")
 
 
 async def secure_frame_javascript(_request: web.Request) -> web.Response:
@@ -244,6 +276,10 @@ def _frame_document(
           spellcheck="false" maxlength="4096" required disabled>
         <button id="authorize" type="submit" disabled>Authorize this session</button>
       </form>
+      <section id="lifecycle-panel" hidden aria-labelledby="lifecycle-title">
+        <h2 id="lifecycle-title">Confirm registration details</h2>
+        <p id="lifecycle-guidance"></p>
+      </section>
       <button id="cancel" class="secondary" type="button" disabled>Cancel</button>
       <p id="frame-status" role="status" aria-live="polite"></p>
       <p class="privacy-note">This authorization stays in Klove and is never sent to the host.</p>

@@ -130,25 +130,47 @@ async def test_frame_documents_and_assets_have_exact_private_response_policy(
     frame_client: tuple[TestClient[Any, Any], FrameLifecycle],
 ) -> None:
     client, _lifecycle = frame_client
-    setup = await client.get("/onboarding/setup")
-    recovery = await client.get("/onboarding/recovery")
+    documents = {
+        "/onboarding/setup": ("Register a Klipper printer", "create"),
+        "/onboarding/recovery": ("Repair printer registration", "update"),
+        "/onboarding/recovery/rotate-moonraker": (
+            "Replace Moonraker credential",
+            "rotate_moonraker",
+        ),
+        "/onboarding/recovery/rotate-compatibility": (
+            "Rotate compatibility access",
+            "rotate_compatibility",
+        ),
+        "/onboarding/recovery/disable": ("Disable a printer", "disable"),
+        "/onboarding/recovery/remove": ("Remove a disabled printer", "remove"),
+    }
+    responses = {path: await client.get(path) for path in documents}
     script = await client.get("/onboarding/assets/secure-frame.js")
     stylesheet = await client.get("/onboarding/assets/secure-frame.css")
 
-    for response in (setup, recovery, script, stylesheet):
+    for response in (*responses.values(), script, stylesheet):
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["Referrer-Policy"] == "no-referrer"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["Cross-Origin-Resource-Policy"] == "same-site"
         assert "X-Frame-Options" not in response.headers
-    csp = setup.headers["Content-Security-Policy"]
+    csp = responses["/onboarding/setup"].headers["Content-Security-Policy"]
     assert f"frame-ancestors {PARENT_ORIGIN}" in csp
     assert "*" not in csp and "unsafe-inline" not in csp
     assert "script-src 'self'" in csp and "style-src 'self'" in csp
-    assert "KloveSecureFrame" not in await script.text()
-    assert "access_code" not in await script.text()
-    assert "Set up a printer" in await setup.text()
-    assert "Recover a printer connection" in await recovery.text()
+    source = await script.text()
+    assert "KloveSecureFrame" not in source
+    assert "access_code" not in source
+    assert "klove.frame.complete" not in source
+    assert '"inspect"' not in source
+    assert '"/v1/onboarding/inspect"' not in source
+    assert "fetch(endpoint" not in source
+    assert "localStorage" not in source and "sessionStorage" not in source
+    for path, (heading, operation) in documents.items():
+        document = await responses[path].text()
+        assert heading in document
+        assert f'data-operation="{operation}"' in document
+        assert 'id="lifecycle-panel"' in document
     assert script.headers["Content-Security-Policy"] == "default-src 'none'; base-uri 'none'"
     assert stylesheet.content_type == "text/css"
 
