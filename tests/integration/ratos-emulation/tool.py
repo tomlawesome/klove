@@ -565,7 +565,13 @@ def _replace_moonraker_configuration(api_key: str) -> bytes:
         expected_status=201,
     )
     result = _mapping(response, "Moonraker configuration upload result")
-    if set(result) != {"item", "action"} or result.get("action") != "modify_file":
+    # RatOS Moonraker 0.9.1 returns ``create_file`` for the canonical config
+    # path even after serving its current bytes from that same path.  The
+    # subsequent exact byte read is the authoritative replacement proof.
+    if set(result) != {"item", "action"} or result.get("action") not in {
+        "create_file",
+        "modify_file",
+    }:
         raise RuntimeError("Moonraker did not replace its exact configuration file")
     item = _mapping(result.get("item"), "Moonraker configuration upload item")
     if (

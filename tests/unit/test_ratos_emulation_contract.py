@@ -72,6 +72,70 @@ def test_ratos_authorization_replacement_rejects_ambiguous_configuration(
         tool._untrust_moonraker_clients(configuration)
 
 
+@pytest.mark.parametrize("action", ("create_file", "modify_file"))
+def test_ratos_configuration_upload_accepts_only_exact_file_actions(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    tool = _load_tool()
+    original = b"[authorization]\ntrusted_clients:\n  127.0.0.1\n"
+    replacement = b"[authorization]\ntrusted_clients:\n  192.0.2.0/24\n"
+    uploads: list[dict[str, object]] = []
+
+    monkeypatch.setattr(tool, "_download_contract_file", lambda *_args, **_kwargs: original)
+
+    def http_json(_path: str, **kwargs: object) -> dict[str, object]:
+        uploads.append(kwargs)
+        if len(uploads) == 1:
+            return {
+                "item": {
+                    "root": "config",
+                    "path": "moonraker.conf",
+                    "modified": 1.0,
+                    "size": len(replacement),
+                    "permissions": "rw",
+                },
+                "action": action,
+            }
+        return {"result": "ok"}
+
+    monkeypatch.setattr(tool, "_http_json", http_json)
+    verified: list[bytes] = []
+    monkeypatch.setattr(
+        tool,
+        "_verify_remote_contract_file",
+        lambda *_args, **kwargs: verified.append(kwargs["expected"]),
+    )
+
+    assert tool._replace_moonraker_configuration("a" * 32) == replacement
+    assert verified == [replacement]
+    assert len(uploads) == 2
+
+
+def test_ratos_configuration_upload_rejects_unexpected_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    original = b"[authorization]\ntrusted_clients:\n  127.0.0.1\n"
+    monkeypatch.setattr(tool, "_download_contract_file", lambda *_args, **_kwargs: original)
+    monkeypatch.setattr(
+        tool,
+        "_http_json",
+        lambda *_args, **_kwargs: {
+            "item": {
+                "root": "config",
+                "path": "moonraker.conf",
+                "modified": 1.0,
+                "size": 51,
+                "permissions": "rw",
+            },
+            "action": "delete_file",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="did not replace"):
+        tool._replace_moonraker_configuration("a" * 32)
+
+
 def test_ratos_contract_evidence_rejects_history_phase_substitution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
