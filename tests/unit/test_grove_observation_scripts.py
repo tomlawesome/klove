@@ -29,12 +29,6 @@ def _mock_environment(
         '#!/usr/bin/env sh\nshift\nexec "$@"\n',
     )
     _write_executable(tools / "sleep", "#!/usr/bin/env sh\nexit 0\n")
-    _write_executable(tools / "dd", "#!/usr/bin/env sh\nprintf x\n")
-    _write_executable(
-        tools / "sha256sum",
-        "#!/usr/bin/env sh\n"
-        "printf '%s  -\\n' abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\n",
-    )
     _write_executable(
         tools / "curl",
         """#!/usr/bin/env sh
@@ -118,7 +112,7 @@ def test_lifecycle_uses_the_public_run_sequence_and_exact_bound_cleanup(
         )
         assert up.returncode == 0, up.stderr
         assert (state_dir / "origin").is_file()
-        assert "abcdefgh" not in (state_dir / "origin").read_text(encoding="utf-8")
+        assert "TEST0000" not in (state_dir / "origin").read_text(encoding="utf-8")
 
         down = subprocess.run(  # noqa: S603 -- fixed repository script and generated safe run ID.
             [str(SCRIPTS / "grove-observation-down.sh"), run_id],

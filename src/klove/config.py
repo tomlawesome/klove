@@ -349,6 +349,108 @@ class DispatchConfig(BaseModel):
         return self
 
 
+class GroveBridgeConfig(BaseModel):
+    """Explicit, bounded TLS-only compatibility-listener settings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    listen_host: str = "127.0.0.1"
+    mqtt_port: int = Field(default=8883, ge=1, le=65535)
+    ftps_control_port: int = Field(default=990, ge=1, le=65535)
+    ftps_passive_port_min: int = Field(default=50000, ge=1, le=65535)
+    ftps_passive_port_max: int = Field(default=50009, ge=1, le=65535)
+    ftps_advertised_ipv4: str | None = None
+    tls_certificate_file: Path | None = None
+    tls_private_key_file: Path | None = None
+    mqtt_journal_file: Path = Path("/var/lib/klove/mqtt-ingress.sqlite3")
+    staging_directory: Path = Path("/var/lib/klove/ftps-staging")
+    max_sessions: int = Field(default=64, ge=1, le=1024)
+    max_sessions_per_printer: int = Field(default=2, ge=1, le=8)
+    max_commands_per_session: int = Field(default=256, ge=1, le=4096)
+    session_idle_seconds: float = Field(default=60.0, ge=30, le=300, allow_inf_nan=False)
+    transfer_timeout_seconds: float = Field(default=300.0, ge=1, le=3600, allow_inf_nan=False)
+    shutdown_timeout_seconds: float = Field(default=10.0, ge=1, le=60, allow_inf_nan=False)
+    max_concurrent_transfers: int = Field(default=4, ge=1, le=64)
+    ingress_capacity: int = Field(default=4096, ge=1, le=100_000)
+
+    @field_validator("listen_host")
+    @classmethod
+    def listen_host_is_canonical_ipv4(cls, value: str) -> str:
+        """Bind only one explicit canonical IPv4 address."""
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ValueError("bridge listen_host must be canonical IPv4") from exc
+        if not isinstance(address, ipaddress.IPv4Address) or str(address) != value:
+            raise ValueError("bridge listen_host must be canonical IPv4")
+        return value
+
+    @field_validator("mqtt_journal_file", "staging_directory")
+    @classmethod
+    def durable_paths_are_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("bridge durable paths must be absolute")
+        return value
+
+    @field_validator("tls_certificate_file", "tls_private_key_file")
+    @classmethod
+    def tls_paths_are_absolute(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("bridge TLS paths must be absolute")
+        return value
+
+    @field_validator("ftps_advertised_ipv4")
+    @classmethod
+    def advertised_address_is_canonical_unicast_ipv4(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ValueError("FTPS advertised address must be canonical IPv4") from exc
+        if (
+            not isinstance(address, ipaddress.IPv4Address)
+            or str(address) != value
+            or address.is_unspecified
+            or address.is_multicast
+        ):
+            raise ValueError("FTPS advertised address must be canonical IPv4")
+        return value
+
+    @model_validator(mode="after")
+    def complete_non_overlapping_listener_policy(self) -> GroveBridgeConfig:
+        """Require complete TLS/PASV configuration and disjoint listener ports."""
+        passive_ports = range(self.ftps_passive_port_min, self.ftps_passive_port_max + 1)
+        if self.ftps_passive_port_max < self.ftps_passive_port_min:
+            raise ValueError("FTPS passive port range is reversed")
+        if len(passive_ports) > 64:
+            raise ValueError("FTPS passive port range exceeds its bound")
+        if self.mqtt_port == self.ftps_control_port or any(
+            port in passive_ports for port in (self.mqtt_port, self.ftps_control_port)
+        ):
+            raise ValueError("bridge listener ports must not overlap")
+        tls_values = (self.tls_certificate_file, self.tls_private_key_file)
+        if self.enabled and (
+            any(value is None for value in tls_values)
+            or tls_values[0] == tls_values[1]
+            or self.ftps_advertised_ipv4 is None
+        ):
+            raise ValueError("enabled bridge requires distinct TLS files and FTPS address")
+        if not self.enabled and any(
+            value is not None for value in (*tls_values, self.ftps_advertised_ipv4)
+        ):
+            raise ValueError("disabled bridge cannot retain active listener settings")
+        if self.max_sessions_per_printer > self.max_sessions:
+            raise ValueError("per-printer sessions cannot exceed the global limit")
+        if (
+            self.mqtt_journal_file == self.staging_directory
+            or self.mqtt_journal_file.is_relative_to(self.staging_directory)
+        ):
+            raise ValueError("MQTT journal and FTPS staging paths must be separate")
+        return self
+
+
 class AppConfig(BaseModel):
     """Complete Klove configuration."""
 
@@ -359,6 +461,7 @@ class AppConfig(BaseModel):
     onboarding: OnboardingConfig = OnboardingConfig()
     control: ControlConfig = ControlConfig()
     dispatch: DispatchConfig = DispatchConfig()
+    grove_bridge: GroveBridgeConfig = GroveBridgeConfig()
     artifacts: ArtifactLimits = ArtifactLimits()
     printers: tuple[PrinterConfig, ...] = ()
 
@@ -383,6 +486,11 @@ class AppConfig(BaseModel):
             raise ValueError("registry and print-start journals must be separate files")
         if self.dispatch.journal_file.is_relative_to(self.registry.secret_directory):
             raise ValueError("print-start journal must remain outside the secret directory")
+        for path in (self.grove_bridge.mqtt_journal_file, self.grove_bridge.staging_directory):
+            if path in {self.registry.database_file, self.dispatch.journal_file}:
+                raise ValueError("bridge durable storage must remain separate")
+            if path.is_relative_to(self.registry.secret_directory):
+                raise ValueError("bridge durable storage must remain outside registry secrets")
         return self
 
 

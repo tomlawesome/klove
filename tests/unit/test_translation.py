@@ -10,6 +10,7 @@ from klove.domain.translation import (
     CommandKind,
     DecodedCommand,
     decode_grove_request,
+    decode_grove_request_bytes,
     deny_actuation,
 )
 
@@ -40,6 +41,30 @@ def test_known_grove_job_control_commands_are_typed(
 def test_arbitrary_gcode_is_never_decoded() -> None:
     payload = json.loads((FIXTURES / "arbitrary-gcode.json").read_text(encoding="utf-8"))
     assert decode_grove_request(payload) == CommandDenial(code="unexpected_fields")
+
+
+def test_bounded_mqtt_bytes_decode_through_the_same_exact_contract() -> None:
+    raw = (FIXTURES / "pause.json").read_bytes()
+
+    assert decode_grove_request_bytes(raw) == decode_grove_request(json.loads(raw))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        bytearray(b"{}"),
+        b"\xff",
+        b"{",
+        b'{"print":{"command":"pause","command":"resume","sequence_id":"1"}}',
+        b'{"print":{"command":"pause","sequence_id":"1"},"print":{}}',
+        b'{"value":NaN}',
+        b"[" * 1000,
+        b" " * 4097,
+    ],
+)
+def test_hostile_mqtt_json_is_a_stable_denial(raw: object) -> None:
+    assert decode_grove_request_bytes(raw) == CommandDenial(code="invalid_json")
 
 
 @pytest.mark.parametrize(

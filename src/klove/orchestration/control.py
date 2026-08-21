@@ -19,7 +19,7 @@ from klove.domain.control import (
     validate_live_preflight,
 )
 from klove.errors import ControlTransportError
-from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.admission import PrinterAdmissionGates, PrinterAdmissionLease
 from klove.registry import PrinterRegistry
 
 
@@ -66,7 +66,12 @@ class ControlService:
         """Remove one canonical runtime route while its shared gate is held."""
         return self._transports.pop(printer_id, None) is not None
 
-    async def execute(self, intent: ControlIntent) -> ControlResult:
+    async def execute(
+        self,
+        intent: ControlIntent,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
+    ) -> ControlResult:
         """Execute an intent once; duplicates await and reuse the original result."""
         async with self._journal_lock:
             existing = self._journal.get(intent.idempotency_key)
@@ -78,7 +83,7 @@ class ControlService:
             else:
                 if len(self._journal) >= self._capacity and not self._evict_one():
                     return _denied(intent.operation, "idempotency_capacity")
-                task = asyncio.create_task(self._execute_safely(intent))
+                task = asyncio.create_task(self._execute_safely(intent, admission_lease))
                 self._journal[intent.idempotency_key] = (intent, task)
         return await asyncio.shield(task)
 
@@ -104,16 +109,22 @@ class ControlService:
                 return True
         return False
 
-    async def _execute_safely(self, intent: ControlIntent) -> ControlResult:
+    async def _execute_safely(
+        self,
+        intent: ControlIntent,
+        admission_lease: PrinterAdmissionLease | None,
+    ) -> ControlResult:
         try:
-            return await self._execute_once(intent)
+            return await self._execute_once(intent, admission_lease)
         except Exception:
             return _unknown(intent.operation)
 
     async def _execute_once(  # noqa: PLR0911 -- fail-closed exits precede dispatch.
-        self, intent: ControlIntent
+        self,
+        intent: ControlIntent,
+        admission_lease: PrinterAdmissionLease | None,
     ) -> ControlResult:
-        async with self._admissions.hold(intent.printer_id):
+        async with self._admissions.hold(intent.printer_id, lease=admission_lease):
             transport = self._transports.get(intent.printer_id)
             if transport is None:
                 return _denied(intent.operation, "control_disabled")

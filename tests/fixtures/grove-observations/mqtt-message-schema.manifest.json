@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "fixture": "mqtt-message-schema",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove virtual-printer MQTT service",
+    "scenario": "Generated virtual printer linked through public target API; bounded MQTT reports and public controls"
+  },
+  "capture": {
+    "harness_revision": "3137d052c1941409ee1052b556ef614542700d56",
+    "command": "run grove-observer:cdf6b829 and an independently authored bounded TLS MQTT 3.1.1 client on one internal Docker network",
+    "tool_versions": {
+      "docker": "29.7.2",
+      "python": "3.13 stdlib bounded MQTT 3.1.1 client",
+      "git": "pinned checkout verified by git rev-parse"
+    },
+    "captured_at_utc": "2026-08-21T20:37:54Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "replace generated serials and sequence identifiers with literal template fields",
+    "label fields as observed presence only; retain no client requirement inference",
+    "exclude credentials, certificates, source, raw payloads, and raw traces"
+  ],
+  "media_type": "application/json",
+  "byte_count": 3677,
+  "sha256": "sha256:5db8e86f7d163b29cb67e6f97cae852cbab9127560515b3dfb1b07816ffee375",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "observed.report_topic", "classification": "required_protocol_token"},
+    {"locator": "observed.idle_available", "classification": "externally_observed_fact"},
+    {"locator": "observed.request_replies", "classification": "externally_observed_fact"},
+    {"locator": "not_observed", "classification": "externally_observed_fact"}
+  ]
+}

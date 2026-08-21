@@ -15,11 +15,18 @@ runtime disposition is `ftps_runtime_disabled`. It has no listener, TLS
 context, credential lookup, FTP parser, file access, data socket, reply, MQTT,
 dispatch, or configuration wiring.
 
+The separate `ftps-server-response-profile` capture drives Grove through its
+public queue API and establishes the successful reply sequences: cleanup uses
+`220/331/230/200/200/250/221`; upload uses
+`220/331/230/200/200/227/150/226/221`. The PASV address equals the control-local
+address, its port is an open listener, the protected data peer equals the
+control peer, and Grove accepts `226` after closing the complete data payload.
+Both channels use TLS 1.3.
+
 The supplied operational logs (30-second timeout, two-second retry delay, four
-total attempts) are non-wire evidence. The version-1 observation manifest
-schema has no operational-evidence category, so they are intentionally absent
-from the wire fixture and cannot authorize retry behavior. FTP reply/error
-semantics, PASV address/port/NAT behavior, canonical production filename
-grammar, concurrent transfers, and wire retry/disconnect behavior remain
-explicitly unobserved. ADR 0010 is still proposed; each of those gaps keeps
-listener composition fail-closed.
+total attempts) are non-wire evidence and cannot authorize retry behavior.
+Alternate reply codes, wire failure/retry behavior, host-published or NAT
+passive deployment, and concurrent transfers remain explicitly unobserved and
+unsupported. ADR 0010 accepts only the exact successful private-network flow;
+the runtime remains disabled until its implementation and composition gates
+pass.

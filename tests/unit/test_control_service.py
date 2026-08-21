@@ -140,6 +140,19 @@ async def test_control_admission_waits_for_the_shared_printer_gate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_control_can_compose_under_an_explicit_cross_task_admission_lease() -> None:
+    admissions = PrinterAdmissionGates()
+    transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])
+    service, intent, _registry = await setup(transport, admissions=admissions)
+
+    async with admissions.lease(intent.printer_id) as lease:
+        result = await service.execute(intent, admission_lease=lease)
+
+    assert result.status is ControlStatus.CONFIRMED
+    assert transport.dispatched == [ControlOperation.PAUSE]
+
+
+@pytest.mark.asyncio
 async def test_runtime_route_removal_wins_before_waiting_control_admission() -> None:
     admissions = PrinterAdmissionGates()
     transport = FakeTransport([live(), live(11.0, PrinterPhase.PAUSED)])

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "fixture": "ftps-server-response-profile",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove implicit FTPS client driven through the public runtime queue API",
+    "scenario": "Generated archive cleanup and protected passive upload against a bounded response recorder"
+  },
+  "capture": {
+    "harness_revision": "0a5ec1edd39782b6b2ca128c71380bd28334d326",
+    "command": "scripts/capture-grove-ftps-responses.sh ftps-replies-c4; exact rootless-Docker lifecycle, independently authored bounded recorder, generated archive, and public runtime API only",
+    "tool_versions": {
+      "docker": "29.7.2",
+      "openssl": "OpenSSL 3.5.6",
+      "python": "3.13.15 stdlib bounded recorder",
+      "git": "pinned checkout verified by git rev-parse"
+    },
+    "captured_at_utc": "2026-08-21T20:42:14Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "retain only accepted server reply codes, semantic categories, ordering, passive endpoint relationships, TLS versions, and transfer integrity facts",
+    "exclude generated credentials, certificates, private keys, endpoint values, raw traces, raw commands, client payload bytes, and operational logs",
+    "record peer and passive-address relationships only as booleans"
+  ],
+  "media_type": "application/json",
+  "byte_count": 3651,
+  "sha256": "sha256:8127cedbe3a0bc01464f932aac20ec2858243e6a656fccb193294941269373ba",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.successful_client_flow", "classification": "externally_observed_fact"},
+    {"locator": "observed.sessions", "classification": "externally_observed_fact"},
+    {"locator": "not_observed", "classification": "externally_observed_fact"}
+  ]
+}
