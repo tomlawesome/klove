@@ -119,6 +119,127 @@ class RegistryConfig(BaseModel):
         return values
 
 
+class OnboardingConfig(BaseModel):
+    """Independent owner authentication and bounded browser-session policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    owner_credential_file: Path | None = None
+    allowed_grove_origins: tuple[str, ...] = ()
+    allow_loopback_http: bool = False
+    session_capacity: int = Field(default=128, ge=1, le=10_000)
+    session_inactivity_seconds: int = Field(default=900, ge=1, le=900)
+    session_absolute_seconds: int = Field(default=1800, ge=1, le=1800)
+
+    @property
+    def cookie_secure(self) -> bool:
+        """Use secure cookies except in the explicit loopback HTTP dev mode."""
+        return not self.allow_loopback_http
+
+    @field_validator("owner_credential_file")
+    @classmethod
+    def credential_path_is_absolute(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("owner credential file must be absolute")
+        return value
+
+    @field_validator("allowed_grove_origins")
+    @classmethod
+    def grove_origins_are_exact(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if not values or len(values) > 32 or len(values) != len(set(values)):
+            if values:
+                raise ValueError("Grove origins must be unique and bounded")
+            return values
+        for value in values:
+            _validate_exact_origin(value)
+        return values
+
+    @model_validator(mode="after")
+    def enabled_policy_is_complete(self) -> OnboardingConfig:
+        if self.session_inactivity_seconds > self.session_absolute_seconds:
+            raise ValueError("session inactivity limit must not exceed its absolute limit")
+        if not self.enabled:
+            if (
+                self.owner_credential_file is not None
+                or self.allowed_grove_origins
+                or self.allow_loopback_http
+            ):
+                raise ValueError("disabled onboarding cannot contain active configuration")
+            return self
+        if self.owner_credential_file is None:
+            raise ValueError("enabled onboarding requires an owner credential file")
+        if not self.allowed_grove_origins:
+            raise ValueError("enabled onboarding requires at least one Grove origin")
+        for origin in self.allowed_grove_origins:
+            parsed = urlsplit(origin)
+            if parsed.scheme == "http" and (
+                not self.allow_loopback_http or not _is_loopback(parsed.hostname or "")
+            ):
+                raise ValueError(
+                    "HTTP Grove origins require the explicit loopback development exception"
+                )
+        return self
+
+
+def _validate_exact_origin(value: str) -> None:
+    """Require one canonical, uncredentialed HTTP(S) origin serialization."""
+    if (
+        not value
+        or len(value) > 2048
+        or value != value.strip()
+        or not value.isascii()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("Grove origin must be bounded exact ASCII text")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Grove origin is invalid") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ValueError("Grove origin must use HTTP or HTTPS")
+    if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+        raise ValueError("Grove origin must not contain credentials, a path, query, or fragment")
+    canonical_host = _canonical_origin_hostname(hostname)
+    if port == 0:
+        raise ValueError("Grove origin port must be positive")
+    if port == (80 if parsed.scheme == "http" else 443):
+        raise ValueError("Grove origin must omit its default port")
+    rendered_host = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
+    rendered_port = "" if port is None else f":{port}"
+    if value != f"{parsed.scheme}://{rendered_host}{rendered_port}":
+        raise ValueError("Grove origin must use one canonical spelling")
+
+
+def _canonical_origin_hostname(hostname: str) -> str:
+    if "%" in hostname:
+        raise ValueError("Grove origin must not contain an IPv6 scope")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if hostname != hostname.casefold() or hostname.endswith(".") or len(hostname) > 253:
+            raise ValueError("Grove DNS name must be canonical") from None
+        labels = hostname.split(".")
+        if any(
+            not label
+            or len(label) > 63
+            or label[0] == "-"
+            or label[-1] == "-"
+            or any(
+                not (character.isascii() and (character.isalnum() or character == "-"))
+                for character in label
+            )
+            for label in labels
+        ):
+            raise ValueError("Grove DNS name is invalid") from None
+        return hostname
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        raise ValueError("Grove IPv4-mapped IPv6 aliases are prohibited")
+    return str(address)
+
+
 class ControlConfig(BaseModel):
     """Explicit, bounded job-control settings."""
 
@@ -172,6 +293,7 @@ class AppConfig(BaseModel):
 
     api: ApiConfig
     registry: RegistryConfig = RegistryConfig()
+    onboarding: OnboardingConfig = OnboardingConfig()
     control: ControlConfig = ControlConfig()
     dispatch: DispatchConfig = DispatchConfig()
     artifacts: ArtifactLimits = ArtifactLimits()

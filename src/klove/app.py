@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 from aiohttp import web
@@ -13,7 +14,7 @@ from aiohttp import web
 from klove.adapters.moonraker.client import MoonrakerMonitor
 from klove.adapters.moonraker.control import MoonrakerControlTransport
 from klove.adapters.moonraker.onboarding import EndpointAddressPolicy, MoonrakerOnboardingProbe
-from klove.config import load_config, read_secret
+from klove.config import OnboardingConfig, load_config, read_secret
 from klove.domain.onboarding import RegisteredPrinter
 from klove.northbound.api import create_api, ready_key
 from klove.orchestration.admission import PrinterAdmissionGates
@@ -26,6 +27,7 @@ from klove.persistence.secret_store import SecretStore
 from klove.persistence.start_journal import StartJournal
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
+from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -89,10 +91,13 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
         scopes = {"printers:read"}
         if config.control.enabled:
             scopes.add("printers:control")
+        owner_authenticator, owner_sessions = _owner_security(config.onboarding)
         app = create_api(
             registry,
             BearerAuthenticator(read_secret(config.api.token_file), scopes=frozenset(scopes)),
             controls,
+            owner_authenticator=owner_authenticator,
+            owner_sessions=owner_sessions,
         )
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
@@ -126,3 +131,21 @@ def _control_transport(
         session,
         request_timeout_seconds=request_timeout_seconds,
     )
+
+
+def _owner_security(
+    config: OnboardingConfig,
+) -> tuple[OwnerCredentialAuthenticator | None, OwnerSessionStore | None]:
+    """Compose independent owner security only when explicitly enabled."""
+    if not config.enabled:
+        return None, None
+    credential_file = cast(Path, config.owner_credential_file)
+    authenticator = OwnerCredentialAuthenticator(read_secret(credential_file))
+    sessions = OwnerSessionStore(
+        frozenset(config.allowed_grove_origins),
+        capacity=config.session_capacity,
+        inactivity_timeout_seconds=config.session_inactivity_seconds,
+        absolute_timeout_seconds=config.session_absolute_seconds,
+        cookie_secure=config.cookie_secure,
+    )
+    return authenticator, sessions

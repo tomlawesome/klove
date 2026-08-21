@@ -16,6 +16,7 @@ from klove.domain.models import PrinterSnapshot
 from klove.orchestration.control import ControlService
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator, authorize
+from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -24,13 +25,21 @@ def create_api(
     registry: PrinterRegistry,
     authenticator: BearerAuthenticator,
     controls: ControlService,
+    *,
+    owner_authenticator: OwnerCredentialAuthenticator | None = None,
+    owner_sessions: OwnerSessionStore | None = None,
 ) -> web.Application:
     """Build the native monitoring and typed-control application."""
+    if (owner_authenticator is None) is not (owner_sessions is None):
+        raise ValueError("owner authentication and sessions must be configured together")
     app = web.Application(client_max_size=16 * 1024)
     app[registry_key] = registry
     app[authenticator_key] = authenticator
     app[control_key] = controls
     app[ready_key] = Readiness()
+    if owner_authenticator is not None and owner_sessions is not None:
+        app[owner_authenticator_key] = owner_authenticator
+        app[owner_sessions_key] = owner_sessions
     app.router.add_get("/health/live", liveness)
     app.router.add_get("/health/ready", readiness)
     app.router.add_get("/v1/printers", require_scope("printers:read", list_printers))
@@ -45,6 +54,8 @@ def create_api(
 registry_key = web.AppKey("registry", PrinterRegistry)
 authenticator_key = web.AppKey("authenticator", BearerAuthenticator)
 control_key = web.AppKey("controls", ControlService)
+owner_authenticator_key = web.AppKey("owner_authenticator", OwnerCredentialAuthenticator)
+owner_sessions_key = web.AppKey("owner_sessions", OwnerSessionStore)
 
 
 @dataclass(slots=True)

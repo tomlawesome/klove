@@ -1,6 +1,7 @@
 # Klove threat model
 
-Status: active through durable typed print start and implemented onboarding core
+Status: active through durable typed print start, onboarding core, runtime
+activation, and owner-session security
 
 ## Protected assets
 
@@ -47,11 +48,14 @@ Klove owner authorization.
 
 ## Required embedded-onboarding controls
 
-ADR 0006 accepts the boundary below. Issues #62–#63 implement the private
-registry, secret, lifecycle-journal, reconciliation, snapshot, direct probe, and
-typed lifecycle foundation. Issues #64–#65 and #59 must still add dynamic
-runtime activation, protected API/authentication, and the embedded flow before
-Klove claims product onboarding.
+ADR 0006 accepts the boundary below. Issue #62 — registry storage and issue
+#63 — onboarding core implement private lifecycle persistence and direct
+evidence. Issue #68 — runtime supervisor, issue #69 — shared runtime gate, and
+issue #70 — runtime bootstrap implement canonical runtime wiring. Issue #71 —
+owner session implements the independent credential, exact-origin/CSRF request
+evidence, and bounded restart-invalidated session substrate. Issue #72 —
+lifecycle routes, issue #73 — runtime handoff, and #59 — embedded setup/recovery
+remain required before Klove claims product onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,

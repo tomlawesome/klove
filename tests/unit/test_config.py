@@ -8,6 +8,7 @@ from klove.config import (
     AppConfig,
     ControlConfig,
     DispatchConfig,
+    OnboardingConfig,
     PrinterConfig,
     RegistryConfig,
     load_config,
@@ -125,6 +126,7 @@ z_micrometres = 350000
     assert result.dispatch.request_timeout_seconds == 9.0
     assert result.dispatch.confirmation_timeout_seconds == 8.0
     assert result.dispatch.poll_interval_seconds == 0.2
+    assert result.onboarding == OnboardingConfig()
     assert result.printers[0].id == "voron-24"
     assert result.printers[0].dispatch_enabled is True
     assert result.printers[0].safety_profiles == (safety_profile(),)
@@ -162,6 +164,10 @@ def test_insecure_remote_http_requires_explicit_consent() -> None:
 
 def test_registry_paths_and_probe_allowlist_are_exact() -> None:
     assert RegistryConfig().allowed_probe_cidrs == ("127.0.0.0/8",)
+    assert RegistryConfig(allowed_probe_cidrs=("127.0.0.0/8", "::1/128")).allowed_probe_cidrs == (
+        "127.0.0.0/8",
+        "::1/128",
+    )
     for values in (
         {"database_file": Path("relative.sqlite3")},
         {"secret_directory": Path("relative-secrets")},
@@ -169,6 +175,7 @@ def test_registry_paths_and_probe_allowlist_are_exact() -> None:
         {"allowed_probe_cidrs": (" 127.0.0.0/8",)},
         {"allowed_probe_cidrs": ("tést",)},
         {"allowed_probe_cidrs": ("192.168.1.1/24",)},
+        {"allowed_probe_cidrs": ("2001:DB8::/32",)},
         {"allowed_probe_cidrs": ("192.168.1.0/24", "192.168.1.0/24")},
         {"allowed_probe_cidrs": tuple(f"10.{index}.0.0/16" for index in range(65))},
     ):
@@ -213,6 +220,143 @@ def test_registry_storage_boundaries_cannot_overlap(
             registry=registry,
             dispatch=DispatchConfig(journal_file=journal),
         )
+
+
+def test_onboarding_is_disabled_by_default_and_enabled_policy_is_complete() -> None:
+    assert OnboardingConfig() == OnboardingConfig(
+        enabled=False,
+        allowed_grove_origins=(),
+        session_capacity=128,
+        session_inactivity_seconds=900,
+        session_absolute_seconds=1800,
+    )
+    configured = OnboardingConfig(
+        enabled=True,
+        owner_credential_file=Path("/run/secrets/klove-owner"),
+        allowed_grove_origins=("https://grove.example.test",),
+    )
+    assert configured.owner_credential_file == Path("/run/secrets/klove-owner")
+    assert configured.allowed_grove_origins == ("https://grove.example.test",)
+    assert configured.cookie_secure is True
+
+    for values in (
+        {"enabled": True, "allowed_grove_origins": ("https://grove.example.test",)},
+        {"enabled": True, "owner_credential_file": Path("/run/secrets/owner")},
+        {"owner_credential_file": Path("/run/secrets/owner")},
+        {"allowed_grove_origins": ("https://grove.example.test",)},
+        {"allow_loopback_http": True},
+    ):
+        with pytest.raises(ValidationError):
+            OnboardingConfig.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "",
+        " https://grove.example.test",
+        "https://gr\N{LATIN SMALL LETTER O WITH DIAERESIS}ve.example.test",
+        "HTTPS://grove.example.test",
+        "https://GROVE.example.test",
+        "https://grove.example.test.",
+        "https://grove.example.test/",
+        "https://grove.example.test/path",
+        "https://owner@grove.example.test",
+        "https://grove.example.test?query=true",
+        "https://grove.example.test#fragment",
+        "https://grove.example.test:443",
+        "https://grove.example.test:0",
+        "https://grove.example.test:not-a-port",
+        "https://[::ffff:127.0.0.1]",
+        "https://[::1%25lo]",
+        "https://*.example.test",
+        "ftp://grove.example.test",
+    ],
+)
+def test_grove_origins_require_one_exact_canonical_spelling(origin: str) -> None:
+    with pytest.raises(ValidationError):
+        OnboardingConfig(
+            enabled=True,
+            owner_credential_file=Path("/run/secrets/owner"),
+            allowed_grove_origins=(origin,),
+        )
+
+
+def test_grove_origins_are_unique_and_bounded() -> None:
+    common = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+    }
+    with pytest.raises(ValidationError, match="unique and bounded"):
+        OnboardingConfig.model_validate(
+            {
+                **common,
+                "allowed_grove_origins": (
+                    "https://grove.example.test",
+                    "https://grove.example.test",
+                ),
+            }
+        )
+    with pytest.raises(ValidationError, match="unique and bounded"):
+        OnboardingConfig.model_validate(
+            {
+                **common,
+                "allowed_grove_origins": tuple(
+                    f"https://grove-{index}.example.test" for index in range(33)
+                ),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+    ],
+)
+def test_loopback_http_requires_the_explicit_development_exception(origin: str) -> None:
+    values = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+        "allowed_grove_origins": (origin,),
+    }
+    with pytest.raises(ValidationError, match="development exception"):
+        OnboardingConfig.model_validate(values)
+    configured = OnboardingConfig.model_validate({**values, "allow_loopback_http": True})
+    assert configured.allowed_grove_origins == (origin,)
+    assert configured.cookie_secure is False
+
+
+def test_loopback_exception_never_allows_remote_http() -> None:
+    with pytest.raises(ValidationError, match="development exception"):
+        OnboardingConfig(
+            enabled=True,
+            owner_credential_file=Path("/run/secrets/owner"),
+            allowed_grove_origins=("http://grove.example.test",),
+            allow_loopback_http=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"owner_credential_file": Path("relative-owner-secret")},
+        {"session_capacity": 0},
+        {"session_capacity": 10_001},
+        {"session_inactivity_seconds": 0},
+        {"session_inactivity_seconds": 901},
+        {"session_absolute_seconds": 0},
+        {"session_absolute_seconds": 1801},
+        {"session_inactivity_seconds": 500, "session_absolute_seconds": 499},
+    ],
+)
+def test_onboarding_paths_capacity_and_session_limits_are_bounded(
+    values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        OnboardingConfig.model_validate(values)
 
 
 def test_printer_uuid_is_required_and_canonical() -> None:
