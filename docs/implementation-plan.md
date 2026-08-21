@@ -490,23 +490,16 @@ non-actuating by itself; ADR 0005 print start remains internal; no public or
 generic G-code path exists.
 
 1. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
-   Normal-session ADR-0008 MQTT and FTPS client captures are retained behind
-   strict disabled-runtime profile gates. Complete the remaining MQTT
-   schema/QoS fault matrix and FTPS reply/PASV/retry fault matrix before
-   accepting and implementing proposed ADR 0009 under #10 — MQTT facade or
-   proposed ADR 0010 under #14 — FTPS ingress. Then deliver #60 — minimal Grove
-   contribution and #13 — deployment guidance against one pinned supported
-   Grove revision.
-2. Finish the supplemental
-   [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
-   only after focused diagnosis justifies one fresh-COW exact-release run. The
-   run must prove the lost-response fence and archive `contract-passed`; it does
-   not block M3 delivery. Supported hardware remains release-acceptance
-   authority.
-3. Complete [#3 — stable promotion](https://github.com/tomlawesome/klove/issues/3)
+   ADRs 0009 and 0010 are accepted, and PR #120 merged their evidence-backed
+   MQTT/TLS and implicit-FTPS runtime foundations. Complete #10 — MQTT facade
+   and #14 — FTPS ingress by wiring their application composition gates and
+   passing end-to-end validation. Then validate and propose #60 — minimal Grove
+   contribution upstream, and finish #13 — deployment guidance against the
+   pinned supported Grove revision.
+2. Complete [#3 — stable promotion](https://github.com/tomlawesome/klove/issues/3)
    only after documented production-like printer acceptance at the end of the
    milestone suite. Promote the exact tested preview digest without rebuilding.
-4. Separately decide and test bounded temperature/speed plus explicitly mapped
+3. Separately decide and test bounded temperature/speed plus explicitly mapped
    fan/light controls. Keep jog and extrusion disabled until proven;
    [#15 — live-control safety envelope](https://github.com/tomlawesome/klove/issues/15)
    gates [#37 — live-control programme](https://github.com/tomlawesome/klove/issues/37).
