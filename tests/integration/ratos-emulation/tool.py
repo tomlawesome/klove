@@ -1131,7 +1131,7 @@ def contract_evidence() -> None:
         raise RuntimeError(
             "RatOS Moonraker authorization configuration changed during the contract"
         )
-    printer = _contract_status(api_key, expected_phase="cancelled")
+    _contract_status(api_key, expected_phase="cancelled")
     terminal_history = _history_identity(api_key, expected_status="cancelled")
     if terminal_history != runner_history:
         raise RuntimeError(
@@ -1161,7 +1161,18 @@ def contract_evidence() -> None:
             "authorization_config_sha256": moonraker_config_sha256,
             "moonraker_version": server["moonraker_version"],
         },
-        "printer": printer,
+        "printer": {
+            "config_sections": [
+                "idle_timeout",
+                "mcu",
+                "pause_resume",
+                "printer",
+                "virtual_sdcard",
+            ],
+            "filename": "contract.gcode",
+            "mcu_version": EXPECTED_MCU_VERSION,
+            "phase": "cancelled",
+        },
         "status": "passed",
     }
     print(json.dumps(evidence, indent=2, sort_keys=True))
