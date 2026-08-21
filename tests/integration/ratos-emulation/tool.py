@@ -631,6 +631,21 @@ def _classify_klippy_message(value: str) -> str:
     return "unknown"
 
 
+def _closed_state(value: object, allowed: set[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
+
+def _message_evidence(value: object) -> dict[str, object]:
+    if not isinstance(value, str):
+        return {"message": "unknown", "message_sha256": None, "message_bytes": 0}
+    encoded = value.encode("utf-8")
+    return {
+        "message": _classify_klippy_message(value),
+        "message_sha256": _digest_bytes(encoded),
+        "message_bytes": len(encoded),
+    }
+
+
 def _socket_evidence() -> dict[str, object]:
     path = Path("/tmp/klipper_host_mcu")  # noqa: S108 - exact fixture endpoint
     try:
@@ -696,7 +711,9 @@ def _wait_printer_ready(
             server = _result(_http_json("/server/info", headers=headers), "/server/info")
             last_server = {
                 "status": "ok",
-                "klippy_state": server.get("klippy_state", "unknown"),
+                "klippy_state": _closed_state(
+                    server.get("klippy_state"), {"startup", "ready", "error", "shutdown"}
+                ),
                 "klippy_connected": server.get("klippy_connected") is True,
             }
             if server.get("klippy_connected") is False:
@@ -705,27 +722,34 @@ def _wait_printer_ready(
                 cycle["reconnect_observed"] = True
         except (ConnectionError, json.JSONDecodeError, OSError, RuntimeError):
             server = {}
-        status, body = _http_request(
-            18080, "/printer/info", headers=headers, host_header="ratos.local"
-        )
-        last_printer = {
-            "status": f"http-{status}",
-            "message": "unknown",
-            "message_sha256": _digest_bytes(body),
-            "message_bytes": len(body),
-        }
-        if status == 200:
+        try:
+            status, body = _http_request(
+                18080, "/printer/info", headers=headers, host_header="ratos.local"
+            )
+            last_printer = {"status": "ok" if status == 200 else "error", **_message_evidence(None)}
             try:
-                printer = _result(_parse_json(body, "/printer/info"), "/printer/info")
-                last_printer["state"] = printer.get("state", "unknown")
-                if (
-                    server.get("klippy_connected") is True
-                    and server.get("klippy_state") == "ready"
-                    and printer.get("state") == "ready"
-                ):
-                    return
+                parsed = _parse_json(body, "/printer/info")
+                if status == 200:
+                    printer = _result(parsed, "/printer/info")
+                    last_printer["state"] = _closed_state(
+                        printer.get("state"), {"ready", "startup", "error", "shutdown"}
+                    )
+                    last_printer.update(_message_evidence(printer.get("state_message")))
+                else:
+                    last_printer.update(
+                        _message_evidence(_mapping(parsed, "printer error").get("message"))
+                    )
             except (RuntimeError, json.JSONDecodeError):
-                pass
+                printer = {}
+            if (
+                status == 200
+                and server.get("klippy_connected") is True
+                and server.get("klippy_state") == "ready"
+                and printer.get("state") == "ready"
+            ):
+                return
+        except (ConnectionError, OSError):
+            last_printer = {"status": "unavailable", **_message_evidence(None)}
         time.sleep(2)
     if failure_stage is not None and config is not None:
         _write_readiness_failure(
