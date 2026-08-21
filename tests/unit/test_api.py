@@ -6,11 +6,12 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from klove.domain.control import ControlIntent, ControlOperation, ControlResult, ControlStatus
-from klove.northbound.api import create_api, ready_key
+from klove.northbound.api import create_api, owner_authenticator_key, owner_sessions_key, ready_key
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.control import ControlService
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
+from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
 TOKEN = "a" * 32
 KEY = "00000000-0000-4000-8000-000000000000"
@@ -82,6 +83,37 @@ async def test_duplicate_authorization_headers_are_rejected(client: TestClient[A
 
     assert response.status == 401
     assert await response.json() == {"error": "unauthorized"}
+
+
+def test_owner_security_is_configured_as_one_independent_pair() -> None:
+    registry = PrinterRegistry([])
+    controls = FakeControls()
+    owner_authenticator = OwnerCredentialAuthenticator("o" * 32)
+    owner_sessions = OwnerSessionStore(
+        frozenset({"https://grove.example.invalid"}),
+        capacity=1,
+        inactivity_timeout_seconds=900,
+        absolute_timeout_seconds=1_800,
+    )
+    app = create_api(
+        registry,
+        BearerAuthenticator(TOKEN),
+        controls,  # type: ignore[arg-type]
+        owner_authenticator=owner_authenticator,
+        owner_sessions=owner_sessions,
+    )
+    assert app[owner_authenticator_key] is owner_authenticator
+    assert app[owner_sessions_key] is owner_sessions
+
+    for owner, sessions in ((owner_authenticator, None), (None, owner_sessions)):
+        with pytest.raises(ValueError, match="configured together"):
+            create_api(
+                registry,
+                BearerAuthenticator(TOKEN),
+                controls,  # type: ignore[arg-type]
+                owner_authenticator=owner,
+                owner_sessions=sessions,
+            )
 
 
 class FakeControls:
