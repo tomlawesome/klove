@@ -513,9 +513,11 @@ generic G-code path exists.
    slice: append-only capability-mapping and safety-profile history, atomic
    current/history commits, deterministic v1 backfill, immutable triggers, and
    bounded per-printer audit reads. History adds no current authority, fence
-   reference, or backup behavior. #112 is the next decision-only slice and must
-   freeze durable cross-service actuator-fence references before its separate
-   implementation issue; operational recovery remains later work.
+   reference, or backup behavior. ADR 0013 and #112 define the next
+   decision-only slice: a registry-owned durable fence catalogue, durable
+   control uncertainty, conservative cross-store commit ordering, and exact
+   recovery-set identities. Its implementation remains a separate issue;
+   operational backup/restore remains later work.
 6. Evaluate exclude-object, richer cameras, MMU/toolchanger support, an
    outbound host agent, and other printer stacks only through separately
    accepted adapter boundaries under

@@ -98,6 +98,10 @@ tests.
   v1-to-v2 migration, atomic writes, immutable triggers, and bounded internal
   reads. History remains audit evidence and never becomes current
   authorization.
+- ADR 0013 defines registry-owned durable cross-service actuator-fence
+  references, a durable control journal, conservative owner/catalogue commit
+  ordering, and fail-closed recovery-set identity checks. Its schema and
+  runtime implementation remain the next separate fleet slice.
 - Multi-printer routing, per-printer credentials/policies, job journal, cameras
   via external URLs, metrics, backups, migration tests, and upgrade/rollback.
 - Docker Compose examples for bridge and host-network constraints.
