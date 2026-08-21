@@ -26,9 +26,11 @@ Last updated: 2026-08-21
 - [Delivery-lane issue #2](https://github.com/tomlawesome/klove/issues/2) is
   complete. Protected preview run `31741422470` published the attested candidate
   `ghcr.io/tomlawesome/klove@sha256:7be3122ef7427fe9d49a27980de16363f4be2ed8f28ec1ab73b2e18dab690fc8`.
-- [Stable-promotion issue #3](https://github.com/tomlawesome/klove/issues/3)
-  remains blocked on documented production-like printer acceptance; the
-  candidate has not been promoted to `main`, a version tag, or `latest`.
+- M0 has proved the protected no-rebuild promotion mechanism and produced an
+  attested preview candidate. [Final stable-promotion issue #3](https://github.com/tomlawesome/klove/issues/3)
+  is a final-release gate after the complete milestone suite; it combines the
+  attended physical RatOS/printer record with promotion of that exact accepted
+  candidate to an immutable version and `latest`.
 - [Headless-boundary decision #40](https://github.com/tomlawesome/klove/issues/40)
   records that Grove owns normal interaction and a Klove UI is a last resort.
   [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)

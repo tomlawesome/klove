@@ -13,6 +13,22 @@
 If the user asks you to look at the handoff, it is located at
 `/home/codex/projects/klove/.agents/handoffs/current.md`.
 
+## Project credentials
+
+- Repository GitHub operations use `GH_CONFIG_DIR=/home/codex/.config/gh`.
+- Klove personal GitHub Projects v2 operations use the separate project-only
+  classic PAT stored at `/home/codex/.config/gh-project/token`. Never read,
+  print, copy, log, or disclose its value. Verify only its metadata: it must be
+  owned by `codex` and mode `0600`.
+- The `gh project` wrapper rejects this least-privilege token because it asks
+  for unrelated scopes. Use the Projects GraphQL API instead, loading the PAT
+  only inside the command environment, for example:
+  `rtk bash -lc 'export GH_TOKEN="$(< /home/codex/.config/gh-project/token)"; gh api graphql ...'`.
+- Never use the project PAT for repository contents, issues, pull requests, or
+  releases. Never run an authentication-status command that may reveal token
+  material.
+
+
 ## Product boundary
 
 Klove is a headless, automation-first security and translation layer. Grove
