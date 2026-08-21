@@ -8,6 +8,13 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from klove.domain.fence import (
+    FencePageCursor,
+    FenceReference,
+    FenceStoreMetadata,
+    FenceTransition,
+    RegistryStoreMetadata,
+)
 from klove.domain.onboarding import (
     RegisteredPrinter,
     RegistryOperationRecord,
@@ -33,12 +40,17 @@ from klove.persistence.printer_registry_errors import (
     RegistryStoreError,
     RegistryTransitionError,
 )
+from klove.persistence.printer_registry_fences import (
+    FENCE_CONFLICT_MESSAGE,
+    SqliteFenceCatalogue,
+)
 from klove.persistence.printer_registry_history import SqliteRegistryHistory
 from klove.persistence.printer_registry_migrations import (
     MIGRATION_STEPS,
     ensure_registry_schema,
     validate_v1_source,
     validate_v2,
+    validate_v3,
 )
 from klove.persistence.printer_registry_reconciliation import (
     _all_operations,
@@ -51,9 +63,11 @@ from klove.persistence.printer_registry_schema import (
     _SCHEMA_VERSION,
     _SCHEMA_VERSION_V1,
     _SCHEMA_VERSION_V2,
-    _initialize_schema_v2,
+    _SCHEMA_VERSION_V3,
+    _initialize_schema_v3,
     _pragma_integer,
     _validate_metadata,
+    _validate_metadata_v3,
     _validate_schema,
     _validate_table,
 )
@@ -115,13 +129,17 @@ class PrinterStore:
             try:
 
                 def initialize_current(target: sqlite3.Connection) -> None:
-                    _initialize_schema_v2(target, self._secrets.key_identity)
+                    _initialize_schema_v3(target, self._secrets.key_identity)
 
                 def validate_v1(target: sqlite3.Connection) -> None:
                     validate_v1_source(target)
                     _validate_metadata(target, self._secrets.key_identity)
 
                 def validate_current(target: sqlite3.Connection) -> None:
+                    validate_v3(target)
+                    _validate_metadata_v3(target, self._secrets.key_identity)
+
+                def validate_v2_current(target: sqlite3.Connection) -> None:
                     validate_v2(target)
                     _validate_metadata(target, self._secrets.key_identity)
 
@@ -131,7 +149,8 @@ class PrinterStore:
                     initialize_current=initialize_current,
                     validators={
                         _SCHEMA_VERSION_V1: validate_v1,
-                        _SCHEMA_VERSION_V2: validate_current,
+                        _SCHEMA_VERSION_V2: validate_v2_current,
+                        _SCHEMA_VERSION_V3: validate_current,
                     },
                     steps=MIGRATION_STEPS,
                 )
@@ -269,6 +288,75 @@ class PrinterStore:
         finally:
             connection.close()
 
+    @property
+    def fence_catalogue(self) -> SqliteFenceCatalogue:
+        """Return the internal durable actuator-fence catalogue facade."""
+        return SqliteFenceCatalogue(self._connect)
+
+    @property
+    def fences(self) -> SqliteFenceCatalogue:
+        """Compatibility alias for the internal fence catalogue."""
+        return self.fence_catalogue
+
+    def registry_store_metadata(self) -> RegistryStoreMetadata:
+        """Return the validated immutable identity of this registry store."""
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT key, value FROM registry_metadata
+                WHERE key IN ('installation_uuid', 'store_uuid') ORDER BY key
+                """
+            ).fetchall()
+            if rows != sorted(rows) or len(rows) != 2:
+                raise RegistryStoreError
+            values = dict(rows)
+            return RegistryStoreMetadata(
+                installation_uuid=values["installation_uuid"],
+                store_id=values["store_uuid"],
+                schema_version=_SCHEMA_VERSION_V3,
+            )
+        except RegistryStoreError:
+            raise
+        except (KeyError, sqlite3.Error, ValidationError, TypeError, ValueError) as exc:
+            raise RegistryStoreError from exc
+        finally:
+            connection.close()
+
+    def register_fence_store(self, metadata: FenceStoreMetadata) -> None:
+        """Register one immutable owner-store identity idempotently."""
+        self.fence_catalogue.register_store_metadata(metadata)
+
+    def fence_page(
+        self,
+        printer_uuid: str,
+        *,
+        cursor: FencePageCursor | None = None,
+        limit: int = 100,
+        include_resolved: bool = False,
+    ) -> tuple[FenceReference, ...]:
+        """Return one bounded stable page for one exact printer only."""
+        return self.fence_catalogue.page(
+            printer_uuid,
+            cursor=cursor,
+            limit=limit,
+            include_resolved=include_resolved,
+        )
+
+    def fence_transitions(
+        self,
+        fence_reference_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> tuple[FenceTransition, ...]:
+        """Return one bounded immutable transition-history page."""
+        return self.fence_catalogue.transitions(
+            fence_reference_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+
     def reserve(self, operation: RegistryOperationRecord) -> tuple[RegistryOperationRecord, bool]:
         """Atomically reserve one exact mutation or return its durable duplicate."""
         if operation.state is not RegistryOperationState.PREPARING:
@@ -337,15 +425,24 @@ class PrinterStore:
         finally:
             connection.close()
 
-    def commit(
+    def commit(  # noqa: PLR0912
         self,
         operation: RegistryOperationRecord,
         result: RegisteredPrinter,
         *,
         committed_at_unix_ms: int,
+        require_fence_clear: bool = False,
     ) -> RegistryOperationRecord:
-        """Atomically apply one exact prepared transition and persist its public result."""
+        """Atomically apply one exact transition and persist its public result.
+
+        In v3, the schema-owned printer-update trigger performs the clear-fence
+        check inside this method's existing transaction.  The parameter keeps
+        the caller's existing-printer admission requirement explicit; inserts
+        for create remain intentionally outside that trigger.
+        """
         if operation.state is not RegistryOperationState.PREPARING:
+            raise RegistryTransitionError
+        if type(require_fence_clear) is not bool:
             raise RegistryTransitionError
         try:
             for reference in operation.new_credential_refs:
@@ -372,7 +469,13 @@ class PrinterStore:
         except RegistryStoreError:
             raise
         except sqlite3.IntegrityError as exc:
+            if str(exc) == FENCE_CONFLICT_MESSAGE:
+                raise RegistryBusyError from exc
             raise RegistryConflictError from exc
+        except sqlite3.OperationalError as exc:
+            if str(exc) == FENCE_CONFLICT_MESSAGE:
+                raise RegistryBusyError from exc
+            raise RegistryStoreError from exc
         except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
             raise RegistryStoreError from exc
         finally:
@@ -423,8 +526,8 @@ class PrinterStore:
                 target = sqlite3.connect(destination, timeout=5, isolation_level=None)
                 try:
                     source.backup(target)
-                    validate_v2(target)
-                    _validate_metadata(target, self._secrets.key_identity)
+                    validate_v3(target)
+                    _validate_metadata_v3(target, self._secrets.key_identity)
                 finally:
                     target.close()
             finally:

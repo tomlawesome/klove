@@ -5,12 +5,19 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from typing import Final, cast
+from uuid import UUID, uuid4
 
 from klove.persistence.printer_registry_errors import RegistryStoreError
+from klove.persistence.printer_registry_fences import (
+    FENCE_TABLE_SQL,
+    FENCE_TRIGGER_SQL,
+    initialize_fence_catalogue,
+)
 
-_SCHEMA_VERSION: Final = 2
+_SCHEMA_VERSION: Final = 3
 _SCHEMA_VERSION_V1: Final = 1
 _SCHEMA_VERSION_V2: Final = 2
+_SCHEMA_VERSION_V3: Final = 3
 _PRINTER_COLUMNS: Final = (
     "printer_uuid",
     "endpoint",
@@ -235,6 +242,10 @@ _V2_TRIGGER_SQL: Final = {
     "registry_profile_history_no_update": _PROFILE_HISTORY_UPDATE_TRIGGER_SQL,
     "registry_profile_history_no_delete": _PROFILE_HISTORY_DELETE_TRIGGER_SQL,
 }
+_V3_TRIGGER_SQL: Final = {
+    **_V2_TRIGGER_SQL,
+    **FENCE_TRIGGER_SQL,
+}
 
 
 def _initialize_schema_v2(connection: sqlite3.Connection, key_identity: str) -> None:
@@ -255,6 +266,26 @@ def _initialize_schema_v2(connection: sqlite3.Connection, key_identity: str) -> 
     connection.execute(_PROFILE_HISTORY_DELETE_TRIGGER_SQL)
 
 
+def _initialize_schema_v3(
+    connection: sqlite3.Connection,
+    key_identity: str,
+    *,
+    installation_uuid: str | None = None,
+    store_uuid: str | None = None,
+) -> None:
+    """Create the complete empty v3 catalogue inside the caller's transaction."""
+    _initialize_schema_v2(connection, key_identity)
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("installation_uuid", installation_uuid or str(uuid4())),
+    )
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("store_uuid", store_uuid or str(uuid4())),
+    )
+    initialize_fence_catalogue(connection)
+
+
 def _pragma_integer(connection: sqlite3.Connection, name: str) -> int:
     row = connection.execute(f"PRAGMA {name}").fetchone()
     if row is None or len(row) != 1 or type(row[0]) is not int:
@@ -266,6 +297,39 @@ def _validate_metadata(connection: sqlite3.Connection, key_identity: str) -> Non
     rows = connection.execute("SELECT key, value FROM registry_metadata ORDER BY key").fetchall()
     if rows != [("request_hmac_key_sha256", key_identity)]:
         raise RegistryStoreError
+
+
+def _validate_metadata_v3(
+    connection: sqlite3.Connection,
+    key_identity: str,
+) -> tuple[str, str]:
+    """Validate the exact secret-free identity of this registry installation."""
+    rows = connection.execute("SELECT key, value FROM registry_metadata ORDER BY key").fetchall()
+    if len(rows) != 3:
+        raise RegistryStoreError
+    values = dict(rows)
+    if set(values) != {"installation_uuid", "request_hmac_key_sha256", "store_uuid"}:
+        raise RegistryStoreError
+    if values["request_hmac_key_sha256"] != key_identity:
+        raise RegistryStoreError
+    for key in ("installation_uuid", "store_uuid"):
+        value = values[key]
+        if (
+            type(value) is not str
+            or len(value) != 36
+            or value != value.lower()
+            or value.count("-") != 4
+        ):
+            raise RegistryStoreError
+        try:
+            parsed = UUID(value)
+        except (AttributeError, ValueError) as exc:
+            raise RegistryStoreError from exc
+        if parsed.version != 4 or str(parsed) != value:
+            raise RegistryStoreError
+    if values["installation_uuid"] == values["store_uuid"]:
+        raise RegistryStoreError
+    return values["installation_uuid"], values["store_uuid"]
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
@@ -325,6 +389,155 @@ def _validate_schema_v2_structure(connection: sqlite3.Connection) -> None:
         if (
             row is None
             or len(row) != 1
+            or type(row[0]) is not str
+            or _normalize_sql(row[0]) != _normalize_sql(expected_sql)
+        ):
+            raise RegistryStoreError
+
+
+def _validate_schema_v3_structure(  # noqa: PLR0912
+    connection: sqlite3.Connection,
+) -> None:
+    """Validate the exact v3 tables, indexes, triggers, and strict metadata shape."""
+    if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+        raise RegistryStoreError
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [
+        ("registry_fence_references",),
+        ("registry_fence_stores",),
+        ("registry_fence_transitions",),
+        ("registry_mapping_history",),
+        ("registry_metadata",),
+        ("registry_operations",),
+        ("registry_printers",),
+        ("registry_profile_history",),
+    ]:
+        raise RegistryStoreError
+    _validate_table(connection, _METADATA_SCHEMA)
+    _validate_table(connection, _PRINTER_SCHEMA)
+    _validate_table(connection, _OPERATION_SCHEMA)
+    _validate_table(connection, _MAPPING_HISTORY_SCHEMA)
+    _validate_table(connection, _PROFILE_HISTORY_SCHEMA)
+    fence_definitions = {
+        "registry_fence_stores": (
+            ("owner_store", "TEXT", 1, 1),
+            ("installation_uuid", "TEXT", 1, 0),
+            ("store_id", "TEXT", 1, 0),
+            ("schema_version", "INTEGER", 1, 0),
+        ),
+        "registry_fence_references": (
+            ("fence_reference_id", "TEXT", 1, 1),
+            ("printer_uuid", "TEXT", 1, 0),
+            ("fence_kind", "TEXT", 1, 0),
+            ("owner_store", "TEXT", 1, 0),
+            ("store_id", "TEXT", 1, 0),
+            ("owner_schema_version", "INTEGER", 1, 0),
+            ("operation_id", "TEXT", 1, 0),
+            ("state", "TEXT", 1, 0),
+            ("created_at_unix_ms", "INTEGER", 1, 0),
+            ("transitioned_at_unix_ms", "INTEGER", 1, 0),
+            ("resolution_code", "TEXT", 0, 0),
+        ),
+        "registry_fence_transitions": (
+            ("fence_reference_id", "TEXT", 1, 1),
+            ("sequence", "INTEGER", 1, 2),
+            ("from_state", "TEXT", 0, 0),
+            ("to_state", "TEXT", 1, 0),
+            ("transitioned_at_unix_ms", "INTEGER", 1, 0),
+            ("resolution_code", "TEXT", 0, 0),
+        ),
+    }
+    fence_indexes = {
+        "registry_fence_stores": frozenset(
+            {
+                (("owner_store",), True),
+                (("store_id",), True),
+                (("installation_uuid", "owner_store"), False),
+            }
+        ),
+        "registry_fence_references": frozenset(
+            {
+                (("fence_reference_id",), True),
+                (
+                    (
+                        "owner_store",
+                        "store_id",
+                        "owner_schema_version",
+                        "operation_id",
+                        "fence_kind",
+                    ),
+                    True,
+                ),
+                (("printer_uuid", "state", "fence_reference_id"), False),
+            }
+        ),
+        "registry_fence_transitions": frozenset({(("fence_reference_id", "sequence"), True)}),
+    }
+    for name, definition in fence_definitions.items():
+        rows = connection.execute(f"PRAGMA table_info({name})").fetchall()
+        if (
+            any(len(row) < 6 for row in rows)
+            or tuple((row[1], row[2], row[3], row[5]) for row in rows) != definition
+        ):
+            raise RegistryStoreError
+        table_rows = connection.execute(f"PRAGMA table_list('{name}')").fetchall()
+        if (
+            len(table_rows) != 1
+            or len(table_rows[0]) < 6
+            or table_rows[0][1:6] != (name, "table", len(definition), 0, 1)
+        ):
+            raise RegistryStoreError
+        sql_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        expected_sql = {
+            **dict(
+                zip(
+                    (
+                        "registry_fence_stores",
+                        "registry_fence_references",
+                        "registry_fence_transitions",
+                    ),
+                    FENCE_TABLE_SQL,
+                    strict=True,
+                )
+            ),
+        }[name]
+        if (
+            sql_row is None
+            or type(sql_row[0]) is not str
+            or _normalize_sql(sql_row[0]) != _normalize_sql(expected_sql)
+        ):
+            raise RegistryStoreError
+        indexes: set[tuple[tuple[str, ...], bool]] = set()
+        for row in connection.execute(f"PRAGMA index_list({name})").fetchall():
+            if len(row) < 5 or row[4] != 0 or type(row[1]) is not str or row[2] not in {0, 1}:
+                raise RegistryStoreError
+            info = connection.execute(
+                "SELECT name FROM pragma_index_info(?) ORDER BY seqno", (row[1],)
+            ).fetchall()
+            if not info:
+                raise RegistryStoreError
+            indexes.add((tuple(cast(str, item[0]) for item in info), bool(row[2])))
+        if indexes != fence_indexes[name]:
+            raise RegistryStoreError
+    trigger_names = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+    ).fetchall()
+    if trigger_names != [(name,) for name in sorted(_V3_TRIGGER_SQL)]:
+        raise RegistryStoreError
+    for name, expected_sql in _V3_TRIGGER_SQL.items():
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)
+        ).fetchone()
+        if (
+            row is None
             or type(row[0]) is not str
             or _normalize_sql(row[0]) != _normalize_sql(expected_sql)
         ):

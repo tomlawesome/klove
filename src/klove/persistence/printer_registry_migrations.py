@@ -10,11 +10,16 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Final, cast
+from uuid import uuid4
 
 from klove.domain.artifacts import SafetyProfile, safety_profile_fingerprint
 from klove.domain.onboarding import PrinterIdentityEvidence, RegisteredPrinter
 from klove.persistence.printer_registry_codec import _decode_operation, _decode_printer
 from klove.persistence.printer_registry_errors import RegistryStoreError
+from klove.persistence.printer_registry_fences import (
+    _validate_fence_catalogue,
+    initialize_fence_catalogue,
+)
 from klove.persistence.printer_registry_schema import (
     _MAPPING_HISTORY_DELETE_TRIGGER_SQL,
     _MAPPING_HISTORY_TABLE_SQL,
@@ -24,8 +29,11 @@ from klove.persistence.printer_registry_schema import (
     _PROFILE_HISTORY_UPDATE_TRIGGER_SQL,
     _SCHEMA_VERSION_V1,
     _SCHEMA_VERSION_V2,
+    _SCHEMA_VERSION_V3,
+    _validate_metadata_v3,
     _validate_schema,
     _validate_schema_v2_structure,
+    _validate_schema_v3_structure,
 )
 
 SchemaValidator = Callable[[sqlite3.Connection], None]
@@ -52,6 +60,15 @@ def validate_v2(connection: sqlite3.Connection) -> None:
     _validate_schema_v2_structure(connection)
     printers = _read_v1_records(connection)
     _validate_history(connection, printers)
+
+
+def validate_v3(connection: sqlite3.Connection) -> None:
+    """Validate v3 structure, registry history, metadata, and fence rows."""
+    _validate_schema_v3_structure(connection)
+    printers = _read_v1_records(connection)
+    _validate_history(connection, printers)
+    _validate_metadata_v3(connection, _metadata_key_identity(connection))
+    _validate_fence_catalogue(connection, {printer.printer_uuid for printer in printers})
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -100,12 +117,42 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
             )
 
 
+def _metadata_key_identity(connection: sqlite3.Connection) -> str:
+    rows = connection.execute(
+        "SELECT key, value FROM registry_metadata WHERE key = 'request_hmac_key_sha256'"
+    ).fetchall()
+    if len(rows) != 1 or len(rows[0]) != 2 or type(rows[0][1]) is not str:
+        raise RegistryStoreError
+    if rows[0][0] != "request_hmac_key_sha256":
+        raise RegistryStoreError
+    return rows[0][1]
+
+
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Install v3 metadata and an empty catalogue without opening owner journals."""
+    validate_v2(connection)
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("installation_uuid", str(uuid4())),
+    )
+    connection.execute(
+        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+        ("store_uuid", str(uuid4())),
+    )
+    initialize_fence_catalogue(connection)
+
+
 V1_TO_V2: Final[RegistryMigrationStep] = RegistryMigrationStep(
     _SCHEMA_VERSION_V1,
     _SCHEMA_VERSION_V2,
     _migrate_v1_to_v2,
 )
-MIGRATION_STEPS: Final[tuple[RegistryMigrationStep, ...]] = (V1_TO_V2,)
+V2_TO_V3: Final[RegistryMigrationStep] = RegistryMigrationStep(
+    _SCHEMA_VERSION_V2,
+    _SCHEMA_VERSION_V3,
+    _migrate_v2_to_v3,
+)
+MIGRATION_STEPS: Final[tuple[RegistryMigrationStep, ...]] = (V1_TO_V2, V2_TO_V3)
 
 
 def _read_v1_records(connection: sqlite3.Connection) -> tuple[RegisteredPrinter, ...]:

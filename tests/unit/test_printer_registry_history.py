@@ -25,7 +25,7 @@ from klove.persistence.printer_registry_history import (
     _decode_mapping,
     _decode_profile,
 )
-from klove.persistence.printer_registry_schema import _SCHEMA_VERSION_V2
+from klove.persistence.printer_registry_schema import _SCHEMA_VERSION
 
 from ..onboarding_helpers import (
     OTHER_IDEMPOTENCY_KEY,
@@ -62,12 +62,12 @@ def _update_operation(
     )
 
 
-def test_empty_store_is_v2_and_create_appends_typed_history(tmp_path: Path) -> None:
+def test_empty_store_is_v3_and_create_appends_typed_history(tmp_path: Path) -> None:
     store, current = _create(tmp_path)
 
     connection = store._connect()
     try:
-        assert connection.execute("PRAGMA user_version").fetchone() == (_SCHEMA_VERSION_V2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (_SCHEMA_VERSION,)
     finally:
         connection.close()
     mappings = store.mapping_history(PRINTER_UUID)
