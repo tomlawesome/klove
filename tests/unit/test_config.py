@@ -562,6 +562,26 @@ def test_control_timing_is_finite_positive_and_consistent(values: dict[str, floa
         ControlConfig(**values)  # type: ignore[arg-type]
 
 
+def test_control_journal_path_is_absolute_and_storage_is_disjoint() -> None:
+    with pytest.raises(ValidationError):
+        ControlConfig(journal_file=Path("relative.sqlite3"))
+    for control_path in (
+        Path("/state/registry.sqlite3"),
+        Path("/state/start.sqlite3"),
+        Path("/state/secrets/control.sqlite3"),
+    ):
+        with pytest.raises(ValidationError, match=r"separate|outside"):
+            AppConfig(
+                api=ApiConfig(token_file=Path("token")),
+                registry=RegistryConfig(
+                    database_file=Path("/state/registry.sqlite3"),
+                    secret_directory=Path("/state/secrets"),
+                ),
+                control=ControlConfig(journal_file=control_path),
+                dispatch=DispatchConfig(journal_file=Path("/state/start.sqlite3")),
+            )
+
+
 @pytest.mark.parametrize(
     "values",
     [

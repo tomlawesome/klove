@@ -17,6 +17,7 @@ session_absolute_seconds = 1800
 
 [control]
 enabled = true
+journal_file = "/var/lib/klove/control-journal.sqlite3"
 request_timeout_seconds = 10
 confirmation_timeout_seconds = 5
 poll_interval_seconds = 0.1

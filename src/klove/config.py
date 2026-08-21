@@ -309,10 +309,19 @@ class ControlConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = False
+    journal_file: Path = Path("/var/lib/klove/control-journal.sqlite3")
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=30, allow_inf_nan=False)
     confirmation_timeout_seconds: float = Field(default=5.0, gt=0, le=30, allow_inf_nan=False)
     poll_interval_seconds: float = Field(default=0.1, gt=0, le=5, allow_inf_nan=False)
     idempotency_capacity: int = Field(default=1024, ge=1, le=100_000)
+
+    @field_validator("journal_file")
+    @classmethod
+    def journal_path_is_absolute(cls, value: Path) -> Path:
+        """Keep durable control uncertainty on one explicit owner-only path."""
+        if not value.is_absolute():
+            raise ValueError("control journal_file must be absolute")
+        return value
 
     @model_validator(mode="after")
     def finite_consistent_timing(self) -> ControlConfig:
@@ -379,6 +388,13 @@ class AppConfig(BaseModel):
             raise ValueError("file bootstrap printers require an exact probe CIDR allowlist")
         if self.registry.database_file.is_relative_to(self.registry.secret_directory):
             raise ValueError("registry database must remain outside the secret directory")
+        if self.control.journal_file in {
+            self.registry.database_file,
+            self.dispatch.journal_file,
+        }:
+            raise ValueError("registry, control, and print-start journals must be separate files")
+        if self.control.journal_file.is_relative_to(self.registry.secret_directory):
+            raise ValueError("control journal must remain outside the secret directory")
         if self.dispatch.journal_file == self.registry.database_file:
             raise ValueError("registry and print-start journals must be separate files")
         if self.dispatch.journal_file.is_relative_to(self.registry.secret_directory):
