@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -199,10 +200,11 @@ def _mqtt_broker(
     context: ssl.SSLContext,
     stop: threading.Event,
     ready: threading.Event,
+    listen_ipv4: str,
 ) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("0.0.0.0", 8883))  # noqa: S104 -- isolated internal Docker network.
+        listener.bind((listen_ipv4, 8883))
         listener.listen(2)
         listener.settimeout(1)
         ready.set()
@@ -219,12 +221,10 @@ def _mqtt_broker(
                 plain.close()
 
 
-def _listen() -> socket.socket:
+def _listen(listen_ipv4: str) -> socket.socket:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(
-        ("0.0.0.0", CONTROL_PORT)  # noqa: S104 -- isolated internal Docker network.
-    )
+    listener.bind((listen_ipv4, CONTROL_PORT))
     listener.listen(2)
     listener.settimeout(45)
     return listener
@@ -285,7 +285,7 @@ def _upload_session(  # noqa: PLR0915 -- linear wire transcript keeps ordering r
         _expect(connection, "PASV", None)
         passive = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         passive.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        passive.bind(("0.0.0.0", 0))  # noqa: S104 -- isolated internal Docker network.
+        passive.bind((local_address, 0))
         passive.listen(1)
         passive.settimeout(15)
         passive_port = passive.getsockname()[1]
@@ -367,18 +367,19 @@ def _upload_session(  # noqa: PLR0915 -- linear wire transcript keeps ordering r
 def main() -> int:
     output = Path("/evidence/ftps-server-response-profile")
     context = _control_context()
+    listen_ipv4 = str(ipaddress.IPv4Address(socket.gethostbyname(socket.gethostname())))
     stop_mqtt = threading.Event()
     mqtt_ready = threading.Event()
     mqtt_thread = threading.Thread(
         target=_mqtt_broker,
-        args=(context, stop_mqtt, mqtt_ready),
+        args=(context, stop_mqtt, mqtt_ready, listen_ipv4),
         daemon=True,
     )
     mqtt_thread.start()
     if not mqtt_ready.wait(timeout=5):
         raise ObservationFailure("mqtt_broker_not_ready")
     try:
-        with _listen() as listener:
+        with _listen(listen_ipv4) as listener:
             try:
                 cleanup, cleanup_peer = _cleanup_session(listener, context)
             except (OSError, ssl.SSLError, TimeoutError) as error:

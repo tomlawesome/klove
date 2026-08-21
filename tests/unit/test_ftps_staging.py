@@ -302,7 +302,7 @@ def test_begin_creation_failure_removes_reservation(
     value = store(tmp_path)
     real_open = os.open
 
-    def fail_receiving(path: Any, flags: int, mode: int = 0o777) -> int:
+    def fail_receiving(path: Any, flags: int, mode: int = 0o600) -> int:
         if str(path).endswith(".receiving"):
             raise OSError
         return real_open(path, flags, mode)
