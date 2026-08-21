@@ -5,10 +5,11 @@ denial. The accepted canonical operations are currently limited to:
 
 - pause, resume, cancel
 
+ADR 0007 accepts one authenticated, registry-bound artifact-dispatch
+composition, but its coordinator and every northbound adapter remain absent.
 The roadmap proposes the following later operations, but each remains prohibited
 until its own ADR accepts the complete typed contract and safety evidence:
 
-- dispatch artifact
 - set hotend or bed target
 - set speed multiplier
 - set a mapped fan or light
@@ -60,4 +61,6 @@ Authentication, authorization, translation, and command-safety code starts and
 remains at 100% statement and branch coverage. The full validation strategy,
 including negative tests and hardware boundaries, is in
 [deployment, delivery, and validation](deployment.md). The artifact, upload,
-and print-start contracts are canonical in [ADRs 0003–0005](../decisions/0003-exact-artifact-target-qualification.md).
+print-start, and ingress contracts are canonical in
+[ADRs 0003–0005](../decisions/0003-exact-artifact-target-qualification.md) and
+[ADR 0007](../decisions/0007-authenticated-dispatch-ingress.md).

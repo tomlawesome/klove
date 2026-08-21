@@ -29,11 +29,16 @@ that the protocol model is complete. The suite therefore also includes:
   completion decoding, cancellation, hostile inputs, no browser persistence,
   responsive layouts, keyboard navigation, accessibility, and recovery outside
   the frame;
-- Grove contract and browser tests pinned to the supported source revision for
+- clean-room Grove contract and browser tests pinned to the supported source
+  revision for
   `KLOVE` create-field limits, stable proxy identity, successful and failed
   handoff, image fallback, exact-printer scheduling, model-compatibility bypass,
   unsupported Bambu feature suppression, and regression of existing Bambu
   printer types;
+- every committed Grove observation fixture paired with a validated provenance
+  manifest naming the exact upstream and harness revisions, black-box scenario,
+  tools, UTC capture date, generated inputs, normalization, media type, byte
+  count, SHA-256, value classifications, and source/secret/privacy review;
 - control tests for exact token/job/state matching, per-printer serialization,
   history job-id/start-time bracketing, telemetry-stable control tokens, final
   exact-token rechecks, single dispatch, cross-key uncertainty fencing,
@@ -67,6 +72,13 @@ that the protocol model is complete. The suite therefore also includes:
   restart/reconnect gating, cross-key and cross-service printer fences, corrupt
   or weakened schemas, unsafe storage permissions, and every journal failure
   boundary;
+- authenticated dispatch-ingress tests for exact principal/scope/printer
+  grants, strict metadata and streamed-body bounds, digest/length mismatch,
+  partial intake cleanup, operation/key collisions, private spool permissions,
+  every upload/start durable checkpoint, cancellation races, client disconnect,
+  restart and reconnect reconciliation without retry, exact terminal history,
+  non-enumerating result authorization, redaction, capacity exhaustion, source
+  retention, recovery-set consistency, and concurrent-printer isolation;
 - repository policy tests that reject the enumerated prohibited RPC literals,
   confine the three accepted job-control RPC literals and the one accepted
   print-start literal to their separate typed adapters, constrain the native
@@ -102,8 +114,9 @@ context/daemon-bound cleanup, and finite Docker timeouts.
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and
 does not authorize generic G-code in `src/klove`. The new start adapter and
-journal are covered by deterministic protocol/fault tests; issue #12 owns the
-complete real-process intake-through-completion contract. The native amd64
+journal are covered by deterministic protocol/fault tests; issue #12 —
+end-to-end dispatch owns the complete real-process intake-through-completion
+contract. The native amd64
 stack also does not claim RatOS coverage. RatOS
 v2.1.0 acceptance separately records the exact ARM release asset checksum,
 supported board, running software identities, controlled configuration and
@@ -161,7 +174,7 @@ non-editable or stale environment installation from producing misleading
 coverage for code other than the source under review.
 
 The registry and onboarding core add no browser dependency or UI implementation.
-Issue #59 must introduce a repeatable Playwright entry point only after
-#64–#65's runtime and registry/authentication boundaries are merged. Browser
-results supplement—not replace—the package-wide 100% statement and branch gate
-for authentication, authorization, decoding, translation, control, and policy.
+#59 — embedded setup/recovery must introduce a repeatable Playwright entry point
+only after #64 — dynamic runtime and #65 — protected onboarding API are merged.
+Browser results supplement—not replace—the package-wide 100% statement and branch
+gate for authentication, authorization, decoding, translation, control, and policy.

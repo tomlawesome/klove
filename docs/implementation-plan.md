@@ -1,7 +1,7 @@
 # Klove implementation plan
 
 Status: active  
-Last updated: 2026-08-14
+Last updated: 2026-08-21
 
 ## Delivery policy
 
@@ -34,17 +34,18 @@ Last updated: 2026-08-14
   [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)
   accepts that exception for setup/recovery only and retires the broad native
   provider programme.
-- [Secure-registry epic #58](https://github.com/tomlawesome/klove/issues/58)
-  is split into independently reviewable foundation
-  [#62](https://github.com/tomlawesome/klove/issues/62), direct-probe lifecycle
-  [#63](https://github.com/tomlawesome/klove/issues/63), dynamic runtime
-  [#64](https://github.com/tomlawesome/klove/issues/64), and protected API
-  [#65](https://github.com/tomlawesome/klove/issues/65) slices. Foundation #62
-  is merged and #63's probe/lifecycle library boundary is implemented; #64 is
-  the next dependent slice. Embedded
-  setup/recovery [#59](https://github.com/tomlawesome/klove/issues/59) and the
-  minimal Grove contribution
-  [#60](https://github.com/tomlawesome/klove/issues/60) follow under epic #32.
+- [#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11)
+  accepts ADR 0008's clean-room compatibility implementation, independent
+  visual work, exact-revision fixture provenance, licence/SBOM gates, and
+  normal upstream contribution terms for #32 — Grove bridge, #59 — embedded
+  setup/recovery, and #60 — minimal Grove contribution.
+- [#58 — registry epic](https://github.com/tomlawesome/klove/issues/58) is split
+  into #62 — registry storage, #63 — onboarding core, #64 — runtime fleet, and
+  #65 — protected onboarding API. Storage, core, and runtime bootstrap are
+  implemented; #71 — owner session is merged. #72 — lifecycle routes and #73 —
+  runtime handoff remain before #65 — protected onboarding API is complete.
+  #59 — embedded setup/recovery and #60 — minimal Grove contribution follow
+  under #32 — Grove bridge.
 - [Artifact-contract issue #7](https://github.com/tomlawesome/klove/issues/7)
   and [PR #46](https://github.com/tomlawesome/klove/pull/46) record the completed
   safe-dispatch contract prerequisite.
@@ -57,8 +58,9 @@ Last updated: 2026-08-14
   [PR #55](https://github.com/tomlawesome/klove/pull/55) are complete on
   protected `develop`.
 - [Durable print-start issue #9](https://github.com/tomlawesome/klove/issues/9)
-  is implemented under accepted ADR 0005 with no northbound route; issue #12
-  remains the end-to-end lifecycle slice.
+  is implemented under accepted ADR 0005 with no northbound route. ADR 0007
+  accepts the one authenticated dispatch-ingress contract; issue #12 —
+  end-to-end dispatch remains the implementation and proof chain.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
   are complete on protected `develop`.
@@ -390,6 +392,29 @@ Exit criterion: the repository and GitHub roadmap agree on the smallest secure
 onboarding boundary, with no new actuator or unauthenticated setup path
 authorized by the decision.
 
+## Accepted decision: clean-room Grove provenance
+
+- [x] Pin the supported upstream to Grove commit
+  `cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4` and review its root AGPL
+  declaration, missing per-file exceptions, vendored notices, dependencies,
+  assets, and contribution process.
+- [x] Prohibit Grove source, test, fixture, dependency, generated-bundle, and
+  asset reuse in Klove; require isolated black-box observation and independent
+  implementation.
+- [x] Classify Grove branding, icons, fonts, screenshots, exact design tokens,
+  layouts, and prose as non-reusable; permit only independently authored
+  semantic visual roles, functional patterns, and ADR-defined factual labels.
+- [x] Define exact-revision fixture manifests, sanitization, SHA-256 identity,
+  notice inventory, complete release SBOM/licence evaluation, and drift gates.
+- [x] Require #60 — minimal Grove contribution to use upstream's issue,
+  assignment, short-lived fork, repository-licence, test, documentation, and
+  pull-request process without creating a supported private fork.
+
+Exit criterion: #32 — Grove bridge, #59 — embedded setup/recovery, and #60 —
+minimal Grove contribution can proceed without copying Grove implementation or
+visual expression into Klove, and every compatibility claim is bound to
+auditable exact-revision evidence.
+
 ## Implemented slice: direct probe and lifecycle orchestration
 
 - [x] Accept only canonical HTTP(S) origins and deployment-allowed DNS/IP
@@ -416,13 +441,34 @@ printer lifecycle from fresh direct evidence, while #64–#65 remain required
 before any product caller can reach it. The complete contract is
 `docs/onboarding-core.md`.
 
+## Accepted decision: authenticated dispatch ingress
+
+- [x] Accept one asynchronous internal contract spanning intake,
+  qualification, verified upload, durable start, and exact terminal history.
+- [x] Require an independently authenticated `printers:dispatch` principal
+  bound to one canonical active registry printer; Grove, browser, setup,
+  private-network, model, name, and caller target claims grant nothing.
+- [x] Freeze strict operation/idempotency identity, exact current
+  target/profile binding, bounded streamed input, private spool ownership,
+  retention, durable result lookup, and non-enumerating authorization.
+- [x] Make `uploading` a durable no-retry boundary, preserve ADR 0005's start
+  journal authority, and require read-only restart/completion reconciliation.
+- [x] Limit cancellation to preventing an upload or start that has not crossed
+  its durable action boundary; it never becomes remote cleanup or a second job
+  cancel path.
+
+Exit criterion: ADR 0007 fixes one fail-closed ingress contract for issue #75 —
+dispatch coordinator and issue #76 — native dispatch proof without exposing a
+northbound adapter or adding an actuator.
+
 ## Next slices
 
-The completed authorized component slices are #5, #8, #9, #62, and #63. ADR
-0006 makes the secure runtime registry the current implementation chain. Its
-private persistence
-and secret-store foundation is implemented under #62 — registry storage, the direct
-probe/orchestration library is implemented under #63 — onboarding core, and
+The completed authorized component slices are #5 — target qualification, #8 —
+verified upload, #9 — durable print start, #62 — registry storage, and #63 —
+onboarding core. ADR 0006 makes the secure runtime registry the current
+implementation chain. Its private persistence and secret-store foundation is
+implemented under #62 — registry storage, the direct probe/orchestration
+library is implemented under #63 — onboarding core, and
 registry-backed monitor activation is implemented under #68 — runtime
 supervisor, and shared admission is implemented under #69 — shared runtime
 gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
@@ -430,12 +476,14 @@ owner authentication and request security are implemented under #71 — owner
 session. Strict secret-free lifecycle routes are implemented under #72 —
 lifecycle routes. Runtime handoff remains #73 — runtime handoff within #65 —
 protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
-The end-to-end lifecycle
-proof in #12 — onboarded lifecycle
-proof consumes that canonical onboarded printer.
+After that protected API chain completes, ADR 0007's accepted ingress is
+implemented by #75 — dispatch coordinator and #76 — native dispatch proof under
+#12 — end-to-end dispatch. The end-to-end lifecycle proof in #12 — onboarded
+lifecycle proof consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
-exact-release acceptance follow-up under #51 and does not block focused
-development. Each safety-critical prerequisite is delivered through its own
+exact-release acceptance follow-up under #51 — RatOS contract and does not
+block focused development. Each safety-critical prerequisite is delivered
+through its own
 protected `develop` pull request and must merge with required checks green
 before work begins on the next dependent implementation. ADR 0004 upload
 remains non-actuating by itself; ADR 0005 print start is internal and is not a
@@ -468,13 +516,13 @@ public dispatch workflow.
    authorization. Track the lifecycle proof in
    [#12](https://github.com/tomlawesome/klove/issues/12) under
    [artifact-dispatch epic #33](https://github.com/tomlawesome/klove/issues/33).
-4. Complete the current-Grove bridge in dependency order: licence/provenance
-   [#11](https://github.com/tomlawesome/klove/issues/11), embedded setup/recovery
-   [#59](https://github.com/tomlawesome/klove/issues/59), conservative MQTT/TLS
-   and FTPS facade issues #10/#14, minimal upstream `KLOVE` contribution
-   [#60](https://github.com/tomlawesome/klove/issues/60), and operations guidance
-   #13. Track the full order under
-   [Grove-bridge epic #32](https://github.com/tomlawesome/klove/issues/32).
+4. Apply the accepted clean-room boundary from
+   [#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11), then
+   complete [#59 — embedded setup/recovery](https://github.com/tomlawesome/klove/issues/59),
+   #10 — MQTT/TLS facade, #14 — FTPS ingress, and
+   [#60 — minimal Grove contribution](https://github.com/tomlawesome/klove/issues/60),
+   followed by #13 — Grove operations. Track the full order under
+   [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
 5. Separately decide and test bounded temperature/speed plus explicitly
    mapped fan/light controls. Keep jog and extrusion disabled until proven;
    [decision #15](https://github.com/tomlawesome/klove/issues/15) gates

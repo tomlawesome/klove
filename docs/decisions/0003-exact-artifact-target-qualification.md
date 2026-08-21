@@ -76,3 +76,12 @@ into unattended dispatch authority.
 
 - [GitHub slice #5](https://github.com/tomlawesome/klove/issues/5)
 - [Dispatch epic #33](https://github.com/tomlawesome/klove/issues/33)
+
+## Subsequent decision
+
+ADR 0007 permits one coordinator to construct `ArtifactTargetApproval` only
+after an ingress adapter independently authenticates an exact-printer grant,
+the coordinator inspects the exact received bytes, and the canonical active
+registry supplies one exact current safety profile. The hostile request never
+supplies the approval object or its authority. This preserves the separation
+between intake claims and trusted current target policy.
