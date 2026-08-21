@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Final, cast
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -15,8 +16,11 @@ from klove.persistence.private_files import (
     prepare_private_file,
     require_private_file,
 )
+from klove.persistence.store_identity import StoreIdentity, canonical_uuid4
 
-_SCHEMA_VERSION: Final = 1
+_SCHEMA_VERSION: Final = 2
+_SCHEMA_VERSION_V1: Final = 1
+_SCHEMA_VERSION_V2: Final = 2
 _ACTIVE_STATES: Final = (
     DispatchState.RECEIVING.value,
     DispatchState.ACCEPTED.value,
@@ -26,6 +30,41 @@ _ACTIVE_STATES: Final = (
     DispatchState.PRINTING.value,
     DispatchState.OUTCOME_UNKNOWN.value,
 )
+_TABLE_COLUMNS: Final = (
+    "operation_id",
+    "idempotency_key",
+    "printer_uuid",
+    "state",
+    "record_json",
+)
+_TABLE_DEFINITION: Final = (
+    ("operation_id", "TEXT", 1, 1),
+    ("idempotency_key", "TEXT", 1, 0),
+    ("printer_uuid", "TEXT", 1, 0),
+    ("state", "TEXT", 1, 0),
+    ("record_json", "TEXT", 1, 0),
+)
+_METADATA_DEFINITION: Final = (("key", "TEXT", 1, 1), ("value", "TEXT", 1, 0))
+_METADATA_TABLE_SQL: Final = """
+CREATE TABLE dispatch_metadata (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+) STRICT
+"""
+_METADATA_TRIGGER_SQL: Final = """
+CREATE TRIGGER dispatch_metadata_no_update
+BEFORE UPDATE ON dispatch_metadata
+BEGIN
+    SELECT RAISE(ABORT, 'dispatch metadata is immutable');
+END
+"""
+_METADATA_DELETE_TRIGGER_SQL: Final = """
+CREATE TRIGGER dispatch_metadata_no_delete
+BEFORE DELETE ON dispatch_metadata
+BEGIN
+    SELECT RAISE(ABORT, 'dispatch metadata is immutable');
+END
+"""
 
 
 class DispatchJournalConflictError(JournalError):
@@ -43,11 +82,21 @@ class DispatchJournalCapacityError(JournalError):
 class DispatchJournal:
     """Persist exact coordinator progress before each unsafe downstream stage."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, installation_id: str) -> None:
         self._path = path
+        self._installation_id = canonical_uuid4(installation_id)
+        self._identity: StoreIdentity | None = None
+
+    @property
+    def identity(self) -> StoreIdentity:
+        """Return the immutable installation, store, and schema identity."""
+        if self._identity is None:
+            raise JournalError
+        return self._identity
 
     def initialize(self) -> None:
         """Create or reject the exact private schema before accepting work."""
+        self._identity = None
         try:
             prepare_private_file(self._path)
             connection = self._connect()
@@ -56,31 +105,61 @@ class DispatchJournal:
                 if version == 0:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
-                        connection.execute(
-                            """
-                            CREATE TABLE dispatch_operations (
-                                operation_id TEXT PRIMARY KEY NOT NULL,
-                                idempotency_key TEXT UNIQUE NOT NULL,
-                                printer_uuid TEXT NOT NULL,
-                                state TEXT NOT NULL,
-                                record_json TEXT NOT NULL
-                            ) STRICT
-                            """
-                        )
+                        _initialize_schema(connection, self._installation_id, str(uuid4()))
                         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                         connection.execute("COMMIT")
                     except sqlite3.Error:
                         connection.execute("ROLLBACK")
                         raise
-                elif version != _SCHEMA_VERSION:
+                    store_id = _read_store_id(connection, self._installation_id)
+                elif version == _SCHEMA_VERSION_V1:
+                    connection.execute("BEGIN IMMEDIATE")
+                    try:
+                        _validate_v1_schema(connection)
+                        store_id = str(uuid4())
+                        _initialize_metadata(connection, self._installation_id, store_id)
+                        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+                        connection.execute("COMMIT")
+                    except (JournalError, sqlite3.Error):
+                        connection.execute("ROLLBACK")
+                        raise
+                elif version != _SCHEMA_VERSION_V2:
                     raise JournalError
                 _validate_schema(connection)
+                if version == _SCHEMA_VERSION_V2:
+                    store_id = _read_store_id(connection, self._installation_id)
+                self._identity = StoreIdentity(self._installation_id, store_id, _SCHEMA_VERSION)
             finally:
                 connection.close()
         except JournalError:
             raise
         except (OSError, PrivateFileError, sqlite3.Error, ValueError) as exc:
             raise JournalError from exc
+
+    def lookup_operation_state(self, operation_id: str) -> DispatchState | None:
+        """Return the exact durable state for one operation identity."""
+        record = self.lookup_operation(operation_id)
+        return None if record is None else record.state
+
+    def lookup_operation(self, operation_id: str) -> DispatchJournalRecord | None:
+        """Return one exact, fully validated durable operation record."""
+        operation_id = canonical_uuid4(operation_id)
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT operation_id, idempotency_key, printer_uuid, state, record_json
+                FROM dispatch_operations WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return _decode(row)
+        except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
+            raise JournalError from exc
+        finally:
+            connection.close()
 
     def lookup(self, operation_id: str, idempotency_key: str) -> DispatchJournalRecord | None:
         """Find either durable identity and reject a partial/colliding pair."""
@@ -277,18 +356,117 @@ def _pragma_integer(connection: sqlite3.Connection, name: str) -> int:
     return row[0]
 
 
-def _validate_schema(connection: sqlite3.Connection) -> None:
-    columns = connection.execute("PRAGMA table_info(dispatch_operations)").fetchall()
-    expected = (
-        ("operation_id", "TEXT", 1, 1),
-        ("idempotency_key", "TEXT", 1, 0),
-        ("printer_uuid", "TEXT", 1, 0),
-        ("state", "TEXT", 1, 0),
-        ("record_json", "TEXT", 1, 0),
+def _initialize_schema(
+    connection: sqlite3.Connection, installation_id: str, store_id: str
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE dispatch_operations (
+            operation_id TEXT PRIMARY KEY NOT NULL,
+            idempotency_key TEXT UNIQUE NOT NULL,
+            printer_uuid TEXT NOT NULL,
+            state TEXT NOT NULL,
+            record_json TEXT NOT NULL
+        ) STRICT
+        """
     )
+    _initialize_metadata(connection, installation_id, store_id)
+
+
+def _initialize_metadata(
+    connection: sqlite3.Connection, installation_id: str, store_id: str
+) -> None:
+    connection.execute(_METADATA_TABLE_SQL)
+    connection.executemany(
+        "INSERT INTO dispatch_metadata (key, value) VALUES (?, ?)",
+        (
+            ("installation_id", canonical_uuid4(installation_id)),
+            ("store_id", canonical_uuid4(store_id)),
+        ),
+    )
+    connection.execute(_METADATA_TRIGGER_SQL)
+    connection.execute(_METADATA_DELETE_TRIGGER_SQL)
+
+
+def _read_store_id(connection: sqlite3.Connection, installation_id: str) -> str:
+    rows = connection.execute(
+        "SELECT key, value FROM dispatch_metadata ORDER BY key"
+    ).fetchall()
+    if len(rows) != 2 or any(
+        len(row) != 2 or type(row[0]) is not str or type(row[1]) is not str for row in rows
+    ):
+        raise JournalError
+    metadata = dict(rows)
+    if set(metadata) != {"installation_id", "store_id"}:
+        raise JournalError
+    if canonical_uuid4(metadata["installation_id"]) != canonical_uuid4(installation_id):
+        raise JournalError
+    return canonical_uuid4(metadata["store_id"])
+
+
+def _validate_schema(connection: sqlite3.Connection) -> None:
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [("dispatch_metadata",), ("dispatch_operations",)]:
+        raise JournalError
+    _validate_operation_schema(connection)
+    metadata = connection.execute("PRAGMA table_info(dispatch_metadata)").fetchall()
+    if any(len(column) < 6 for column in metadata):
+        raise JournalError
+    if tuple((column[1], column[2], column[3], column[5]) for column in metadata) != (
+        ("key", "TEXT", 1, 1),
+        ("value", "TEXT", 1, 0),
+    ):
+        raise JournalError
+    indexes = connection.execute("PRAGMA index_list(dispatch_metadata)").fetchall()
+    if len(indexes) != 1 or any(
+        len(index) < 5 or index[2] != 1 or index[4] != 0 for index in indexes
+    ):
+        raise JournalError
+    names = connection.execute(
+        "SELECT name FROM pragma_index_info(?) ORDER BY seqno", (indexes[0][1],)
+    ).fetchall()
+    if names != [("key",)]:
+        raise JournalError
+    trigger_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'trigger' AND tbl_name = 'dispatch_metadata'
+        ORDER BY name
+        """
+    ).fetchall()
+    if trigger_names != [
+        ("dispatch_metadata_no_delete",),
+        ("dispatch_metadata_no_update",),
+    ]:
+        raise JournalError
+
+
+def _validate_v1_schema(connection: sqlite3.Connection) -> None:
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [("dispatch_operations",)]:
+        raise JournalError
+    _validate_operation_schema(connection)
+
+
+def _validate_operation_schema(connection: sqlite3.Connection) -> None:
+    columns = connection.execute("PRAGMA table_info(dispatch_operations)").fetchall()
     if any(len(column) < 6 for column in columns):
         raise JournalError
-    if tuple((column[1], column[2], column[3], column[5]) for column in columns) != expected:
+    if tuple((column[1], column[2], column[3], column[5]) for column in columns) != (
+        _TABLE_DEFINITION
+    ):
         raise JournalError
     indexes = connection.execute("PRAGMA index_list(dispatch_operations)").fetchall()
     found: set[tuple[str, ...]] = set()

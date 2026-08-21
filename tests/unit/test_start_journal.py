@@ -25,12 +25,19 @@ from klove.persistence.start_journal import (
     _pragma_integer,
     _validate_schema,
 )
+from klove.persistence.store_identity import StoreIdentity, canonical_uuid4
 
 from ..start_helpers import observation, preflight, verified_upload
+
+INSTALLATION_ID = "99999999-9999-4999-8999-999999999999"
 
 
 def journal_path(tmp_path: Path) -> Path:
     return tmp_path / "start-journal.sqlite3"
+
+
+def make_journal(path: Path) -> StartJournal:
+    return StartJournal(path, INSTALLATION_ID)
 
 
 def record(**updates: object) -> StartJournalRecord:
@@ -56,7 +63,7 @@ def failure() -> StartFailure:
 
 def test_journal_reservation_and_terminal_evidence_survive_restart(tmp_path: Path) -> None:
     path = journal_path(tmp_path)
-    journal = StartJournal(path)
+    journal = make_journal(path)
     journal.initialize()
     assert path.stat().st_mode & 0o777 == 0o600
 
@@ -86,7 +93,7 @@ def test_journal_reservation_and_terminal_evidence_survive_restart(tmp_path: Pat
     assert confirmed.state is StartJournalState.CONFIRMED
     assert journal.unresolved(pending.printer_uuid) == ()
 
-    restarted = StartJournal(path)
+    restarted = make_journal(path)
     restarted.initialize()
     assert restarted.lookup(pending.verified) == confirmed
     with closing(sqlite3.connect(path)) as connection:
@@ -94,9 +101,218 @@ def test_journal_reservation_and_terminal_evidence_survive_restart(tmp_path: Pat
         assert connection.execute("PRAGMA synchronous").fetchone() == (2,)
 
 
+def test_identity_and_exact_operation_state_lookup(tmp_path: Path) -> None:
+    path = journal_path(tmp_path)
+    store = make_journal(path)
+    with pytest.raises(JournalError):
+        _ = store.identity
+    store.initialize()
+    identity = store.identity
+    assert identity.installation_id == INSTALLATION_ID
+    assert identity.store_id != identity.installation_id
+    assert identity.schema_version == 2
+    pending = record()
+    assert store.lookup_operation_state(pending.operation_id) is None
+    store.reserve(pending)
+    assert store.lookup_operation(pending.operation_id) == pending
+    assert store.lookup_operation_state(pending.operation_id) is StartJournalState.DISPATCHING
+    assert store.lookup_operation_state("55555555-5555-4555-8555-555555555555") is None
+    with pytest.raises(JournalError):
+        store.lookup_operation_state("not-an-operation")
+    restarted = StartJournal(path, INSTALLATION_ID)
+    restarted.initialize()
+    assert restarted.identity == identity
+
+
+def test_v1_migration_adds_metadata_without_changing_operation_rows(tmp_path: Path) -> None:
+    path = journal_path(tmp_path)
+    pending = record()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """
+            CREATE TABLE start_operations (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                idempotency_key TEXT UNIQUE NOT NULL,
+                printer_uuid TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (
+                    state IN ('dispatching', 'confirmed', 'outcome_unknown')
+                ),
+                record_json TEXT NOT NULL
+            ) STRICT
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO start_operations (
+                operation_id, idempotency_key, printer_uuid, state, record_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                pending.operation_id,
+                pending.idempotency_key,
+                pending.printer_uuid,
+                pending.state.value,
+                pending.model_dump_json(),
+            ),
+        )
+        connection.execute("PRAGMA user_version = 1")
+    path.chmod(0o600)
+
+    store = make_journal(path)
+    store.initialize()
+    assert store.lookup_operation_state(pending.operation_id) is StartJournalState.DISPATCHING
+    assert store.identity.installation_id == INSTALLATION_ID
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("SELECT COUNT(*) FROM start_operations").fetchone() == (1,)
+
+
+def test_identity_metadata_mismatch_and_extra_rows_fail_closed(tmp_path: Path) -> None:
+    path = journal_path(tmp_path)
+    store = make_journal(path)
+    store.initialize()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("DROP TRIGGER start_metadata_no_update")
+        connection.execute(
+            "UPDATE start_metadata SET value = ? WHERE key = 'installation_id'",
+            ("88888888-8888-4888-8888-888888888888",),
+        )
+    with pytest.raises(JournalError):
+        store.initialize()
+
+    clean = make_journal(tmp_path / "extra.sqlite3")
+    clean.initialize()
+    with closing(sqlite3.connect(clean._path)) as connection, connection:
+        connection.execute("INSERT INTO start_metadata (key, value) VALUES ('future', 'x')")
+    with pytest.raises(JournalError):
+        clean.initialize()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "not-a-uuid",
+        "99999999-9999-4999-7999-999999999999",
+        "99999999-9999-4999-8999-99999999999A",
+    ],
+)
+def test_store_identity_rejects_noncanonical_uuid4_values(value: object) -> None:
+    with pytest.raises(JournalError):
+        canonical_uuid4(value)  # type: ignore[arg-type]
+    with pytest.raises(JournalError):
+        StoreIdentity(value, "88888888-8888-4888-8888-888888888888", 2)  # type: ignore[arg-type]
+    with pytest.raises(JournalError):
+        StoreIdentity(
+            "99999999-9999-4999-8999-999999999999",
+            "88888888-8888-4888-8888-888888888888",
+            value,  # type: ignore[arg-type]
+        )
+
+
+def test_start_schema_validation_rejects_each_metadata_structure_weakness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(journal_module, "_validate_operation_schema", lambda _connection: None)
+
+    class Schema:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+            self.query = ""
+
+        def execute(self, query: str, _params: object = None) -> Schema:
+            self.query = query
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:  # noqa: PLR0911
+            if "type = 'table'" in self.query:
+                if self.mode == "wrong_tables":
+                    return []
+                return [("start_metadata",), ("start_operations",)]
+            if self.query.startswith("PRAGMA table_info"):
+                if self.mode == "short_columns":
+                    return [("short",)]
+                if self.mode == "bad_columns":
+                    return [
+                        (0, "key", "BLOB", 1, None, 1),
+                        (1, "value", "TEXT", 1, None, 0),
+                    ]
+                return [
+                    (0, "key", "TEXT", 1, None, 1),
+                    (1, "value", "TEXT", 1, None, 0),
+                ]
+            if self.query.startswith("PRAGMA index_list"):
+                if self.mode == "bad_index":
+                    return [("short",)]
+                return [(0, "index", 1, "c", 0)]
+            if self.query.startswith("SELECT name FROM pragma_index_info"):
+                return [] if self.mode == "bad_index_columns" else [("key",)]
+            if "type = 'trigger'" in self.query:
+                return [] if self.mode == "bad_triggers" else [
+                    ("start_metadata_no_delete",),
+                    ("start_metadata_no_update",),
+                ]
+            return []
+
+    for mode in (
+        "wrong_tables",
+        "short_columns",
+        "bad_columns",
+        "bad_index",
+        "bad_index_columns",
+        "bad_triggers",
+    ):
+        with pytest.raises(JournalError):
+            _validate_schema(Schema(mode))  # type: ignore[arg-type]
+    with pytest.raises(JournalError):
+        journal_module._validate_v1_schema(Schema("wrong_tables"))  # type: ignore[arg-type]
+
+
+def test_start_identity_and_lookup_helpers_reject_corrupt_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Rows:
+        def __init__(self, values: list[tuple[object, ...]]) -> None:
+            self.values = values
+
+        def execute(self, _query: str, _params: object = None) -> Rows:
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self.values
+
+    valid_store = "88888888-8888-4888-8888-888888888888"
+    for rows in (
+        [("short",)],
+        [("future", "x"), ("store_id", valid_store)],
+        [
+            ("installation_id", "77777777-7777-4777-8777-777777777777"),
+            ("store_id", valid_store),
+        ],
+    ):
+        with pytest.raises(JournalError):
+            journal_module._read_store_id(Rows(rows), INSTALLATION_ID)  # type: ignore[arg-type]
+
+    class FailedConnection:
+        def execute(self, _query: str, _params: object = None) -> object:
+            raise sqlite3.OperationalError
+
+        def close(self) -> None:
+            return None
+
+    store = make_journal(journal_path(tmp_path))
+    def failed_connect() -> FailedConnection:
+        return FailedConnection()
+
+    monkeypatch.setattr(store, "_connect", failed_connect)
+    with pytest.raises(JournalError):
+        store.lookup_operation("99999999-9999-4999-8999-999999999999")
+
+
 @pytest.mark.parametrize("collision", ["operation", "key", "two_rows"])
 def test_journal_rejects_every_operation_or_key_collision(tmp_path: Path, collision: str) -> None:
-    journal = StartJournal(journal_path(tmp_path))
+    journal = make_journal(journal_path(tmp_path))
     journal.initialize()
     first = record()
     journal.reserve(first)
@@ -143,7 +359,7 @@ def test_journal_rejects_every_operation_or_key_collision(tmp_path: Path, collis
 
 
 def test_reserve_requires_dispatching_and_terminal_transition_is_single(tmp_path: Path) -> None:
-    journal = StartJournal(journal_path(tmp_path))
+    journal = make_journal(journal_path(tmp_path))
     journal.initialize()
     pending = record()
     with pytest.raises(JournalError):
@@ -172,7 +388,7 @@ def test_reserve_requires_dispatching_and_terminal_transition_is_single(tmp_path
 def test_reserve_atomically_rejects_another_unresolved_operation(
     tmp_path: Path,
 ) -> None:
-    journal = StartJournal(journal_path(tmp_path))
+    journal = make_journal(journal_path(tmp_path))
     journal.initialize()
     journal.reserve(record())
     other = verified_upload(
@@ -206,7 +422,7 @@ def test_reserve_atomically_rejects_another_unresolved_operation(
 
 
 def test_lookup_absence_and_printer_filter_are_exact(tmp_path: Path) -> None:
-    journal = StartJournal(journal_path(tmp_path))
+    journal = make_journal(journal_path(tmp_path))
     journal.initialize()
     assert journal.lookup(verified_upload()) is None
     journal.reserve(record())
@@ -219,46 +435,46 @@ def test_journal_rejects_public_files_symlinks_and_unsafe_parents(tmp_path: Path
     public.touch()
     public.chmod(0o644)
     with pytest.raises(JournalError):
-        StartJournal(public).initialize()
+        make_journal(public).initialize()
     with pytest.raises(JournalError):
-        StartJournal(public)._connect()
+        make_journal(public)._connect()
 
     directory = tmp_path / "directory.sqlite3"
     directory.mkdir()
     with pytest.raises(JournalError):
-        StartJournal(directory).initialize()
+        make_journal(directory).initialize()
 
     target = tmp_path / "target.sqlite3"
     target.touch(mode=0o600)
     link = tmp_path / "link.sqlite3"
     link.symlink_to(target)
     with pytest.raises(JournalError):
-        StartJournal(link).initialize()
+        make_journal(link).initialize()
 
     real_parent = tmp_path / "real"
     real_parent.mkdir()
     linked_parent = tmp_path / "linked"
     linked_parent.symlink_to(real_parent, target_is_directory=True)
     with pytest.raises(JournalError):
-        StartJournal(linked_parent / "journal.sqlite3").initialize()
+        make_journal(linked_parent / "journal.sqlite3").initialize()
 
     public_parent = tmp_path / "public-parent"
     public_parent.mkdir()
     public_parent.chmod(0o755)
     with pytest.raises(JournalError):
-        StartJournal(public_parent / "journal.sqlite3").initialize()
+        make_journal(public_parent / "journal.sqlite3").initialize()
 
 
 def test_journal_requires_an_existing_parent_and_supported_schema(tmp_path: Path) -> None:
     with pytest.raises(JournalError):
-        StartJournal(tmp_path / "missing" / "journal.sqlite3").initialize()
+        make_journal(tmp_path / "missing" / "journal.sqlite3").initialize()
 
     future = tmp_path / "future.sqlite3"
     with closing(sqlite3.connect(future)) as connection, connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
     future.chmod(0o600)
     with pytest.raises(JournalError):
-        StartJournal(future).initialize()
+        make_journal(future).initialize()
 
     wrong = tmp_path / "wrong.sqlite3"
     with closing(sqlite3.connect(wrong)) as connection, connection:
@@ -266,7 +482,7 @@ def test_journal_requires_an_existing_parent_and_supported_schema(tmp_path: Path
         connection.execute("PRAGMA user_version = 1")
     wrong.chmod(0o600)
     with pytest.raises(JournalError):
-        StartJournal(wrong).initialize()
+        make_journal(wrong).initialize()
 
 
 @pytest.mark.parametrize(
@@ -302,7 +518,7 @@ def test_journal_rejects_structurally_weakened_schema(
     path.chmod(0o600)
 
     with pytest.raises(JournalError):
-        StartJournal(path).initialize()
+        make_journal(path).initialize()
 
 
 def test_initialize_rolls_back_schema_creation_errors(
@@ -325,7 +541,7 @@ def test_initialize_rolls_back_schema_creation_errors(
         def close(self) -> None:
             calls.append("CLOSE")
 
-    store = StartJournal(journal_path(tmp_path))
+    store = make_journal(journal_path(tmp_path))
     monkeypatch.setattr(store, "_connect", Connection)
     with pytest.raises(JournalError):
         store.initialize()
@@ -338,7 +554,7 @@ def test_reserve_rolls_back_decoder_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = StartJournal(journal_path(tmp_path))
+    store = make_journal(journal_path(tmp_path))
     store.initialize()
 
     def broken_match(_rows: object, _verified: object) -> None:
@@ -380,7 +596,7 @@ def test_connect_closes_failed_connections(
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     with pytest.raises(JournalError):
-        StartJournal(path)._connect()
+        make_journal(path)._connect()
     assert closed is (failure != "connect")
 
 
@@ -404,7 +620,7 @@ def test_terminal_write_rolls_back_commit_errors(
         def close(self) -> None:
             calls.append("CLOSE")
 
-    store = StartJournal(journal_path(tmp_path))
+    store = make_journal(journal_path(tmp_path))
     monkeypatch.setattr(store, "_connect", Connection)
     with pytest.raises(JournalError):
         store._replace(record())
@@ -424,13 +640,13 @@ def test_schema_decoder_rejects_malformed_pragma_rows() -> None:
             return Cursor([("short",)])
 
     with pytest.raises(JournalError):
-        _validate_schema(Connection())  # type: ignore[arg-type]
+        journal_module._validate_operation_schema(Connection())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("corruption", ["json", "state"])
 def test_journal_rejects_corrupt_or_contradictory_rows(tmp_path: Path, corruption: str) -> None:
     path = journal_path(tmp_path)
-    journal = StartJournal(path)
+    journal = make_journal(path)
     journal.initialize()
     pending = record()
     journal.reserve(pending)

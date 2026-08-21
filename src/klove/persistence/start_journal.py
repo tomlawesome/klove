@@ -7,6 +7,7 @@ import sqlite3
 import stat
 from pathlib import Path
 from typing import Final, cast
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -18,8 +19,11 @@ from klove.domain.start import (
 )
 from klove.domain.upload import VerifiedUpload
 from klove.errors import JournalError
+from klove.persistence.store_identity import StoreIdentity, canonical_uuid4
 
-_SCHEMA_VERSION: Final = 1
+_SCHEMA_VERSION: Final = 2
+_SCHEMA_VERSION_V1: Final = 1
+_SCHEMA_VERSION_V2: Final = 2
 _TABLE_COLUMNS: Final = (
     "operation_id",
     "idempotency_key",
@@ -38,6 +42,28 @@ _UNIQUE_INDEXES: Final = {
     ("operation_id",),
     ("idempotency_key",),
 }
+_METADATA_COLUMNS: Final = ("key", "value")
+_METADATA_DEFINITION: Final = (("key", "TEXT", 1, 1), ("value", "TEXT", 1, 0))
+_METADATA_TABLE_SQL: Final = """
+CREATE TABLE start_metadata (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+) STRICT
+"""
+_METADATA_TRIGGER_SQL: Final = """
+CREATE TRIGGER start_metadata_no_update
+BEFORE UPDATE ON start_metadata
+BEGIN
+    SELECT RAISE(ABORT, 'start metadata is immutable');
+END
+"""
+_METADATA_DELETE_TRIGGER_SQL: Final = """
+CREATE TRIGGER start_metadata_no_delete
+BEFORE DELETE ON start_metadata
+BEGIN
+    SELECT RAISE(ABORT, 'start metadata is immutable');
+END
+"""
 
 
 class JournalConflictError(JournalError):
@@ -51,11 +77,21 @@ class JournalFenceError(JournalError):
 class StartJournal:
     """Persist the dispatch reservation before any start request can be sent."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, installation_id: str) -> None:
         self._path = path
+        self._installation_id = canonical_uuid4(installation_id)
+        self._identity: StoreIdentity | None = None
+
+    @property
+    def identity(self) -> StoreIdentity:
+        """Return the immutable installation, store, and schema identity."""
+        if self._identity is None:
+            raise JournalError
+        return self._identity
 
     def initialize(self) -> None:
         """Create or validate the private journal and its exact schema."""
+        self._identity = None
         _prepare_private_file(self._path)
         connection = self._connect()
         try:
@@ -63,28 +99,56 @@ class StartJournal:
             if version == 0:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS start_operations (
-                            operation_id TEXT PRIMARY KEY NOT NULL,
-                            idempotency_key TEXT UNIQUE NOT NULL,
-                            printer_uuid TEXT NOT NULL,
-                            state TEXT NOT NULL CHECK (
-                                state IN ('dispatching', 'confirmed', 'outcome_unknown')
-                            ),
-                            record_json TEXT NOT NULL
-                        ) STRICT
-                        """
-                    )
+                    _initialize_schema(connection, self._installation_id, str(uuid4()))
                     connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                     connection.execute("COMMIT")
                 except sqlite3.Error:
                     connection.execute("ROLLBACK")
                     raise
-            elif version != _SCHEMA_VERSION:
+                store_id = _read_store_id(connection, self._installation_id)
+            elif version == _SCHEMA_VERSION_V1:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    _validate_v1_schema(connection)
+                    store_id = str(uuid4())
+                    _initialize_metadata(connection, self._installation_id, store_id)
+                    connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+                    connection.execute("COMMIT")
+                except (JournalError, sqlite3.Error):
+                    connection.execute("ROLLBACK")
+                    raise
+            elif version != _SCHEMA_VERSION_V2:
                 raise JournalError
             _validate_schema(connection)
+            if version == _SCHEMA_VERSION_V2:
+                store_id = _read_store_id(connection, self._installation_id)
+            self._identity = StoreIdentity(self._installation_id, store_id, _SCHEMA_VERSION)
         except (OSError, sqlite3.Error, ValueError) as exc:
+            raise JournalError from exc
+        finally:
+            connection.close()
+
+    def lookup_operation_state(self, operation_id: str) -> StartJournalState | None:
+        """Return the exact durable state for one operation identity."""
+        record = self.lookup_operation(operation_id)
+        return None if record is None else record.state
+
+    def lookup_operation(self, operation_id: str) -> StartJournalRecord | None:
+        """Return one exact, fully validated durable operation record."""
+        operation_id = canonical_uuid4(operation_id)
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT operation_id, idempotency_key, printer_uuid, state, record_json
+                FROM start_operations WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return _decode_row(row)
+        except (sqlite3.Error, UnicodeError, ValidationError, ValueError) as exc:
             raise JournalError from exc
         finally:
             connection.close()
@@ -296,6 +360,58 @@ def _prepare_private_file(path: Path) -> None:
         raise JournalError from exc
 
 
+def _initialize_schema(
+    connection: sqlite3.Connection, installation_id: str, store_id: str
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE start_operations (
+            operation_id TEXT PRIMARY KEY NOT NULL,
+            idempotency_key TEXT UNIQUE NOT NULL,
+            printer_uuid TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('dispatching', 'confirmed', 'outcome_unknown')
+            ),
+            record_json TEXT NOT NULL
+        ) STRICT
+        """
+    )
+    _initialize_metadata(connection, installation_id, store_id)
+
+
+def _initialize_metadata(
+    connection: sqlite3.Connection, installation_id: str, store_id: str
+) -> None:
+    canonical_installation_id = canonical_uuid4(installation_id)
+    canonical_store_id = canonical_uuid4(store_id)
+    connection.execute(_METADATA_TABLE_SQL)
+    connection.executemany(
+        "INSERT INTO start_metadata (key, value) VALUES (?, ?)",
+        (
+            ("installation_id", canonical_installation_id),
+            ("store_id", canonical_store_id),
+        ),
+    )
+    connection.execute(_METADATA_TRIGGER_SQL)
+    connection.execute(_METADATA_DELETE_TRIGGER_SQL)
+
+
+def _read_store_id(connection: sqlite3.Connection, installation_id: str) -> str:
+    rows = connection.execute(
+        "SELECT key, value FROM start_metadata ORDER BY key"
+    ).fetchall()
+    if len(rows) != 2 or any(
+        len(row) != 2 or type(row[0]) is not str or type(row[1]) is not str for row in rows
+    ):
+        raise JournalError
+    metadata = dict(rows)
+    if set(metadata) != {"installation_id", "store_id"}:
+        raise JournalError
+    if canonical_uuid4(metadata["installation_id"]) != canonical_uuid4(installation_id):
+        raise JournalError
+    return canonical_uuid4(metadata["store_id"])
+
+
 def _verify_private_file(path: Path) -> None:
     metadata = path.lstat()
     if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
@@ -314,6 +430,60 @@ def _pragma_integer(connection: sqlite3.Connection, name: str) -> int:
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [("start_metadata",), ("start_operations",)]:
+        raise JournalError
+    _validate_operation_schema(connection)
+    metadata_rows = connection.execute("PRAGMA table_info(start_metadata)").fetchall()
+    if any(len(row) < 6 for row in metadata_rows):
+        raise JournalError
+    if tuple((row[1], row[2], row[3], row[5]) for row in metadata_rows) != _METADATA_DEFINITION:
+        raise JournalError
+    metadata_indexes = connection.execute("PRAGMA index_list(start_metadata)").fetchall()
+    if len(metadata_indexes) != 1 or any(
+        len(row) < 5 or row[2] != 1 or row[4] != 0 for row in metadata_indexes
+    ):
+        raise JournalError
+    metadata_index_columns = connection.execute(
+        "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+        (metadata_indexes[0][1],),
+    ).fetchall()
+    if metadata_index_columns != [("key",)]:
+        raise JournalError
+    trigger_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'trigger' AND tbl_name = 'start_metadata'
+        ORDER BY name
+        """
+    ).fetchall()
+    if trigger_names != [
+        ("start_metadata_no_delete",),
+        ("start_metadata_no_update",),
+    ]:
+        raise JournalError
+
+
+def _validate_v1_schema(connection: sqlite3.Connection) -> None:
+    table_names = connection.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    if table_names != [("start_operations",)]:
+        raise JournalError
+    _validate_operation_schema(connection)
+
+
+def _validate_operation_schema(connection: sqlite3.Connection) -> None:
     rows = connection.execute("PRAGMA table_info(start_operations)").fetchall()
     if any(len(row) < 6 for row in rows):
         raise JournalError

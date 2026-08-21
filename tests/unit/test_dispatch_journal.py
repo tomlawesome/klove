@@ -28,6 +28,8 @@ from klove.persistence.dispatch_journal import (
 
 from ..start_helpers import OPERATION_ID, safety_profile
 
+INSTALLATION_ID = "99999999-9999-4999-8999-999999999999"
+
 
 def request(**updates: object) -> DispatchRequest:
     target = target_for_safety_profile(safety_profile())
@@ -59,7 +61,7 @@ def record(**updates: object) -> DispatchJournalRecord:
 
 def journal(tmp_path: Path) -> DispatchJournal:
     tmp_path.chmod(0o700)
-    value = DispatchJournal(tmp_path / "dispatch.sqlite3")
+    value = DispatchJournal(tmp_path / "dispatch.sqlite3", INSTALLATION_ID)
     value.initialize()
     return value
 
@@ -95,9 +97,261 @@ def test_journal_reserves_replaces_and_reloads_exact_durable_record(tmp_path: Pa
         is None
     )
     assert value.records() == (terminal,)
-    restarted = DispatchJournal(tmp_path / "dispatch.sqlite3")
+    restarted = DispatchJournal(tmp_path / "dispatch.sqlite3", INSTALLATION_ID)
     restarted.initialize()
     assert restarted.records() == (terminal,)
+
+
+def test_identity_and_exact_operation_state_lookup(tmp_path: Path) -> None:
+    value = DispatchJournal(tmp_path / "uninitialized.sqlite3", INSTALLATION_ID)
+    with pytest.raises(JournalError):
+        _ = value.identity
+    value = journal(tmp_path)
+    initial = record()
+    assert value.lookup_operation_state(initial.request.operation_id) is None
+    value.reserve(initial, capacity=2)
+    identity = value.identity
+    assert identity.installation_id == INSTALLATION_ID
+    assert identity.store_id != identity.installation_id
+    assert identity.schema_version == 2
+    assert value.lookup_operation(initial.request.operation_id) == initial
+    assert value.lookup_operation_state(initial.request.operation_id) is DispatchState.RECEIVING
+    assert value.lookup_operation_state("55555555-5555-4555-8555-555555555555") is None
+    with pytest.raises(JournalError):
+        value.lookup_operation_state("not-an-operation")
+    restarted = DispatchJournal(tmp_path / "dispatch.sqlite3", INSTALLATION_ID)
+    restarted.initialize()
+    assert restarted.identity == identity
+
+
+def test_v1_migration_adds_metadata_without_changing_operation_rows(tmp_path: Path) -> None:
+    path = tmp_path / "dispatch.sqlite3"
+    initial = record()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """
+            CREATE TABLE dispatch_operations (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                idempotency_key TEXT UNIQUE NOT NULL,
+                printer_uuid TEXT NOT NULL,
+                state TEXT NOT NULL,
+                record_json TEXT NOT NULL
+            ) STRICT
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO dispatch_operations (
+                operation_id, idempotency_key, printer_uuid, state, record_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                initial.request.operation_id,
+                initial.request.idempotency_key,
+                initial.request.printer_uuid,
+                initial.state.value,
+                initial.model_dump_json(),
+            ),
+        )
+        connection.execute("PRAGMA user_version = 1")
+    path.chmod(0o600)
+
+    value = DispatchJournal(path, INSTALLATION_ID)
+    value.initialize()
+    assert value.lookup_operation_state(initial.request.operation_id) is DispatchState.RECEIVING
+    assert value.identity.installation_id == INSTALLATION_ID
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("SELECT COUNT(*) FROM dispatch_operations").fetchone() == (1,)
+
+
+def test_identity_metadata_mismatch_and_extra_rows_fail_closed(tmp_path: Path) -> None:
+    path = tmp_path / "dispatch.sqlite3"
+    value = journal(tmp_path)
+    value.initialize()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("DROP TRIGGER dispatch_metadata_no_update")
+        connection.execute(
+            "UPDATE dispatch_metadata SET value = ? WHERE key = 'installation_id'",
+            ("88888888-8888-4888-8888-888888888888",),
+        )
+    with pytest.raises(JournalError):
+        value.initialize()
+
+    clean_path = tmp_path / "extra.sqlite3"
+    clean = DispatchJournal(clean_path, INSTALLATION_ID)
+    clean.initialize()
+    with closing(sqlite3.connect(clean_path)) as connection, connection:
+        connection.execute("INSERT INTO dispatch_metadata (key, value) VALUES ('future', 'x')")
+    with pytest.raises(JournalError):
+        clean.initialize()
+
+
+def test_dispatch_schema_validation_rejects_each_metadata_structure_weakness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dispatch_journal, "_validate_operation_schema", lambda _connection: None)
+
+    class Schema:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+            self.query = ""
+
+        def execute(self, query: str, _params: object = None) -> Schema:
+            self.query = query
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:  # noqa: PLR0911
+            if "type = 'table'" in self.query:
+                return [("dispatch_metadata",), ("dispatch_operations",)]
+            if self.query.startswith("PRAGMA table_info"):
+                if self.mode == "short_columns":
+                    return [("short",)]
+                if self.mode == "bad_columns":
+                    return [
+                        (0, "key", "BLOB", 1, None, 1),
+                        (1, "value", "TEXT", 1, None, 0),
+                    ]
+                return [
+                    (0, "key", "TEXT", 1, None, 1),
+                    (1, "value", "TEXT", 1, None, 0),
+                ]
+            if self.query.startswith("PRAGMA index_list"):
+                if self.mode == "bad_index":
+                    return [("short",)]
+                return [(0, "index", 1, "c", 0)]
+            if self.query.startswith("SELECT name FROM pragma_index_info"):
+                return [] if self.mode == "bad_index_columns" else [("key",)]
+            if "type = 'trigger'" in self.query:
+                return [] if self.mode == "bad_triggers" else [
+                    ("dispatch_metadata_no_delete",),
+                    ("dispatch_metadata_no_update",),
+                ]
+            return []
+
+    for mode in (
+        "short_columns",
+        "bad_columns",
+        "bad_index",
+        "bad_index_columns",
+        "bad_triggers",
+    ):
+        with pytest.raises(JournalError):
+            dispatch_journal._validate_schema(Schema(mode))  # type: ignore[arg-type]
+
+
+def test_dispatch_identity_and_operation_schema_helpers_reject_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Rows:
+        def __init__(self, values: list[tuple[object, ...]]) -> None:
+            self.values = values
+
+        def execute(self, _query: str, _params: object = None) -> Rows:
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self.values
+
+    valid_store = "88888888-8888-4888-8888-888888888888"
+    for rows in (
+        [("short",)],
+        [("future", "x"), ("store_id", valid_store)],
+        [
+            ("installation_id", "77777777-7777-4777-8777-777777777777"),
+            ("store_id", valid_store),
+        ],
+    ):
+        with pytest.raises(JournalError):
+            dispatch_journal._read_store_id(Rows(rows), INSTALLATION_ID)  # type: ignore[arg-type]
+
+    class OperationSchema:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+            self.query = ""
+
+        def execute(self, query: str, _params: object = None) -> OperationSchema:
+            self.query = query
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:  # noqa: PLR0911
+            if self.query.startswith("PRAGMA table_info"):
+                if self.mode == "short_columns":
+                    return [("short",)]
+                columns = [
+                    (0, "operation_id", "TEXT", 1, None, 1),
+                    (1, "idempotency_key", "TEXT", 1, None, 0),
+                    (2, "printer_uuid", "TEXT", 1, None, 0),
+                    (3, "state", "TEXT", 1, None, 0),
+                    (4, "record_json", "TEXT", 1, None, 0),
+                ]
+                if self.mode == "bad_columns":
+                    columns[1] = (1, "idempotency_key", "BLOB", 1, None, 0)
+                return columns
+            if self.query.startswith("PRAGMA index_list"):
+                if self.mode == "bad_index":
+                    return [("short",)]
+                return [
+                    (0, "operation_index", 1, "c", 0),
+                    (1, "key_index", 1, "c", 0),
+                ]
+            if self.mode == "bad_index_name_type":
+                return [(1,)]
+            if self.mode == "bad_index_set":
+                return [("wrong",)]
+            return (
+                [("operation_id",)]
+                if "operation_index" in self.query
+                else [("idempotency_key",)]
+            )
+
+    for mode in (
+        "short_columns",
+        "bad_columns",
+        "bad_index",
+        "bad_index_name_type",
+        "bad_index_set",
+    ):
+        with pytest.raises(JournalError):
+            dispatch_journal._validate_operation_schema(OperationSchema(mode))  # type: ignore[arg-type]
+
+    with pytest.raises(JournalError):
+        dispatch_journal._validate_v1_schema(Rows([]))  # type: ignore[arg-type]
+
+    class FailedConnection:
+        def execute(self, _query: str, _params: object = None) -> object:
+            raise sqlite3.OperationalError
+
+        def close(self) -> None:
+            return None
+
+    store = DispatchJournal(tmp_path / "lookup.sqlite3", INSTALLATION_ID)
+
+    def failed_connect() -> FailedConnection:
+        return FailedConnection()
+
+    monkeypatch.setattr(store, "_connect", failed_connect)
+    with pytest.raises(JournalError):
+        store.lookup_operation("99999999-9999-4999-8999-999999999999")
+
+
+def test_dispatch_v1_migration_rolls_back_on_invalid_schema(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-v1.sqlite3"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE dispatch_operations (operation_id TEXT PRIMARY KEY NOT NULL) STRICT"
+        )
+        connection.execute("CREATE TABLE extra_table (value TEXT) STRICT")
+        connection.execute("PRAGMA user_version = 1")
+    path.chmod(0o600)
+    with pytest.raises(JournalError):
+        DispatchJournal(path, INSTALLATION_ID).initialize()
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'dispatch_metadata'"
+        ).fetchone() is None
 
 
 def test_journal_rejects_fence_capacity_collision_and_stale_replace(tmp_path: Path) -> None:
@@ -174,7 +428,7 @@ def test_journal_wraps_corrupt_lookup_and_schema_creation_failures(tmp_path: Pat
     with closing(sqlite3.connect(conflict_path)) as connection, connection:
         connection.execute("CREATE TABLE dispatch_operations (wrong TEXT) STRICT")
     with pytest.raises(JournalError):
-        DispatchJournal(conflict_path).initialize()
+        DispatchJournal(conflict_path, INSTALLATION_ID).initialize()
 
 
 def test_journal_rejects_invalid_inputs_versions_and_substituted_rows(tmp_path: Path) -> None:
@@ -200,7 +454,7 @@ def test_journal_rejects_invalid_inputs_versions_and_substituted_rows(tmp_path: 
     with pytest.raises(JournalError):
         dispatch_journal._decode(("only",))
     with closing(sqlite3.connect(tmp_path / "dispatch.sqlite3")) as connection, connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
     with pytest.raises(JournalError):
         value.initialize()
 
@@ -226,7 +480,7 @@ def test_journal_schema_helpers_reject_bad_pragmas_and_index_layouts() -> None:
     with pytest.raises(JournalError):
         dispatch_journal._pragma_integer(BrokenPragma(), "user_version")  # type: ignore[arg-type]
     with pytest.raises(JournalError):
-        dispatch_journal._validate_schema(BrokenSchema())  # type: ignore[arg-type]
+        dispatch_journal._validate_operation_schema(BrokenSchema())  # type: ignore[arg-type]
 
 
 def test_journal_helpers_reject_mismatched_row_and_non_wal_connection(
