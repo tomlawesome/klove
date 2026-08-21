@@ -154,8 +154,9 @@ authentication service, or new actuator.
   proposed or its exact wire profile is incomplete.
 - Issue #79 — completion handoff supplies the compatibility identity material;
   it grants no runtime authority by itself.
-- Issue #76 — native dispatch proof and issue #12 — end-to-end dispatch remain
-  separate. This decision does not expose their artifact path through MQTT.
+- Issue #76 — native dispatch proof and issue #12 — end-to-end dispatch are
+  complete and remain separate. This decision does not expose their artifact
+  path through MQTT.
 - Issue #32 — Grove bridge retains Grove as the user interface without making
   Klove emulate unsupported Bambu hardware.
 

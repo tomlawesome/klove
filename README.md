@@ -20,22 +20,19 @@ or start a print, execute arbitrary G-code, or provide any other motion,
 heating, fan, light, or macro control. The separately accepted upload and
 durable print-start domain services are not exposed through a northbound route.
 ADR 0007 accepts their one authenticated, registry-bound asynchronous ingress
-contract, but its coordinator and every northbound adapter remain unimplemented.
+contract. Its internal coordinator and native Moonraker lifecycle proof are
+implemented; every northbound compatibility adapter remains unimplemented.
 
-The product onboarding path is accepted but not complete. Issue #62 — registry
-storage and issue #63 — onboarding core implement its private versioned
-registry, external credential store, exact
-lifecycle journal, crash reconciliation, bounded address-pinned Moonraker
-probe, and typed create/update/rotate/disable/remove orchestration. Issue #64 —
-runtime fleet adds registry-backed startup, monitoring, control routing, shared
-admission, restart recovery, and one exact file-bootstrap import. Issue #71 —
-owner session adds the separate owner credential, exact-origin and CSRF
-evidence, bounded restart-invalidated sessions, and strict cookie policy. Issue
-#72 — lifecycle routes exposes the strict secret-free inspect and registry
-mutation boundary. Issue #73 — runtime handoff must complete issue #65 —
-protected onboarding API, followed by
-issue #59 — embedded setup/recovery. Once those and issue #10 — MQTT
-facade and issue #14 — FTPS facade ship, an authorized Grove user will select
+The Klove-owned onboarding path is implemented. Issue #62 — registry storage,
+issue #63 — onboarding core, issue #64 — runtime fleet, and issue #65 —
+protected onboarding API provide the private versioned registry, external
+credential store, exact lifecycle journal, bounded address-pinned Moonraker
+probe, typed lifecycle orchestration, dynamic activation, shared admission,
+owner session, strict lifecycle routes, and committed runtime handoff. Issue
+#59 — embedded setup/recovery supplies the secure frame, bounded setup/recovery
+flow, and one-time completion exchange. Once issue #10 — MQTT facade, issue #14
+— FTPS facade, and issue #60 — minimal Grove contribution ship, an authorized
+Grove user will select
 **Klipper via Klove**,
 complete Moonraker setup inside the embedded Klove page, review direct identity
 and safety-profile evidence, and return only Klove's proxy host, stable serial,
@@ -146,8 +143,9 @@ Klipper's Linux-process MCU and exercises real authentication, monitoring,
 typed pause/resume/cancel, lost-response fencing, and restarts. The private fixture
 starts only a finite dwell job to establish control-test state; that fixture
 preparation is not the production upload or durable start service. End-to-end
-production upload/start evidence is issue #12; no generic G-code capability is
-exposed. See the
+production coordinator and upload/start lifecycle are covered by issue #12 —
+end-to-end dispatch and issue #76 — native dispatch proof; no generic G-code
+capability is exposed. See the
 [integration fixture](tests/integration/moonraker-sim/README.md).
 
 That automated amd64 stack is not RatOS. RatOS host and physical-printer
@@ -168,5 +166,6 @@ typed mutation rules are documented in the
 [onboarding core contract](docs/onboarding-core.md). The independent browser
 authentication substrate is documented in the
 [owner-session security contract](docs/owner-session-security.md).
-The accepted but not yet implemented dispatch-ingress contract is
-[ADR 0007](docs/decisions/0007-authenticated-dispatch-ingress.md).
+The accepted and internally implemented dispatch-ingress contract is
+[ADR 0007](docs/decisions/0007-authenticated-dispatch-ingress.md). No
+northbound compatibility adapter exposes it yet.

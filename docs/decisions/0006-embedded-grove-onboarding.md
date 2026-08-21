@@ -147,8 +147,8 @@ unmerged private fork.
 
 16. At runtime Grove uses its existing MQTT/TLS and implicit-FTPS client paths
     against Klove's per-printer compatibility facade. Initial support is limited
-    to conservative status, exact-printer artifact dispatch once issue #12 is
-    complete, and the separately accepted pause, resume, and cancel operations.
+    to conservative status, exact-printer artifact dispatch through completed
+    issue #12, and the separately accepted pause, resume, and cancel operations.
 17. `KLOVE` disables model-derived file compatibility and scheduling. Queue
     selection is by the exact registered printer only; Klove's target and
     safety-profile evidence remains the dispatch authority. Grove must hide or

@@ -161,8 +161,9 @@ control, or grants dispatch authority.
   or its exact wire profile is incomplete.
 - Issue #79 — completion handoff supplies the shared compatibility secret; that
   one-time disclosure grants no artifact or actuation authority by itself.
-- Issue #12 — end-to-end dispatch and issue #76 — native dispatch proof remain
-  prerequisites for a later FTPS/MQTT-to-dispatch correlation boundary.
+- Issue #12 — end-to-end dispatch and issue #76 — native dispatch proof are
+  completed prerequisites for a later FTPS/MQTT-to-dispatch correlation
+  boundary.
 - Issue #32 — Grove bridge gains no generic file server, arbitrary path, remote
   cleanup, upload-only API, or second print-start path.
 
