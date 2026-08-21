@@ -128,6 +128,7 @@ class OnboardingConfig(BaseModel):
     owner_credential_file: Path | None = None
     allowed_grove_origins: tuple[str, ...] = ()
     frame_origin: str | None = None
+    compatibility_host: str | None = None
     allow_loopback_http: bool = False
     session_capacity: int = Field(default=128, ge=1, le=10_000)
     session_inactivity_seconds: int = Field(default=900, ge=1, le=900)
@@ -168,6 +169,13 @@ class OnboardingConfig(BaseModel):
             _validate_exact_origin(value)
         return value
 
+    @field_validator("compatibility_host")
+    @classmethod
+    def compatibility_host_is_exact(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_compatibility_host(value)
+        return value
+
     @model_validator(mode="after")
     def enabled_policy_is_complete(self) -> OnboardingConfig:
         if self.session_inactivity_seconds > self.session_absolute_seconds:
@@ -177,6 +185,7 @@ class OnboardingConfig(BaseModel):
                 self.owner_credential_file is not None
                 or self.allowed_grove_origins
                 or self.frame_origin is not None
+                or self.compatibility_host is not None
                 or self.allow_loopback_http
             ):
                 raise ValueError("disabled onboarding cannot contain active configuration")
@@ -187,6 +196,8 @@ class OnboardingConfig(BaseModel):
             raise ValueError("enabled onboarding requires at least one Grove origin")
         frame_origins = self.allowed_grove_origins
         if self.frame_origin is not None:
+            if self.compatibility_host is None:
+                raise ValueError("embedded onboarding requires one compatibility host")
             if self.frame_origin in self.allowed_grove_origins:
                 raise ValueError("frame origin must remain distinct from Grove parent origins")
             frame = urlsplit(self.frame_origin)
@@ -200,6 +211,8 @@ class OnboardingConfig(BaseModel):
                     "host and scheme"
                 )
             frame_origins += (self.frame_origin,)
+        elif self.compatibility_host is not None:
+            raise ValueError("compatibility host requires an embedded frame origin")
         for origin in frame_origins:
             parsed = urlsplit(origin)
             if parsed.scheme == "http" and (
@@ -267,6 +280,27 @@ def _canonical_origin_hostname(hostname: str) -> str:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         raise ValueError("Grove IPv4-mapped IPv6 aliases are prohibited")
     return str(address)
+
+
+def _validate_compatibility_host(value: str) -> None:
+    """Require the host-only Grove compatibility target defined by ADR 0006."""
+    if (
+        not value
+        or len(value) > 253
+        or value != value.strip()
+        or not value.isascii()
+        or any(ord(character) < 33 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("compatibility host must be bounded exact ASCII text")
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        if all(label.isdecimal() for label in value.split(".")):
+            raise ValueError("compatibility host must be canonical") from None
+        _canonical_origin_hostname(value)
+        return
+    if not isinstance(address, ipaddress.IPv4Address) or str(address) != value:
+        raise ValueError("compatibility host must be a canonical DNS host or IPv4 address")
 
 
 class ControlConfig(BaseModel):

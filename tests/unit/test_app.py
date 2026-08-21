@@ -28,13 +28,14 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def write_config(
+def write_config(  # noqa: PLR0913 -- test fixture accepts explicit deployment toggles.
     tmp_path: Path,
     port: int,
     *,
     printer: bool,
     control: bool = False,
     onboarding: bool = False,
+    frame: bool = False,
 ) -> Path:
     api_token = tmp_path / "api.token"
     api_token.write_text("a" * 32, encoding="utf-8")
@@ -53,6 +54,12 @@ def write_config(
 enabled = true
 owner_credential_file = "{owner_token.as_posix()}"
 allowed_grove_origins = ["https://grove.example.invalid"]
+{
+            '''frame_origin = "https://grove.example.invalid:8443"
+compatibility_host = "klove.example.invalid"'''
+            if frame
+            else ""
+        }
 """
     if printer:
         moonraker_token = tmp_path / "moonraker.token"
@@ -94,12 +101,16 @@ enabled = {str(control).lower()}
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("control", "expected_control_status"), [(True, 400), (False, 401)])
+@pytest.mark.parametrize(
+    ("control", "expected_control_status", "frame"),
+    [(True, 400, False), (False, 401, False), (False, 401, True)],
+)
 async def test_serve_starts_api_before_monitors_and_cleans_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     control: bool,
     expected_control_status: int,
+    frame: bool,
 ) -> None:
     started = asyncio.Event()
     site_started = asyncio.Event()
@@ -152,7 +163,14 @@ async def test_serve_starts_api_before_monitors_and_cleans_up(
     stop = asyncio.Event()
     task = asyncio.create_task(
         serve(
-            write_config(tmp_path, port, printer=True, control=control, onboarding=True),
+            write_config(
+                tmp_path,
+                port,
+                printer=True,
+                control=control,
+                onboarding=True,
+                frame=frame,
+            ),
             stop,
         )
     )
@@ -162,6 +180,11 @@ async def test_serve_starts_api_before_monitors_and_cleans_up(
     assert applications[0][ready_key].ready is True
     assert applications[0][owner_authenticator_key].authenticate("o" * 32)
     assert applications[0][owner_sessions_key].active_count == 0
+    if frame:
+        assert any(
+            resource.canonical == "/v1/onboarding/frame/completion"
+            for resource in applications[0].router.resources()
+        )
 
     async with aiohttp.ClientSession() as session:
         response = await session.get(f"http://127.0.0.1:{port}/health/ready")

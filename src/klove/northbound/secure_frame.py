@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 from http import HTTPStatus
@@ -11,11 +12,13 @@ from aiohttp import web
 
 from klove.northbound.onboarding_api import (
     _SECURITY_HEADERS,
+    _authorize,
     _json_object,
     _one_header,
     owner_authenticator_key,
     owner_sessions_key,
 )
+from klove.orchestration.completion import CompletionHandoffError, CompletionHandoffService
 from klove.security.frame_handshake import (
     FRAME_CHALLENGE_TYPE,
     FRAME_PROTOCOL_VERSION,
@@ -30,10 +33,12 @@ from klove.security.owner_sessions import (
 )
 
 frame_handshakes_key = web.AppKey("frame_handshakes", FrameHandshakeStore)
+completion_handoff_key = web.AppKey("completion_handoff", CompletionHandoffService)
 
 _FRAME_SESSION_PATH = "/v1/onboarding/frame/session"
 _FRAME_CHALLENGE_PATH = "/v1/onboarding/frame/challenge"
 _FRAME_CANCEL_PATH = "/v1/onboarding/frame/cancel"
+_FRAME_COMPLETION_PATH = "/v1/onboarding/frame/completion"
 _ASSET_PREFIX = "/onboarding/assets/"
 _FRAME_HEADERS = {
     **_SECURITY_HEADERS,
@@ -45,16 +50,22 @@ _FRAME_HEADERS = {
 }
 
 
-def install_secure_frame_routes(app: web.Application, handshakes: FrameHandshakeStore) -> None:
+def install_secure_frame_routes(
+    app: web.Application,
+    handshakes: FrameHandshakeStore,
+    completion_handoff: CompletionHandoffService,
+) -> None:
     """Install browser routes only when exact frame and parent origins are configured."""
     sessions = app[owner_sessions_key]
     if sessions.frame_origin is None:
         raise ValueError("secure frame routes require one exact configured frame origin")
     app[frame_handshakes_key] = handshakes
+    app[completion_handoff_key] = completion_handoff
     app.router.add_options(_FRAME_CHALLENGE_PATH, frame_challenge_options)
     app.router.add_post(_FRAME_CHALLENGE_PATH, issue_frame_challenge)
     app.router.add_post(_FRAME_SESSION_PATH, issue_frame_session)
     app.router.add_post(_FRAME_CANCEL_PATH, cancel_frame_handshake)
+    app.router.add_post(_FRAME_COMPLETION_PATH, issue_frame_completion)
     app.router.add_get("/onboarding/setup", setup_frame)
     app.router.add_get("/onboarding/recovery", recovery_frame)
     app.router.add_get("/onboarding/recovery/rotate-moonraker", rotate_moonraker_frame)
@@ -197,6 +208,50 @@ async def cancel_frame_handshake(request: web.Request) -> web.Response:
     except FrameHandshakeDenied:
         return _frame_error(HTTPStatus.FORBIDDEN, "frame_denied")
     return _json_response({"status": "cancelled"}, status=HTTPStatus.OK)
+
+
+async def issue_frame_completion(request: web.Request) -> web.Response:
+    """Release the one exact compatibility bundle bound to a framed CREATE result."""
+    payload = await _json_object(request)
+    flow_nonce = payload.get("flow_nonce")
+    if set(payload) != {"flow_nonce"} or not isinstance(flow_nonce, str):
+        return _frame_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+    lease = _authorize(request, OnboardingOperation.CREATE, flow_nonce)
+    if lease is None:
+        return _frame_error(HTTPStatus.FORBIDDEN, "owner_denied")
+    try:
+        binding = lease.completion
+        if binding is None:
+            lease.release()
+            return _frame_error(HTTPStatus.FORBIDDEN, "owner_denied")
+        bundle = await request.app[completion_handoff_key].issue(
+            binding.printer_uuid,
+            binding.revision,
+        )
+    except asyncio.CancelledError:
+        lease.invalidate()
+        raise
+    except (CompletionHandoffError, OwnerSessionDenied):
+        lease.invalidate()
+        return _frame_error(HTTPStatus.SERVICE_UNAVAILABLE, "completion_denied")
+    except Exception:
+        lease.invalidate()
+        return _frame_error(HTTPStatus.SERVICE_UNAVAILABLE, "completion_denied")
+    lease.invalidate()
+    response = _json_response(
+        {
+            "version": FRAME_PROTOCOL_VERSION,
+            "type": "klove.frame.completion",
+            "flow_nonce": flow_nonce,
+            "name": bundle.name,
+            "serial_number": bundle.serial_number,
+            "ip_address": bundle.ip_address,
+            "access_code": bundle.access_code,
+        },
+        status=HTTPStatus.OK,
+    )
+    response.del_cookie(SESSION_COOKIE_NAME, path=SESSION_COOKIE_PATH)
+    return response
 
 
 async def setup_frame(request: web.Request) -> web.Response:
