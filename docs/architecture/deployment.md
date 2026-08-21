@@ -4,9 +4,11 @@
 
 ### Phase 0: contract and fixtures
 
-- Decide the Klove licence and whether Grove virtual-printer code may be reused.
-- Capture sanitized Bambu request/report fixtures from Grove and Moonraker
-  snapshots/notifications from representative Klipper configurations.
+- Apply ADR 0008's clean-room boundary: Grove virtual-printer code and assets
+  are not reused in Klove.
+- Capture only minimal sanitized black-box Grove request/report observations
+  with exact-revision fixture manifests, plus Moonraker snapshots/notifications
+  from representative Klipper configurations.
 - Freeze canonical state, capability, command, operation, and error schemas.
 - Write the threat model and artifact acceptance policy before enabling motion or
   heating.
@@ -60,13 +62,14 @@ paused, resumed, cancelled, completed, and reconciled without duplicate starts.
 
 - Accept ADR 0006's Klove-owned runtime registry, embedded setup/recovery
   surface, strict completion message, and minimal Grove `KLOVE` type boundary.
-- Decide compatibility-facade and Grove-theme licence and provenance.
+- Apply ADR 0008's accepted clean-room compatibility and independent visual
+  provenance boundary.
 - Use the Phase 3 runtime registry for the product onboarding path; do not add a
   second UI registry or return to per-printer TOML.
 - Add the minimal conservative MQTT/TLS state/control facade and bounded FTPS
   spool, using only operations already accepted by their own ADRs.
-- Build the Grove-themed embedded setup/recovery flow and propose the tiny
-  `KLOVE` Add Printer contribution upstream through a fork.
+- Build the independently styled embedded setup/recovery flow and propose the
+  tiny `KLOVE` Add Printer contribution upstream through a short-lived fork.
 
 Exit: an authorized Grove user can onboard and monitor one exact Klove printer
 without entering Moonraker credentials into Grove or editing per-printer TOML,
@@ -148,12 +151,15 @@ followed by the protected API in #65. That chain unblocks the target-bound
 intake-through-completion proof in [issue #12](https://github.com/tomlawesome/klove/issues/12)
 without making Grove or the browser part of that internal safety proof.
 
-The compatibility provenance decision in [issue #11](https://github.com/tomlawesome/klove/issues/11)
-may proceed in parallel. Registry work then feeds the embedded setup/recovery UI
-in [issue #59](https://github.com/tomlawesome/klove/issues/59), the conservative
+The clean-room boundary is accepted in
+[#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11).
+Registry work then feeds the embedded setup/recovery UI
+in [#59 — embedded setup/recovery](https://github.com/tomlawesome/klove/issues/59),
+the conservative
 MQTT/FTPS facade, and the minimal upstream Grove contribution in
-[issue #60](https://github.com/tomlawesome/klove/issues/60). Track the complete
-order under [Grove epic #32](https://github.com/tomlawesome/klove/issues/32) and
+[#60 — minimal Grove contribution](https://github.com/tomlawesome/klove/issues/60).
+Track the complete order under
+[#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32) and
 [programme roadmap #38](https://github.com/tomlawesome/klove/issues/38).
 
 ## Primary references

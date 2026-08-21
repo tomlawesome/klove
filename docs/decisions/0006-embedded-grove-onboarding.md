@@ -161,6 +161,11 @@ unmerged private fork.
     its create schema, feature gates, MQTT/FTPS behavior, and browser flow pass
     again. No persistent Grove fork or native provider programme is created.
 
+ADR 0008 separately requires clean-room compatibility implementation,
+independently authored visual material, fixture provenance, and normal
+upstream contribution licensing. “Grove-themed” does not authorize copying
+Grove assets, source, exact design tokens, layout composition, or wording.
+
 This decision authorizes architecture and prerequisite work only. It does not
 authorize a new printer actuator, generic G-code, public print-start route, or
 an unauthenticated setup endpoint.
@@ -208,6 +213,7 @@ an unauthenticated setup endpoint.
 - [Grove Add Printer and model-gated UI at the supported revision](https://github.com/EdwardChamberlain/grove-control/blob/cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4/frontend/src/pages/PrintersPage.tsx)
 - [Content Security Policy Level 3](https://www.w3.org/TR/CSP3/)
 - [HTML iframe sandbox and cross-document messaging](https://html.spec.whatwg.org/multipage/iframe-embed-object.html)
+- [ADR 0008: clean-room Grove provenance](0008-grove-provenance.md)
 
 ## Tracking
 

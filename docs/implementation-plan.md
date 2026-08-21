@@ -1,7 +1,7 @@
 # Klove implementation plan
 
 Status: active  
-Last updated: 2026-08-14
+Last updated: 2026-08-21
 
 ## Delivery policy
 
@@ -34,6 +34,11 @@ Last updated: 2026-08-14
   [Embedded-onboarding decision #57](https://github.com/tomlawesome/klove/issues/57)
   accepts that exception for setup/recovery only and retires the broad native
   provider programme.
+- [#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11)
+  accepts ADR 0008's clean-room compatibility implementation, independent
+  visual work, exact-revision fixture provenance, licence/SBOM gates, and
+  normal upstream contribution terms for #32 — Grove bridge, #59 — embedded
+  setup/recovery, and #60 — minimal Grove contribution.
 - [Secure-registry epic #58](https://github.com/tomlawesome/klove/issues/58)
   is split into independently reviewable foundation
   [#62](https://github.com/tomlawesome/klove/issues/62), direct-probe lifecycle
@@ -390,6 +395,29 @@ Exit criterion: the repository and GitHub roadmap agree on the smallest secure
 onboarding boundary, with no new actuator or unauthenticated setup path
 authorized by the decision.
 
+## Accepted decision: clean-room Grove provenance
+
+- [x] Pin the supported upstream to Grove commit
+  `cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4` and review its root AGPL
+  declaration, missing per-file exceptions, vendored notices, dependencies,
+  assets, and contribution process.
+- [x] Prohibit Grove source, test, fixture, dependency, generated-bundle, and
+  asset reuse in Klove; require isolated black-box observation and independent
+  implementation.
+- [x] Classify Grove branding, icons, fonts, screenshots, exact design tokens,
+  layouts, and prose as non-reusable; permit only independently authored
+  semantic visual roles, functional patterns, and ADR-defined factual labels.
+- [x] Define exact-revision fixture manifests, sanitization, SHA-256 identity,
+  notice inventory, complete release SBOM/licence evaluation, and drift gates.
+- [x] Require #60 — minimal Grove contribution to use upstream's issue,
+  assignment, short-lived fork, repository-licence, test, documentation, and
+  pull-request process without creating a supported private fork.
+
+Exit criterion: #32 — Grove bridge, #59 — embedded setup/recovery, and #60 —
+minimal Grove contribution can proceed without copying Grove implementation or
+visual expression into Klove, and every compatibility claim is bound to
+auditable exact-revision evidence.
+
 ## Implemented slice: direct probe and lifecycle orchestration
 
 - [x] Accept only canonical HTTP(S) origins and deployment-allowed DNS/IP
@@ -464,13 +492,13 @@ public dispatch workflow.
    authorization. Track the lifecycle proof in
    [#12](https://github.com/tomlawesome/klove/issues/12) under
    [artifact-dispatch epic #33](https://github.com/tomlawesome/klove/issues/33).
-4. Complete the current-Grove bridge in dependency order: licence/provenance
-   [#11](https://github.com/tomlawesome/klove/issues/11), embedded setup/recovery
-   [#59](https://github.com/tomlawesome/klove/issues/59), conservative MQTT/TLS
-   and FTPS facade issues #10/#14, minimal upstream `KLOVE` contribution
-   [#60](https://github.com/tomlawesome/klove/issues/60), and operations guidance
-   #13. Track the full order under
-   [Grove-bridge epic #32](https://github.com/tomlawesome/klove/issues/32).
+4. Apply the accepted clean-room boundary from
+   [#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11), then
+   complete [#59 — embedded setup/recovery](https://github.com/tomlawesome/klove/issues/59),
+   #10 — MQTT/TLS facade, #14 — FTPS ingress, and
+   [#60 — minimal Grove contribution](https://github.com/tomlawesome/klove/issues/60),
+   followed by #13 — Grove operations. Track the full order under
+   [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
 5. Separately decide and test bounded temperature/speed plus explicitly
    mapped fan/light controls. Keep jog and extrusion disabled until proven;
    [decision #15](https://github.com/tomlawesome/klove/issues/15) gates
