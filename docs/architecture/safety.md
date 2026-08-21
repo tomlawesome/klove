@@ -6,7 +6,8 @@ denial. The accepted canonical operations are currently limited to:
 - pause, resume, cancel
 
 ADR 0007 accepts one authenticated, registry-bound artifact-dispatch
-composition, but its coordinator and every northbound adapter remain absent.
+composition. Its internal coordinator and native lifecycle proof are complete,
+but every northbound compatibility adapter remains absent.
 The roadmap proposes the following later operations, but each remains prohibited
 until its own ADR accepts the complete typed contract and safety evidence:
 

@@ -115,10 +115,10 @@ context/daemon-bound cleanup, and finite Docker timeouts.
 
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and
-does not authorize generic G-code in `src/klove`. The new start adapter and
-journal are covered by deterministic protocol/fault tests; issue #12 —
-end-to-end dispatch owns the complete real-process intake-through-completion
-contract. The native amd64
+does not authorize generic G-code in `src/klove`. The start adapter and journal
+are covered by deterministic protocol/fault tests; issue #12 — end-to-end
+dispatch and issue #76 — native dispatch proof cover the complete real-process
+intake-through-completion contract. The native amd64
 stack also does not claim RatOS coverage. RatOS
 v2.1.0 acceptance separately records the exact ARM release asset checksum,
 supported board, running software identities, controlled configuration and
@@ -175,8 +175,8 @@ verifies that the suite imported Klove from the working tree. This prevents a
 non-editable or stale environment installation from producing misleading
 coverage for code other than the source under review.
 
-The registry and onboarding core add no browser dependency or UI implementation.
-#59 — embedded setup/recovery must introduce a repeatable Playwright entry point
-only after #64 — dynamic runtime and #65 — protected onboarding API are merged.
+The registry and onboarding core add no browser dependency. #59 — embedded
+setup/recovery adds the repeatable Playwright entry point after #64 — dynamic
+runtime and #65 — protected onboarding API.
 Browser results supplement—not replace—the package-wide 100% statement and branch
 gate for authentication, authorization, decoding, translation, control, and policy.

@@ -36,24 +36,24 @@ printer-changing command exists.
 Exit: one exact current job-control request is dispatched at most once, and every
 post-dispatch ambiguity is retained as `outcome_unknown` without retry.
 
-### Phase 3: runtime registry and safe file dispatch
+### Phase 3: runtime registry and safe file dispatch — complete
 
-- Complete ADR 0006's one canonical runtime printer registry chain under issue
-  #58 — registry epic. Issue #62 — registry storage implements its exact-schema
-  SQLite/WAL foundation, external owner-only secret store, typed lifecycle
-  journal, crash reconciliation, and backup boundary. Issue #63 — onboarding
-  core implements direct probing and lifecycle orchestration. Issue #64 —
-  runtime fleet and issue #65 — protected onboarding API add dynamic runtime
-  activation, shared lifecycle/actuator admission, and protected routes without
-  adding a dashboard.
+- ADR 0006's one canonical runtime printer registry chain is complete under
+  issue #58 — registry epic. Issue #62 — registry storage implements its
+  exact-schema SQLite/WAL foundation, external owner-only secret store, typed
+  lifecycle journal, crash reconciliation, and backup boundary. Issue #63 —
+  onboarding core implements direct probing and lifecycle orchestration. Issue
+  #64 — runtime fleet and issue #65 — protected onboarding API add dynamic
+  runtime activation, shared lifecycle/actuator admission, and protected routes
+  without adding a dashboard.
 - ADRs 0003–0005 accept exact qualification, non-actuating Moonraker upload and
   durable at-most-once typed print start as separate internal components.
 - ADR 0007 accepts their one authenticated exact-printer ingress contract.
-  Implement its durable coordinator under issue #75 — dispatch coordinator and
-  prove the native lifecycle under issue #76 — native dispatch proof.
-- Complete that integration under
-  [issue #12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
-  before claiming this phase's exit criterion.
+  Issue #75 — dispatch coordinator implements its durable composition and
+  issue #76 — native dispatch proof proves the lifecycle against pinned real
+  Moonraker.
+- [Issue #12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
+  completes that integration and satisfies this phase's exit criterion.
 - Start with single-plate, single-extruder, no-MMU G-code.
 
 Exit: one canonically registered target-tagged job can be queued, started,
@@ -121,10 +121,11 @@ confinement.
   against a deterministic fake Moonraker WebSocket/HTTP server.
 - A native real-process Klipper/Moonraker integration test for authentication,
   typed controls, lost responses, exact single dispatch, and process restarts.
-- Issue #12 integration tests for authorized intake/upload/start, metadata
-  delays, lost acknowledgements, history reconciliation, cancellation,
-  completion, substitution, restart and concurrent printers; component ADRs do
-  not authorize a public workflow by themselves.
+- Issue #12 and issue #76 integration tests cover authorized
+  intake/upload/start, metadata delays, lost acknowledgements, history
+  reconciliation, cancellation, completion, substitution, restart and
+  concurrent printers; component ADRs do not authorize a public workflow by
+  themselves.
 - Scripted browser tests for the real Grove parent/Klove frame handshake,
   independent Klove owner authentication, CSRF and exact-origin rejection,
   strict completion decoding, cancellation, responsive/accessibility behavior,
@@ -139,25 +140,24 @@ macros, over-temperature requests, unhomed/out-of-bounds jogs, duplicate starts,
 unauthorized Moonraker access, corrupt archives, and stale safety profiles all
 fail closed.
 
-## Immediate next slice
+## Immediate next slices
 
-The artifact contract, hostile validator, exact target qualification, bounded
-upload, and durable print-start components are complete through #9 — durable
-print start. ADR 0006 freezes the product-onboarding boundary. #62 — registry
-storage, #63 — onboarding core, #64 — runtime fleet, #71 — owner session, #72
-— lifecycle routes, and #73 — runtime handoff are implemented, completing #65
-— protected onboarding API. That chain unblocks #75 — dispatch coordinator under
-[#12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
-without making Grove or the browser part of that internal safety proof.
+The canonical registry, protected onboarding API, embedded setup/recovery
+surface, dispatch coordinator, and native intake-through-completion proof are
+complete. The remaining current-Grove bridge order is:
 
-The clean-room boundary is accepted in
-[#11 — Grove provenance](https://github.com/tomlawesome/klove/issues/11).
-Registry work then feeds the embedded setup/recovery UI
-in [#59 — embedded setup/recovery](https://github.com/tomlawesome/klove/issues/59),
-the conservative
-MQTT/FTPS facade, and the minimal upstream Grove contribution in
-[#60 — minimal Grove contribution](https://github.com/tomlawesome/klove/issues/60).
-Track the complete order under
+1. obtain exact ADR-0008-compliant Grove wire evidence and accept the bounded
+   MQTT/TLS and FTPS contracts under issue #10 — MQTT facade and issue #14 —
+   FTPS ingress;
+2. implement those adapters without adding another upload, start, or control
+   path;
+3. prepare issue #60 — minimal Grove contribution against the pinned supported
+   Grove revision; and
+4. publish issue #13 — deployment and operations guidance.
+
+Issue #51 — RatOS virtual-MCU proof remains a separate supplemental acceptance
+lane and does not weaken or replace supported-hardware release acceptance.
+Track the full order under
 [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32) and
 [programme roadmap #38](https://github.com/tomlawesome/klove/issues/38).
 
