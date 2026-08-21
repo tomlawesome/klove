@@ -355,9 +355,7 @@ async def test_two_admitted_printer_sessions_release_independently(tmp_path: Pat
     server, _auth, _ingress, _reports = make_server(tmp_path)
     first_reader = reader(connect(), eof=False)
     second_reader = reader(connect(), eof=False)
-    first = asyncio.create_task(
-        server._accept(first_reader, cast(asyncio.StreamWriter, Writer()))
-    )
+    first = asyncio.create_task(server._accept(first_reader, cast(asyncio.StreamWriter, Writer())))
     second = asyncio.create_task(
         server._accept(second_reader, cast(asyncio.StreamWriter, Writer()))
     )
@@ -384,9 +382,7 @@ async def test_accept_handles_missing_task_and_propagates_cancellation(
 
     held_reader = reader(b"", eof=False)
     held_writer = Writer()
-    task = asyncio.create_task(
-        server._accept(held_reader, cast(asyncio.StreamWriter, held_writer))
-    )
+    task = asyncio.create_task(server._accept(held_reader, cast(asyncio.StreamWriter, held_writer)))
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

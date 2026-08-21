@@ -110,15 +110,11 @@ def test_reserve_rejects_idempotency_collision_two_rows_and_capacity(tmp_path: P
     with pytest.raises(JournalError):
         journal.reserve(record("3"), capacity=0)
     with pytest.raises(JournalError):
-        journal.reserve(
-            record(state=MqttIngressState.COMPLETE, result=result()), capacity=3
-        )
+        journal.reserve(record(state=MqttIngressState.COMPLETE, result=result()), capacity=3)
 
     second = record("2")
     with pytest.raises(MqttIngressConflictError):
-        journal.reserve(
-            record("1", idempotency_key=second.idempotency_key), capacity=3
-        )
+        journal.reserve(record("1", idempotency_key=second.idempotency_key), capacity=3)
 
 
 def test_complete_is_single_exact_atomic_transition(tmp_path: Path) -> None:
@@ -235,21 +231,15 @@ def test_rejects_structurally_weakened_schema(tmp_path: Path, weakness: str) -> 
                 "CREATE UNIQUE INDEX partial ON mqtt_ingress(state) WHERE state = 'reserved'"
             )
         elif weakness == "expression_index":
-            connection.execute(
-                "CREATE UNIQUE INDEX expression ON mqtt_ingress(lower(state))"
-            )
+            connection.execute("CREATE UNIQUE INDEX expression ON mqtt_ingress(lower(state))")
         connection.execute("PRAGMA user_version = 1")
     path.chmod(0o600)
     with pytest.raises(JournalError):
         MqttIngressJournal(path).initialize()
 
 
-@pytest.mark.parametrize(
-    "corruption", ["json", "state", "identity", "idempotency", "version"]
-)
-def test_initialize_rejects_corrupt_or_contradictory_rows(
-    tmp_path: Path, corruption: str
-) -> None:
+@pytest.mark.parametrize("corruption", ["json", "state", "identity", "idempotency", "version"])
+def test_initialize_rejects_corrupt_or_contradictory_rows(tmp_path: Path, corruption: str) -> None:
     journal = store(tmp_path)
     journal.reserve(record(), capacity=1)
     path = tmp_path / "mqtt.sqlite3"

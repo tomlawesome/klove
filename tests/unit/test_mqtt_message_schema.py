@@ -124,6 +124,4 @@ def test_structure_checks_remain_fail_closed_when_exact_digest_is_rebound(
 
     assessment = assess_mqtt_message_schema(raw)
 
-    assert assessment == messages.MqttMessageSchemaAssessment(
-        False, code="message_profile_invalid"
-    )
+    assert assessment == messages.MqttMessageSchemaAssessment(False, code="message_profile_invalid")

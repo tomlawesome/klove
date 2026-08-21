@@ -200,9 +200,7 @@ class MqttTlsServer:
                 else:
                     self._printer_sessions.pop(admitted_printer, None)
 
-    async def _authenticate(
-        self, packet: ConnectPacket
-    ) -> CompatibilityPrincipal | None:
+    async def _authenticate(self, packet: ConnectPacket) -> CompatibilityPrincipal | None:
         return await self._bounded(
             self._authenticator.authenticate_mqtt(
                 packet.serial,
