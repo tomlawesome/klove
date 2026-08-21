@@ -6,8 +6,9 @@ renaming it or extracting it from a 3MF. Klove must not rewrite a foreign start
 G-code dialect or silently ignore commands.
 
 Artifact policy is staged. Its validation, qualification, upload and durable
-start components are implemented behind separate evidence boundaries, but no
-northbound intake-to-completion workflow is yet authorized:
+start components are implemented behind separate evidence boundaries. ADR 0007
+now accepts one internal authenticated intake-to-completion contract, but its
+coordinator and every northbound adapter remain unimplemented:
 
 1. Accept Grove's `.gcode.3mf` container only when its selected plate contains
    G-code sliced for the target Klipper profile. Never support unsliced geometry
@@ -54,8 +55,12 @@ emit verified remote-file evidence only after bounded metadata and byte-digest
 reconciliation. ADR 0005 may consume only that `VerifiedUpload`, repeat current
 target/file/live checks, commit a durable pre-dispatch reservation, send one
 typed start, and confirm only from later exact history and monotonic state
-evidence. These components expose no northbound dispatch workflow; [issue
-#12](https://github.com/tomlawesome/klove/issues/12) owns that integration.
+evidence. [ADR 0007](../decisions/0007-authenticated-dispatch-ingress.md)
+accepts one asynchronous coordinator that binds their shared identities to an
+authenticated exact-printer grant, canonical registry target, private spool,
+durable lifecycle result, restart reconciliation, and safe cancellation.
+[Issue #12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
+owns that integration; no northbound route exists yet.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and
