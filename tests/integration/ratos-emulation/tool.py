@@ -489,6 +489,28 @@ def _api_headers(api_key: str, *, content_type: str | None = None) -> dict[str, 
     return headers
 
 
+def _restart_printer(api_key: str) -> bool:
+    try:
+        restart = _http_json(
+            "/printer/restart",
+            method="POST",
+            body=b"{}",
+            headers=_api_headers(api_key, content_type="application/json"),
+            timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as error:
+        message = str(error)
+        if (
+            "/printer/restart returned HTTP 504" in message
+            or "/printer/restart timed out" in message
+        ):
+            return False
+        raise
+    if restart.get("result") != "ok":
+        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    return True
+
+
 def _multipart_upload_body(root: str, filename: str, content: bytes) -> tuple[str, bytes]:
     checksum = hashlib.sha256(content).hexdigest()
     boundary = f"klove-ratos-{checksum[:24]}"
@@ -1004,17 +1026,12 @@ def contract_prepare() -> None:
     _verify_remote_contract_file(
         api_key, root="config", filename="printer.cfg", expected=printer_config
     )
-    restart = _http_json(
-        "/printer/restart",
-        method="POST",
-        body=b"{}",
-        headers=_api_headers(api_key, content_type="application/json"),
-        timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
-    )
-    if restart.get("result") != "ok":
-        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    printer_restart_acknowledged = _restart_printer(api_key)
     _wait_printer_ready(
-        900, failure_stage="after_printer_restart", config=printer_config, restart_acknowledged=True
+        900,
+        failure_stage="after_printer_restart",
+        config=printer_config,
+        restart_acknowledged=printer_restart_acknowledged,
     )
     moonraker_config = _replace_moonraker_configuration(api_key)
     _wait_printer_ready(
@@ -1042,21 +1059,13 @@ def contract_prepare() -> None:
     _verify_remote_contract_file(
         api_key, root="gcodes", filename="contract.gcode", expected=contract_gcode
     )
-    restart = _http_json(
-        "/printer/restart",
-        method="POST",
-        body=b"{}",
-        headers=_api_headers(api_key, content_type="application/json"),
-        timeout=PRINTER_RESTART_TIMEOUT_SECONDS,
-    )
-    if restart.get("result") != "ok":
-        raise RuntimeError("Moonraker returned an unexpected Klippy restart result")
+    printer_restart_acknowledged = _restart_printer(api_key)
     _wait_printer_ready(
         300,
         api_key,
         failure_stage="after_final_printer_restart",
         config=printer_config,
-        restart_acknowledged=True,
+        restart_acknowledged=printer_restart_acknowledged,
     )
     printer_evidence = _contract_status(api_key, expected_phase="standby")
     _verify_remote_contract_file(
