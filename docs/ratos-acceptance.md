@@ -7,6 +7,11 @@ hardware under the attended procedure below. Service emulation is tracked in
 [issue #50 — RatOS emulation feasibility](https://github.com/tomlawesome/klove/issues/50) and the controlled
 contract in [issue #51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51).
 
+The attended hardware procedure is the final full-system release gate after the
+implementation milestone suite. It is not a per-slice or M0 blocker: pinned
+Moonraker/Klipper integration and the exact-release RatOS emulation lane provide
+the automated software contract evidence during development.
+
 RatOS acceptance is deliberately separate from Klove's native
 Klipper/Moonraker container test. The automated fixture proves the current
 HTTP/WebSocket authentication, observation, typed control, ambiguity, and

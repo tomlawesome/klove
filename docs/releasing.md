@@ -15,6 +15,14 @@ promotion workflow must be dispatched with its `sha256:` digest. The workflow
 verifies the attestation, source-branch label, Git ancestry, and exact source
 tree before moving `latest` to that digest. Promotion does not rebuild.
 
-Klove is currently pre-release. ADR 0001 accepts the first actuation slice, but
-do not run stable promotion until the exact candidate has production-like
-acceptance evidence for that control contract.
+Klove is currently pre-release. Exact pinned Moonraker/Klipper integration and
+the supplemental exact-release RatOS emulation lane are the software acceptance
+boundary during implementation. They exercise the production Klove protocol,
+state, control, ambiguity, and restart contracts without requiring visible
+physical motion after every slice.
+
+Do not run stable promotion during the intermediate milestones. After the full
+milestone suite is complete, run the attended supported-ARM RatOS procedure
+against the designated physical printer to validate board integration,
+configured macro semantics, and real motion. Promote only that final accepted
+preview digest; never rebuild it.
