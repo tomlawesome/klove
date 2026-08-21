@@ -19,6 +19,7 @@ from klove.domain.onboarding import RegisteredPrinter
 from klove.northbound.api import create_api, ready_key
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.bootstrap import FileBootstrapImporter
+from klove.orchestration.completion import CompletionHandoffService
 from klove.orchestration.control import ControlService
 from klove.orchestration.onboarding import CompositeActuatorFenceInspector, PrinterLifecycleService
 from klove.orchestration.runtime_registry import RegistryRuntimeSupervisor
@@ -94,6 +95,14 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
         if config.control.enabled:
             scopes.add("printers:control")
         owner_authenticator, owner_sessions, frame_handshakes = _owner_security(config.onboarding)
+        completion_handoff = None
+        if frame_handshakes is not None:
+            completion_handoff = CompletionHandoffService(
+                store,
+                secrets,
+                cast(str, config.onboarding.compatibility_host),
+                admissions,
+            )
         app = create_api(
             registry,
             BearerAuthenticator(read_secret(config.api.token_file), scopes=frozenset(scopes)),
@@ -102,6 +111,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
             owner_sessions=owner_sessions,
             lifecycle=lifecycle if owner_sessions is not None else None,
             frame_handshakes=frame_handshakes,
+            completion_handoff=completion_handoff,
         )
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()

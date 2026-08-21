@@ -16,6 +16,7 @@ const frameStylesheet = await readFile(
 );
 const ownerCredential = "o".repeat(32);
 const moonrakerCredential = "m".repeat(32);
+const compatibilityAccessCode = "A".repeat(20);
 const recoveryUuid = "11111111-1111-4111-8111-111111111111";
 const routes = {
   "/": { framePath: "/onboarding/setup", operation: "create", heading: "Register a Klipper printer" },
@@ -28,9 +29,11 @@ const routes = {
 
 let state;
 let parentOrigin;
+let alternateParentOrigin;
 let frameOrigin;
 let attackerOrigin;
 let parentServer;
+let alternateParentServer;
 let frameServer;
 let attackerServer;
 
@@ -40,15 +43,19 @@ test.beforeAll(async () => {
   frameOrigin = origin(frameServer);
   parentServer = await listen(parentHandler);
   parentOrigin = origin(parentServer);
+  alternateParentServer = await listen(parentHandler);
+  alternateParentOrigin = origin(alternateParentServer);
   attackerServer = await listen(attackerHandler, "localhost");
   attackerOrigin = origin(attackerServer, "localhost");
 });
 
 test.afterAll(async () => {
-  await Promise.all([parentServer, frameServer, attackerServer].filter(Boolean).map(close));
+  await Promise.all(
+    [parentServer, alternateParentServer, frameServer, attackerServer].filter(Boolean).map(close),
+  );
 });
 
-test("creates one direct-probed printer without browser persistence or a completion handoff", async ({ page }) => {
+test("delivers one exact completion bundle without browser persistence", async ({ page }) => {
   await page.goto(parentOrigin);
   const frame = page.frameLocator("#klove-frame");
   const parentNonce = await page.evaluate(() => window.frameTest.parentNonce);
@@ -60,14 +67,23 @@ test("creates one direct-probed printer without browser persistence or a complet
   await expect(frame.getByRole("status")).toHaveText("Secure owner session active.");
   await configureCreate(frame, { profile: true, dispatch: true });
   await frame.getByRole("button", { name: "Probe and register" }).click();
-  await expect(frame.getByRole("status")).toHaveText("Registration operation confirmed.");
-  await expect(frame.getByText("Klove confirmed the bounded registration operation")).toBeVisible();
-  await expect(page.locator("#parent-status")).toHaveText("authorized");
+  await expect(frame.getByRole("status")).toHaveText("Registration handoff complete.");
+  await expect(page.locator("#parent-status")).toHaveText("created");
   expect(state.operations).toContain("create");
   expect(state.paths).not.toContain("/v1/onboarding/inspect");
-  expect(frameScript).not.toContain("klove.frame.complete");
-  expect(frameScript).not.toContain("access_code");
-  await expect(frame.getByRole("heading", { name: "Confirm registration details" })).toBeVisible();
+  expect(state.completionRequests).toBe(1);
+  expect(frameScript).toContain("klove.frame.completion");
+  expect(frameScript).toContain("completion.access_code = \"\"");
+  await expect(frame.locator("#lifecycle-panel")).toBeHidden();
+  const completedRecords = await page.evaluate(() => window.frameTest.completedRecords);
+  expect(completedRecords).toHaveLength(1);
+  expect(completedRecords[0]).toMatchObject({
+    name: "Workshop printer",
+    ip_address: "klove.example.test",
+  });
+  expect(completedRecords[0].serial_number).toMatch(
+    /^KLOVE-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/,
+  );
 
   const privacy = await frame.locator(".frame-shell").evaluate(async () => ({
     localStorage: window.localStorage.length,
@@ -81,10 +97,14 @@ test("creates one direct-probed printer without browser persistence or a complet
   expect(privacy.serviceWorkers).toBe(0);
   expect(privacy.html).not.toContain(ownerCredential);
   expect(privacy.html).not.toContain(moonrakerCredential);
+  expect(privacy.html).not.toContain(compatibilityAccessCode);
   expect(privacy.url).not.toContain(ownerCredential);
   expect(privacy.url).not.toContain(moonrakerCredential);
+  expect(privacy.url).not.toContain(compatibilityAccessCode);
   expect(page.url()).not.toContain(ownerCredential);
   expect(page.url()).not.toContain(moonrakerCredential);
+  expect(page.url()).not.toContain(compatibilityAccessCode);
+  expect(await page.content()).not.toContain(compatibilityAccessCode);
 });
 
 test("keeps a retryable direct-probe error bounded and clears submitted credentials", async ({ page }) => {
@@ -98,8 +118,82 @@ test("keeps a retryable direct-probe error bounded and clears submitted credenti
   await expect(frame.getByLabel("Moonraker credential")).toHaveValue("");
   await frame.getByLabel("Moonraker credential").fill(moonrakerCredential);
   await frame.getByRole("button", { name: "Probe and register" }).click();
-  await expect(frame.getByRole("status")).toHaveText("Registration operation confirmed.");
+  await expect(frame.getByRole("status")).toHaveText("Registration handoff complete.");
   expect(state.lifecycleRequests).toBeGreaterThanOrEqual(3);
+});
+
+test("reports a Grove create failure without retaining or replaying the handoff", async ({ page }) => {
+  const completionsBefore = state.completionRequests;
+  await page.goto(parentOrigin);
+  await page.evaluate(() => window.frameTest.setNextCompletionResult("failed"));
+  const frame = page.frameLocator("#klove-frame");
+  await authorizeFrame(frame);
+  await configureCreate(frame);
+  await frame.getByRole("button", { name: "Probe and register" }).click();
+
+  await expect(frame.getByRole("status")).toHaveText("Registration handoff failed.");
+  await expect(page.locator("#parent-status")).toHaveText("failed");
+  expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+  expect(state.completionRequests).toBe(completionsBefore + 1);
+  await page.evaluate(() => window.frameTest.sendCompletionResult("created"));
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+  expect(state.completionRequests).toBe(completionsBefore + 1);
+});
+
+for (const ipAddress of ["192.0.2.001", "123", "1.2.3"]) {
+  test(`rejects an ambiguous numeric completion host (${ipAddress}) before it can reach the parent`, async ({ page }) => {
+    const completionsBefore = state.completionRequests;
+    state.overrideNextCompletion({ ip_address: ipAddress });
+    await page.goto(parentOrigin);
+    const frame = page.frameLocator("#klove-frame");
+    await authorizeFrame(frame);
+    await configureCreate(frame);
+    await frame.getByRole("button", { name: "Probe and register" }).click();
+
+    await expect(frame.getByText(/could not deliver the registration handoff/)).toBeVisible();
+    await expect(page.locator("#parent-status")).toHaveText("authorized");
+    expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+    expect(state.completionRequests).toBe(completionsBefore + 1);
+  });
+}
+
+test("rejects a configured-parent origin swap during the completion acknowledgement", async ({ page }) => {
+  const completionsBefore = state.completionRequests;
+  await page.goto(parentOrigin);
+  await page.evaluate(() => window.frameTest.setNextCompletionResult("manual"));
+  const frame = page.frameLocator("#klove-frame");
+  await authorizeFrame(frame);
+  await configureCreate(frame);
+  await frame.getByRole("button", { name: "Probe and register" }).click();
+  await expect(frame.getByRole("status")).toHaveText("Waiting for host confirmation.");
+  const flowNonce = await page.evaluate(() => window.frameTest.lastCompletionFlowNonce);
+  expect(flowNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+  await frame.locator(".frame-shell").evaluate(
+    ({ nonce, swappedOrigin }) => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            version: 1,
+            type: "klove.frame.completion.result",
+            flow_nonce: nonce,
+            status: "created",
+          },
+          origin: swappedOrigin,
+          source: window.parent,
+        }),
+      );
+    },
+    { nonce: flowNonce, swappedOrigin: alternateParentOrigin },
+  );
+  await expect(frame.getByRole("status")).toHaveText("Waiting for host confirmation.");
+  expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+
+  await page.evaluate(() => window.frameTest.sendCompletionResult("created"));
+  await expect(frame.getByRole("status")).toHaveText("Registration handoff complete.");
+  expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+  expect(state.completionRequests).toBe(completionsBefore + 1);
 });
 
 test("rejects hostile lifecycle fields locally while preserving the exact session for cancellation", async ({ page }) => {
@@ -209,10 +303,13 @@ test("rejects hostile messages and preserves cancellation and restart fail-close
   await expect(page.locator("#parent-status")).toHaveText("waiting");
   await authorizeFrame(frame);
   const requestsBefore = state.lifecycleRequests;
+  const completionsBefore = state.completionRequests;
   await page.evaluate(() => window.frameTest.sendOutOfFlowChallenge());
+  await page.evaluate(() => window.frameTest.sendOutOfFlowCompletionResult());
   await page.waitForTimeout(100);
   await expect(frame.getByRole("button", { name: "Probe and register" })).toBeEnabled();
   expect(state.lifecycleRequests).toBe(requestsBefore);
+  expect(state.completionRequests).toBe(completionsBefore);
   await configureCreate(frame);
   await frame.getByRole("button", { name: "Cancel" }).click();
   await expect(frame.getByRole("status")).toHaveText("Cancelled.");
@@ -224,6 +321,9 @@ test("rejects hostile messages and preserves cancellation and restart fail-close
   expect(cancelledPrivacy.owner).toBe("");
   expect(cancelledPrivacy.html).not.toContain(ownerCredential);
   expect(cancelledPrivacy.html).not.toContain(moonrakerCredential);
+  expect(cancelledPrivacy.html).not.toContain(compatibilityAccessCode);
+  expect(await page.evaluate(() => window.frameTest.completedRecords)).toEqual([]);
+  expect(state.completionRequests).toBe(completionsBefore);
 
   const restart = await browser.newContext();
   const restartPage = await restart.newPage();
@@ -363,6 +463,8 @@ class FrameState {
     this.sequence = 0;
     this.lifecycleRequests = 0;
     this.ownerSessionRequests = 0;
+    this.completionRequests = 0;
+    this.completionOverride = null;
     this.expired = false;
     this.failure = null;
     this.cancellationFailure = false;
@@ -406,15 +508,50 @@ class FrameState {
     if (!this.session(document, headers, operation) || !validLifecycleDocument(document, headers, operation)) {
       return null;
     }
+    const session = this.sessions.get(document.flow_nonce);
+    if (session === undefined) {
+      return null;
+    }
     this.lifecycleRequests += 1;
     if (this.failure !== null) {
       const error = this.failure;
       this.failure = null;
       return { error };
     }
-    this.sessions.delete(document.flow_nonce);
+    if (operation === "create") {
+      session.completion = {
+        name: document.display_name,
+        serial_number: `KLOVE-${document.printer_uuid.toUpperCase()}`,
+        ip_address: "klove.example.test",
+      };
+    } else {
+      this.sessions.delete(document.flow_nonce);
+    }
     this.operations.push(operation);
     return { printer: publicPrinter(document.printer_uuid, operation) };
+  }
+
+  completion(document, headers) {
+    if (
+      !matches(document, ["flow_nonce"]) ||
+      !this.session(document, headers, "create") ||
+      this.sessions.get(document.flow_nonce)?.completion === undefined
+    ) {
+      return null;
+    }
+    const completion = this.sessions.get(document.flow_nonce).completion;
+    this.sessions.delete(document.flow_nonce);
+    this.completionRequests += 1;
+    const override = this.completionOverride;
+    this.completionOverride = null;
+    return {
+      version: 1,
+      type: "klove.frame.completion",
+      flow_nonce: document.flow_nonce,
+      ...completion,
+      access_code: compatibilityAccessCode,
+      ...override,
+    };
   }
 
   cancel(document, headers) {
@@ -435,6 +572,10 @@ class FrameState {
 
   failNextCancellation() {
     this.cancellationFailure = true;
+  }
+
+  overrideNextCompletion(fields) {
+    this.completionOverride = fields;
   }
 
   restart() {
@@ -538,6 +679,20 @@ function frameHandler(request, response) {
       return json(response, 200, { status: "cancelled" });
     });
   }
+  if (request.method === "POST" && url.pathname === "/v1/onboarding/frame/completion") {
+    return readJson(request).then((document) => {
+      if (request.headers.origin !== frameOrigin) {
+        return json(response, 403, { error: "owner_denied" });
+      }
+      const completion = state.completion(document, request.headers);
+      if (completion === null) {
+        return json(response, 403, { error: "owner_denied" });
+      }
+      return json(response, 200, completion, {
+        "set-cookie": "klove_setup=; Path=/v1/onboarding; Max-Age=0",
+      });
+    });
+  }
   const operation = lifecycleOperation(request.method, url.pathname);
   if (operation !== null) {
     return readJson(request).then((document) => {
@@ -556,9 +711,14 @@ function frameHandler(request, response) {
       if (result.error) {
         return json(response, 422, result);
       }
-      return json(response, operation === "create" ? 201 : 200, result, {
-        "set-cookie": "klove_setup=; Path=/v1/onboarding; Max-Age=0",
-      });
+      return json(
+        response,
+        operation === "create" ? 201 : 200,
+        result,
+        operation === "create"
+          ? {}
+          : { "set-cookie": "klove_setup=; Path=/v1/onboarding; Max-Age=0" },
+      );
     });
   }
   send(response, 404, "not found");
@@ -574,9 +734,10 @@ function attackerHandler(_request, response) {
 }
 
 function frameDocument(route) {
+  const configuredParents = JSON.stringify([parentOrigin, alternateParentOrigin]).replaceAll('"', "&quot;");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/onboarding/assets/secure-frame.css"><script src="/onboarding/assets/secure-frame.js" defer></script></head>
-<body><main class="frame-shell" data-operation="${route.operation}" data-parent-origins="[&quot;${parentOrigin}&quot;]"><section class="authorization-card" aria-labelledby="frame-title"><p class="eyebrow">Klove secure connection</p><h1 id="frame-title">${route.heading}</h1><p id="frame-guidance">Waiting for the host application to establish a secure connection.</p><form id="owner-session" novalidate><label for="owner-credential">Klove owner credential</label><input id="owner-credential" type="password" autocomplete="off" inputmode="text" spellcheck="false" maxlength="4096" required disabled><button id="authorize" type="submit" disabled>Authorize this session</button></form><section id="lifecycle-panel" hidden aria-labelledby="lifecycle-title"><h2 id="lifecycle-title">Confirm registration details</h2><p id="lifecycle-guidance"></p></section><button id="cancel" class="secondary" type="button" disabled>Cancel</button><p id="frame-status" role="status" aria-live="polite"></p><p class="privacy-note">This authorization stays in Klove and is never sent to the host.</p></section></main></body></html>`;
+<body><main class="frame-shell" data-operation="${route.operation}" data-parent-origins="${configuredParents}"><section class="authorization-card" aria-labelledby="frame-title"><p class="eyebrow">Klove secure connection</p><h1 id="frame-title">${route.heading}</h1><p id="frame-guidance">Waiting for the host application to establish a secure connection.</p><form id="owner-session" novalidate><label for="owner-credential">Klove owner credential</label><input id="owner-credential" type="password" autocomplete="off" inputmode="text" spellcheck="false" maxlength="4096" required disabled><button id="authorize" type="submit" disabled>Authorize this session</button></form><section id="lifecycle-panel" hidden aria-labelledby="lifecycle-title"><h2 id="lifecycle-title">Confirm registration details</h2><p id="lifecycle-guidance"></p></section><button id="cancel" class="secondary" type="button" disabled>Cancel</button><p id="frame-status" role="status" aria-live="polite"></p><p class="privacy-note">This authorization stays in Klove and is never sent to the host.</p></section></main></body></html>`;
 }
 
 function parentDocument(route) {
@@ -592,10 +753,21 @@ function parentDocument(route) {
   const status = document.querySelector("#parent-status");
   const matches = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("|") === keys.slice().sort().join("|");
   const token = value => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+  const serial = value => typeof value === "string" && /^KLOVE-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/.test(value);
+  const accessCode = value => typeof value === "string" && /^[A-Za-z0-9_-]{20}$/.test(value);
+  const completionKeys = ["version", "type", "flow_nonce", "name", "serial_number", "ip_address", "access_code"];
+  const completedRecords = [];
+  let nextCompletionResult = "created";
+  let lastCompletionFlowNonce = null;
   const sendInit = () => frame.contentWindow.postMessage({ version: 1, type: "klove.frame.init", operation, parent_nonce: parentNonce }, frameOrigin);
   window.frameTest = {
     parentNonce,
+    get completedRecords() { return completedRecords.slice(); },
+    get lastCompletionFlowNonce() { return lastCompletionFlowNonce; },
+    setNextCompletionResult(value) { nextCompletionResult = value; },
     sendOutOfFlowChallenge() { frame.contentWindow.postMessage({ version: 1, type: "klove.frame.challenge", operation, parent_nonce: parentNonce, server_nonce: "z".repeat(43) }, frameOrigin); },
+    sendOutOfFlowCompletionResult() { frame.contentWindow.postMessage({ version: 1, type: "klove.frame.completion.result", flow_nonce: "z".repeat(43), status: "created" }, frameOrigin); },
+    sendCompletionResult(statusValue = "created") { if (lastCompletionFlowNonce !== null) frame.contentWindow.postMessage({ version: 1, type: "klove.frame.completion.result", flow_nonce: lastCompletionFlowNonce, status: statusValue }, frameOrigin); },
   };
   window.addEventListener("message", async event => {
     if (event.source !== frame.contentWindow || event.origin !== frameOrigin) return;
@@ -607,6 +779,16 @@ function parentDocument(route) {
     }
     if (matches(event.data, ["version", "type", "operation", "parent_nonce"]) && event.data.version === 1 && event.data.type === "klove.frame.authorized" && event.data.operation === operation && event.data.parent_nonce === parentNonce) status.textContent = "authorized";
     if (matches(event.data, ["version", "type", "operation", "parent_nonce"]) && event.data.version === 1 && event.data.type === "klove.frame.cancelled" && event.data.operation === operation && event.data.parent_nonce === parentNonce) status.textContent = "cancelled";
+    if (matches(event.data, completionKeys) && event.data.version === 1 && event.data.type === "klove.frame.completion" && token(event.data.flow_nonce) && typeof event.data.name === "string" && event.data.name.length >= 1 && event.data.name.length <= 100 && event.data.ip_address === "klove.example.test" && serial(event.data.serial_number) && accessCode(event.data.access_code)) {
+      const result = nextCompletionResult;
+      nextCompletionResult = "created";
+      lastCompletionFlowNonce = event.data.flow_nonce;
+      const record = { name: event.data.name, serial_number: event.data.serial_number, ip_address: event.data.ip_address };
+      event.data.access_code = "";
+      if (result === "created") completedRecords.push(record);
+      if (result !== "manual") frame.contentWindow.postMessage({ version: 1, type: "klove.frame.completion.result", flow_nonce: lastCompletionFlowNonce, status: result }, frameOrigin);
+      status.textContent = result === "failed" ? "failed" : result === "manual" ? "waiting" : "created";
+    }
   });
   frame.addEventListener("load", sendInit);
   frame.src = frameOrigin + route;

@@ -244,6 +244,7 @@ def test_onboarding_is_disabled_by_default_and_enabled_policy_is_complete() -> N
         {"enabled": True, "owner_credential_file": Path("/run/secrets/owner")},
         {"owner_credential_file": Path("/run/secrets/owner")},
         {"allowed_grove_origins": ("https://grove.example.test",)},
+        {"compatibility_host": "klove.example.test"},
         {"allow_loopback_http": True},
     ):
         with pytest.raises(ValidationError):
@@ -347,10 +348,15 @@ def test_secure_frame_origin_is_exact_distinct_and_development_bounded() -> None
         "allowed_grove_origins": ("https://grove.example.test",),
     }
     configured = OnboardingConfig.model_validate(
-        {**common, "frame_origin": "https://grove.example.test:8443"}
+        {
+            **common,
+            "frame_origin": "https://grove.example.test:8443",
+            "compatibility_host": "klove.example.test",
+        }
     )
     assert configured.frame_enabled
     assert configured.frame_origin == "https://grove.example.test:8443"
+    assert configured.compatibility_host == "klove.example.test"
 
     for value in (
         "https://grove.example.test",
@@ -367,9 +373,83 @@ def test_secure_frame_origin_is_exact_distinct_and_development_bounded() -> None
         owner_credential_file=Path("/run/secrets/owner"),
         allowed_grove_origins=("http://127.0.0.1:9011",),
         frame_origin="http://127.0.0.1:9010",
+        compatibility_host="127.0.0.1",
         allow_loopback_http=True,
     )
     assert loopback.frame_enabled and loopback.cookie_secure is False
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "",
+        "KLOVE.example.test",
+        "klove.example.test.",
+        "klove.example.test:80",
+        "https://klove.example.test",
+        "klove.example.test/path",
+        "[::1]",
+        "::1",
+        "192.0.2.001",
+        " 192.0.2.1",
+    ],
+)
+def test_compatibility_host_requires_one_canonical_dns_or_ipv4_target(host: str) -> None:
+    common = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+        "allowed_grove_origins": ("https://grove.example.test",),
+        "frame_origin": "https://grove.example.test:8443",
+    }
+    with pytest.raises(ValidationError):
+        OnboardingConfig.model_validate({**common, "compatibility_host": host})
+
+
+def test_compatibility_host_is_required_only_for_embedded_onboarding() -> None:
+    assert OnboardingConfig.model_validate({"compatibility_host": None}).compatibility_host is None
+    common = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+        "allowed_grove_origins": ("https://grove.example.test",),
+    }
+    with pytest.raises(ValidationError, match="compatibility host"):
+        OnboardingConfig.model_validate(
+            {**common, "frame_origin": "https://grove.example.test:8443"}
+        )
+    with pytest.raises(ValidationError, match="compatibility host"):
+        OnboardingConfig.model_validate({**common, "compatibility_host": "klove.example.test"})
+
+    dns = OnboardingConfig.model_validate(
+        {
+            **common,
+            "frame_origin": "https://grove.example.test:8443",
+            "compatibility_host": "klove.example.test",
+        }
+    )
+    ipv4 = OnboardingConfig.model_validate(
+        {
+            **common,
+            "frame_origin": "https://grove.example.test:8443",
+            "compatibility_host": "192.0.2.20",
+        }
+    )
+    assert dns.compatibility_host == "klove.example.test"
+    assert ipv4.compatibility_host == "192.0.2.20"
+
+
+def test_secure_frame_rejects_parent_origin_reuse_or_a_different_trusted_site() -> None:
+    common = {
+        "enabled": True,
+        "owner_credential_file": Path("/run/secrets/owner"),
+        "allowed_grove_origins": ("https://grove.example.test",),
+        "compatibility_host": "klove.example.test",
+    }
+    with pytest.raises(ValidationError, match="remain distinct"):
+        OnboardingConfig.model_validate({**common, "frame_origin": "https://grove.example.test"})
+    with pytest.raises(ValidationError, match="share one exact trusted-site"):
+        OnboardingConfig.model_validate(
+            {**common, "frame_origin": "https://other.example.test:8443"}
+        )
 
 
 @pytest.mark.parametrize(
