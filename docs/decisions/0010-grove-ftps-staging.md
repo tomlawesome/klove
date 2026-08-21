@@ -1,7 +1,6 @@
 # ADR 0010: define bounded Grove FTPS artifact staging
 
-Status: proposed; implementation prohibited until the observation gates below
-are complete and this decision is accepted
+Status: accepted
 
 Date: 2026-08-21
 
@@ -12,18 +11,20 @@ publishes a separate MQTT `print.project_file` request. ADR 0006 intends a
 compatibility facade, while ADR 0007 requires a separately approved adapter
 before any northbound file source may reach its dispatch coordinator.
 
-The retained normal-path client capture establishes two implicit-FTPS TLS 1.3
-sessions, the generated access-code mapping, ordered cleanup and protected
-passive-upload commands, and exact transfer integrity for one generated test
-archive. It does not establish reply/error semantics, PASV deployment and NAT
-behavior, production filename grammar, concurrency, retry/disconnect behavior,
-or the later MQTT correlation. Guessing any of those behaviors would create an
-unauthenticated path, overwrite, traversal, cross-printer disclosure,
-resource-exhaustion, or unintended dispatch risk.
+The retained normal-path client and server-response captures establish two
+implicit-FTPS TLS 1.3 sessions, the generated access-code mapping, ordered
+cleanup and protected passive-upload commands, exact successful reply codes,
+same-peer protected data transfer, the advertised passive endpoint
+relationships, exact transfer integrity, and successful completion through
+Grove's public queue API. Alternate reply codes, disconnect/retry behavior,
+host-published or NAT passive deployment, and concurrent transfers remain
+unobserved and unsupported. The accepted root-level ASCII `.3mf` grammar is a
+deliberately conservative subset; the KLOVE Grove path must emit names within
+it. The later MQTT correlation remains a separate gate.
 
-## Proposed decision
+## Decision
 
-Accept one file-only FTPS staging boundary after its exact wire profile is
+Accept one file-only FTPS staging boundary under the exact wire profile
 completed from approved ADR-0008 black-box evidence. A successful transfer
 creates only private, immutable, bounded staged bytes and a non-secret internal
 receipt. It never validates, uploads to Moonraker, starts a print, issues a
@@ -31,13 +32,14 @@ control, or grants dispatch authority.
 
 ### Clean-room protocol gate
 
-1. Before this decision can become accepted, approved fixtures for the exact
-   supported Grove revision must record the minimum required implicit-FTPS
+1. Approved fixtures for the exact supported Grove revision record the minimum
+   required implicit-FTPS
    handshake, TLS behavior, login field mapping, FTP commands and arguments,
    working-directory and filename behavior, passive-mode behavior, data-channel
-   protection, response codes, upload completion, disconnect, and retry flow.
-   Every fixture follows ADR 0008's provenance, sanitization, separation, and
-   revision rules.
+   protection, response codes, upload completion, and successful disconnect
+   flow. Alternate replies, failed disconnects, retry timing, NAT, and
+   concurrency are explicitly unsupported rather than guessed. Every fixture
+   follows ADR 0008's provenance, sanitization, separation, and revision rules.
 2. Klove's versioned FTPS profile enumerates every accepted command, state,
    argument grammar, reply, ordering rule, and bound. Unknown commands,
    extensions, encodings, active mode, plaintext FTP, explicit TLS upgrade, and
@@ -80,6 +82,8 @@ control, or grants dispatch authority.
    A connection cannot steal, reuse, race, or attach to another session's
    passive reservation. Advertised addresses and host-network/NAT behavior must
    be explicit; unsupported topology fails readiness.
+   The accepted topology advertises the control connection's local address and
+   an actually open listener; the data peer must equal the control peer.
 8. Configuration places conservative hard maxima on global and per-printer
    sessions, login attempts, command line and argument bytes, commands per
    session, passive listeners, concurrent transfers, archive bytes, idle time,
@@ -135,10 +139,12 @@ control, or grants dispatch authority.
     expired unconsumed stage proven disjoint from every active correlation and
     operation; ambiguity retains bytes and denies capacity.
 
-## Required validation before acceptance
+## Required validation before runtime enablement and release
 
 - ADR-0008-compliant black-box fixtures and manifests define every retained
-  FTPS protocol token and observed behavior at the pinned Grove revision.
+  FTPS protocol token and observed behavior at the pinned Grove revision. The
+  accepted success replies are `220`, `331`, `230`, `200`, `200`, then `250`
+  and `221` for cleanup, or `227`, `150`, `226`, and `221` for upload.
 - TLS, login, authorization, parser, state machine, passive binding, path,
   staging, replay, cleanup, lifecycle-race, shutdown, and policy code has 100%
   statement and branch coverage with negative, property, fuzz, restart, and
@@ -157,9 +163,9 @@ control, or grants dispatch authority.
 
 ## Consequences
 
-- Issue #14 — FTPS ingress may perform clean-room observation and protocol
-  design, but runtime implementation remains blocked while this ADR is proposed
-  or its exact wire profile is incomplete.
+- Issue #14 — FTPS ingress may implement the accepted narrow runtime, but it
+  remains disabled until the runtime validation and composition gates above
+  pass.
 - Issue #79 — completion handoff supplies the shared compatibility secret; that
   one-time disclosure grants no artifact or actuation authority by itself.
 - Issue #12 — end-to-end dispatch and issue #76 — native dispatch proof are
