@@ -23,7 +23,8 @@ Klove remains headless and automation-first:
 1. Grove owns normal user interaction. Klove sends Grove conservative canonical
    state, capabilities, operation outcomes, and reconciliation status through
    the bounded MQTT/TLS compatibility contract. Artifact movement remains
-   prohibited until a separately accepted spool/dispatch contract exists.
+   prohibited until ADR 0007's authenticated dispatch ingress is implemented
+   behind a separately approved adapter.
 2. Klove sources evidence directly from configured controllers and exchanges
    structured data between controllers. It does not ask an operator to
    transcribe information that can be discovered or reconciled automatically.

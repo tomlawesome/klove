@@ -72,6 +72,13 @@ that the protocol model is complete. The suite therefore also includes:
   restart/reconnect gating, cross-key and cross-service printer fences, corrupt
   or weakened schemas, unsafe storage permissions, and every journal failure
   boundary;
+- authenticated dispatch-ingress tests for exact principal/scope/printer
+  grants, strict metadata and streamed-body bounds, digest/length mismatch,
+  partial intake cleanup, operation/key collisions, private spool permissions,
+  every upload/start durable checkpoint, cancellation races, client disconnect,
+  restart and reconnect reconciliation without retry, exact terminal history,
+  non-enumerating result authorization, redaction, capacity exhaustion, source
+  retention, recovery-set consistency, and concurrent-printer isolation;
 - repository policy tests that reject the enumerated prohibited RPC literals,
   confine the three accepted job-control RPC literals and the one accepted
   print-start literal to their separate typed adapters, constrain the native
@@ -107,8 +114,9 @@ context/daemon-bound cleanup, and finite Docker timeouts.
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and
 does not authorize generic G-code in `src/klove`. The new start adapter and
-journal are covered by deterministic protocol/fault tests; issue #12 owns the
-complete real-process intake-through-completion contract. The native amd64
+journal are covered by deterministic protocol/fault tests; issue #12 —
+end-to-end dispatch owns the complete real-process intake-through-completion
+contract. The native amd64
 stack also does not claim RatOS coverage. RatOS
 v2.1.0 acceptance separately records the exact ARM release asset checksum,
 supported board, running software identities, controlled configuration and

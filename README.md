@@ -19,6 +19,8 @@ This is pre-release software. Its native API cannot submit an artifact, upload
 or start a print, execute arbitrary G-code, or provide any other motion,
 heating, fan, light, or macro control. The separately accepted upload and
 durable print-start domain services are not exposed through a northbound route.
+ADR 0007 accepts their one authenticated, registry-bound asynchronous ingress
+contract, but its coordinator and every northbound adapter remain unimplemented.
 
 The product onboarding path is accepted but not complete. Issue #62 — registry
 storage and issue #63 — onboarding core implement its private versioned
@@ -26,9 +28,12 @@ registry, external credential store, exact
 lifecycle journal, crash reconciliation, bounded address-pinned Moonraker
 probe, and typed create/update/rotate/disable/remove orchestration. Issue #64 —
 runtime fleet adds registry-backed startup, monitoring, control routing, shared
-admission, restart recovery, and one exact file-bootstrap import. Issue #65 —
-protected onboarding API still has to add the owner-authenticated lifecycle API,
-followed by issue #59 — embedded setup/recovery. Once those and issue #10 — MQTT
+admission, restart recovery, and one exact file-bootstrap import. Issue #71 —
+owner session adds the separate owner credential, exact-origin and CSRF
+evidence, bounded restart-invalidated sessions, and strict cookie policy, but
+exposes no lifecycle route. Issue #72 — lifecycle routes and issue #73 —
+runtime handoff must complete issue #65 — protected onboarding API, followed by
+issue #59 — embedded setup/recovery. Once those and issue #10 — MQTT
 facade and issue #14 — FTPS facade ship, an authorized Grove user will select
 **Klipper via Klove**,
 complete Moonraker setup inside the embedded Klove page, review direct identity
@@ -159,4 +164,8 @@ boundary is [ADR 0006](docs/decisions/0006-embedded-grove-onboarding.md), and
 the registry's persistence and recovery rules are documented in the
 [registry storage contract](docs/registry-storage.md). The direct probe and
 typed mutation rules are documented in the
-[onboarding core contract](docs/onboarding-core.md).
+[onboarding core contract](docs/onboarding-core.md). The independent browser
+authentication substrate is documented in the
+[owner-session security contract](docs/owner-session-security.md).
+The accepted but not yet implemented dispatch-ingress contract is
+[ADR 0007](docs/decisions/0007-authenticated-dispatch-ingress.md).

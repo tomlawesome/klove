@@ -33,6 +33,7 @@ implementation roadmap remain the canonical detailed contracts and status.
 - [ADR 0004: bounded Moonraker upload](decisions/0004-bounded-moonraker-upload.md)
 - [ADR 0005: durable Moonraker print start](decisions/0005-durable-moonraker-print-start.md)
 - [ADR 0006: embedded Grove onboarding](decisions/0006-embedded-grove-onboarding.md)
+- [ADR 0007: authenticated dispatch ingress](decisions/0007-authenticated-dispatch-ingress.md)
 - [ADR 0008: clean-room Grove provenance](decisions/0008-grove-provenance.md)
 - [Implementation roadmap](implementation-plan.md)
 - [Onboarding core](onboarding-core.md)

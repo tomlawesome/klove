@@ -12,7 +12,12 @@ from aiohttp import web
 import klove.app as app_module
 from klove.app import serve
 from klove.domain.onboarding import MoonrakerEndpoint, PrinterIdentityEvidence
-from klove.northbound.api import create_api, ready_key
+from klove.northbound.api import (
+    create_api,
+    owner_authenticator_key,
+    owner_sessions_key,
+    ready_key,
+)
 
 from ..onboarding_helpers import PRINTER_UUID, identity
 
@@ -23,7 +28,14 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def write_config(tmp_path: Path, port: int, *, printer: bool, control: bool = False) -> Path:
+def write_config(
+    tmp_path: Path,
+    port: int,
+    *,
+    printer: bool,
+    control: bool = False,
+    onboarding: bool = False,
+) -> Path:
     api_token = tmp_path / "api.token"
     api_token.write_text("a" * 32, encoding="utf-8")
     state_directory = tmp_path / f"state-{port}"
@@ -31,6 +43,17 @@ def write_config(tmp_path: Path, port: int, *, printer: bool, control: bool = Fa
     secret_directory = state_directory / "registry-secrets"
     secret_directory.mkdir(mode=0o700)
     printer_block = ""
+    onboarding_block = ""
+    if onboarding:
+        owner_token = tmp_path / "owner.token"
+        owner_token.write_text("o" * 32, encoding="utf-8")
+        onboarding_block = f"""
+
+[onboarding]
+enabled = true
+owner_credential_file = "{owner_token.as_posix()}"
+allowed_grove_origins = ["https://grove.example.invalid"]
+"""
     if printer:
         moonraker_token = tmp_path / "moonraker.token"
         moonraker_token.write_text("m" * 32, encoding="utf-8")
@@ -62,6 +85,7 @@ journal_file = "{(state_directory / "start.sqlite3").as_posix()}"
 
 [control]
 enabled = {str(control).lower()}
+{onboarding_block}
 {printer_block}
 """.strip(),
         encoding="utf-8",
@@ -127,12 +151,17 @@ async def test_serve_starts_api_before_monitors_and_cleans_up(
     port = free_port()
     stop = asyncio.Event()
     task = asyncio.create_task(
-        serve(write_config(tmp_path, port, printer=True, control=control), stop)
+        serve(
+            write_config(tmp_path, port, printer=True, control=control, onboarding=True),
+            stop,
+        )
     )
     await asyncio.wait_for(started.wait(), timeout=2)
     assert observed_startup_order == [(True, False)]
     await asyncio.sleep(0)
     assert applications[0][ready_key].ready is True
+    assert applications[0][owner_authenticator_key].authenticate("o" * 32)
+    assert applications[0][owner_sessions_key].active_count == 0
 
     async with aiohttp.ClientSession() as session:
         response = await session.get(f"http://127.0.0.1:{port}/health/ready")

@@ -1,6 +1,7 @@
 # Klove threat model
 
-Status: active through durable typed print start and implemented onboarding core
+Status: active through runtime bootstrap, owner-session security, and the
+accepted authenticated dispatch-ingress contract
 
 ## Protected assets
 
@@ -47,11 +48,14 @@ Klove owner authorization.
 
 ## Required embedded-onboarding controls
 
-ADR 0006 accepts the boundary below. Issues #62–#63 implement the private
-registry, secret, lifecycle-journal, reconciliation, snapshot, direct probe, and
-typed lifecycle foundation. Issues #64–#65 and #59 must still add dynamic
-runtime activation, protected API/authentication, and the embedded flow before
-Klove claims product onboarding.
+ADR 0006 accepts the boundary below. Issue #62 — registry storage and issue
+#63 — onboarding core implement private lifecycle persistence and direct
+evidence. Issue #68 — runtime supervisor, issue #69 — shared runtime gate, and
+issue #70 — runtime bootstrap implement canonical runtime wiring. Issue #71 —
+owner session implements the independent credential, exact-origin/CSRF request
+evidence, and bounded restart-invalidated session substrate. Issue #72 —
+lifecycle routes, issue #73 — runtime handoff, and #59 — embedded setup/recovery
+remain required before Klove claims product onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,
@@ -276,13 +280,37 @@ never retries an ambiguity. A host component is not justified for the accepted
 boundary; any future atomic host primitive requires its own decision and tests.
 See `docs/decisions/0005-durable-moonraker-print-start.md`.
 
-## Required controls before end-to-end dispatch and later actuators
+## Authenticated dispatch-ingress controls
 
-The accepted component boundaries are not yet a public intake-to-completion
-workflow. Issue #58 must first provide the canonical onboarded printer and
-external secret boundary. Issue #12 must then integrate exact evidence,
-authentication, duplicate delivery, restart, cancellation, completion and
-substitution tests before target-bound dispatch is complete. Grove embedding is
-not dispatch authority. Every later actuator requires its own typed parameters,
-positive capability and policy evidence, and an accepted decision; the absence
-of any one item is denial.
+ADR 0007 accepts one internal asynchronous intake-to-completion contract. The
+coordinator is not yet implemented and no northbound route is exposed.
+
+- Only an independently authenticated `printers:dispatch` principal with an
+  exact canonical printer grant may submit, cancel, or read an operation. A
+  Grove login, setup session, browser, private network, route slug, model, name,
+  filename, or request target claim grants nothing.
+- Klove streams one bounded `.gcode.3mf` into an owner-only operation-derived
+  spool, computes its size and digest, and constructs approval only from the
+  authenticated printer grant plus one exact current canonical registry safety
+  profile. URLs, arbitrary paths, generic G-code, commands, and caller-created
+  approval evidence are rejected.
+- One durable operation/idempotency identity spans validation, qualification,
+  upload, start, and terminal history. A committed `uploading` state means the
+  request may have begun and is never retried. The ADR-0005 start journal
+  remains authoritative once start is reserved.
+- Cancellation can prevent a not-yet-begun upload or start, but never erases an
+  ambiguity, deletes a remote path, retries a request, or cancels a live print.
+  Live job cancellation remains only ADR 0001's exact current-token operation.
+- Exact immutable history identity proves printing and terminal completion.
+  Restart and reconnect reconcile read-only; missing, substituted,
+  contradictory, rolled-back, corrupt, or unavailable evidence fails closed.
+- The private spool, coordinator journal, canonical registry, secret store, and
+  durable start journal form one quiesced backup/restore set. Accepted and
+  unresolved operations are never evicted to admit new work.
+
+Issue #75 — dispatch coordinator must implement this composition and issue #76
+— native dispatch proof must cover authentication, duplicate delivery,
+substitution, cancellation, restart, completion, and cross-printer isolation
+before target-bound dispatch is complete. Every later actuator requires its own
+typed parameters, positive capability and policy evidence, and accepted
+decision; the absence of any one item is denial.
