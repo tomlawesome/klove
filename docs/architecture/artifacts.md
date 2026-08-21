@@ -7,8 +7,11 @@ G-code dialect or silently ignore commands.
 
 Artifact policy is staged. Its validation, qualification, upload and durable
 start components are implemented behind separate evidence boundaries. ADR 0007
-now accepts one internal authenticated intake-to-completion contract, but its
-coordinator and every northbound adapter remain unimplemented:
+also has its internal authenticated intake-to-completion coordinator. It
+reserves an operation before consuming a bounded streamed archive into its
+owner-only spool, binds every later stage to the canonical registry profile and
+exact upload/start evidence, and keeps ambiguous work fenced for read-only
+reconciliation. Every northbound adapter remains unimplemented:
 
 1. Accept Grove's `.gcode.3mf` container only when its selected plate contains
    G-code sliced for the target Klipper profile. Never support unsliced geometry
@@ -59,8 +62,8 @@ evidence. [ADR 0007](../decisions/0007-authenticated-dispatch-ingress.md)
 accepts one asynchronous coordinator that binds their shared identities to an
 authenticated exact-printer grant, canonical registry target, private spool,
 durable lifecycle result, restart reconciliation, and safe cancellation.
-[Issue #12 — end-to-end dispatch](https://github.com/tomlawesome/klove/issues/12)
-owns that integration; no northbound route exists yet.
+[Issue #75 — dispatch coordinator](https://github.com/tomlawesome/klove/issues/75)
+implements that internal integration. No northbound route exists yet.
 
 Longer term, Grove's slicer sidecar can produce target-specific G-code using a
 registered Klipper profile. That is re-slicing, not protocol translation, and

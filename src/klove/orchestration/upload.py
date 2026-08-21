@@ -36,6 +36,7 @@ from klove.domain.upload import (
     UploadState,
     VerifiedUpload,
 )
+from klove.orchestration.admission import PrinterAdmissionGates, PrinterAdmissionLease
 
 
 class UploadTransport(Protocol):
@@ -64,23 +65,26 @@ class _UploadRequest:
 class _JournalEntry:
     request: _UploadRequest
     task: asyncio.Task[UploadOperationResult]
+    admission_lease: PrinterAdmissionLease | None
 
 
 class UploadService:
     """Serialize one printer's uploads and retain every terminal dispatch result."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- explicit transport and admission dependencies.
         self,
         printer: PrinterConfig,
         transport: UploadTransport,
         *,
         limits: ArtifactLimits,
+        admissions: PrinterAdmissionGates,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._printer = printer
         self._transport = transport
         self._limits = limits
+        self._admissions = admissions
         self._clock = clock
         self._sleep = sleep
         self._journal_lock = asyncio.Lock()
@@ -92,6 +96,8 @@ class UploadService:
         self,
         candidate: ValidatedGcodeCandidate,
         qualification: ArtifactQualification,
+        *,
+        admission_lease: PrinterAdmissionLease | None = None,
     ) -> UploadOperationResult:
         """Upload one exact qualification once; duplicates share its terminal result."""
         request = _UploadRequest(qualification, candidate.inspection)
@@ -102,12 +108,20 @@ class UploadService:
             if existing is not None:
                 if keyed is not existing or operated is not existing or existing.request != request:
                     return _denied(qualification, UploadFailureCode.IDEMPOTENCY_CONFLICT)
+                if (
+                    admission_lease is not None
+                    and existing.admission_lease is None
+                    and not existing.task.done()
+                ):
+                    return _denied(qualification, UploadFailureCode.IDEMPOTENCY_CONFLICT)
                 task = existing.task
             else:
                 if len(self._by_operation) >= self._limits.upload_idempotency_capacity:
                     return _denied(qualification, UploadFailureCode.CAPACITY_EXHAUSTED)
-                task = asyncio.create_task(self._execute_safely(candidate, qualification))
-                entry = _JournalEntry(request, task)
+                task = asyncio.create_task(
+                    self._execute_safely(candidate, qualification, admission_lease)
+                )
+                entry = _JournalEntry(request, task, admission_lease)
                 self._by_key[qualification.idempotency_key] = entry
                 self._by_operation[qualification.operation_id] = entry
         return await asyncio.shield(task)
@@ -116,8 +130,12 @@ class UploadService:
         self,
         candidate: ValidatedGcodeCandidate,
         qualification: ArtifactQualification,
+        admission_lease: PrinterAdmissionLease | None,
     ) -> UploadOperationResult:
-        async with self._printer_lock:
+        async with (
+            self._admissions.hold(str(self._printer.uuid), lease=admission_lease),
+            self._printer_lock,
+        ):
             try:
                 profile, refreshed = self._preflight(candidate, qualification)
             except (TypeError, ValueError):

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from klove.orchestration.admission import PrinterAdmissionGates
+from klove.orchestration.admission import PrinterAdmissionGates, PrinterAdmissionLease
 
 
 @pytest.mark.asyncio
@@ -90,3 +90,113 @@ async def test_cancelled_holder_releases_the_gate() -> None:
 
     async with gates.hold("printer"):
         pass
+
+
+@pytest.mark.asyncio
+async def test_explicit_lease_keeps_the_gate_held_until_a_shielded_child_finishes() -> None:
+    gates = PrinterAdmissionGates()
+    child_entered = asyncio.Event()
+    release_child = asyncio.Event()
+    contender_entered = asyncio.Event()
+
+    async def child(lease: PrinterAdmissionLease) -> None:
+        async with gates.hold("printer", lease=lease):
+            child_entered.set()
+            await release_child.wait()
+
+    async def outer() -> None:
+        async with gates.lease("printer") as lease:
+            task = asyncio.create_task(child(lease))
+            await child_entered.wait()
+            await asyncio.shield(task)
+
+    outer_task = asyncio.create_task(outer())
+    await child_entered.wait()
+    outer_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await outer_task
+
+    async def contender() -> None:
+        async with gates.hold("printer"):
+            contender_entered.set()
+
+    contender_task = asyncio.create_task(contender())
+    await asyncio.sleep(0)
+    assert not contender_entered.is_set()
+    release_child.set()
+    await contender_task
+    assert contender_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_lease_rejects_cross_printer_cross_gate_and_closed_use() -> None:
+    first = PrinterAdmissionGates()
+    second = PrinterAdmissionGates()
+    async with first.lease("printer") as lease:
+        with pytest.raises(RuntimeError):
+            async with first.hold("other", lease=lease):
+                pass
+        with pytest.raises(RuntimeError):
+            async with second.hold("printer", lease=lease):
+                pass
+    with pytest.raises(RuntimeError):
+        async with first.hold("printer", lease=lease):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_one_lease_allows_only_one_concurrent_child_but_sequential_reuse() -> None:
+    gates = PrinterAdmissionGates()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async with gates.lease("printer") as lease:
+
+        async def first_child() -> None:
+            async with gates.hold("printer", lease=lease):
+                entered.set()
+                await release.wait()
+
+        first = asyncio.create_task(first_child())
+        await entered.wait()
+        with pytest.raises(RuntimeError, match="unavailable"):
+            async with gates.hold("printer", lease=lease):
+                pass
+        release.set()
+        await first
+        async with gates.hold("printer", lease=lease):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_same_task_nested_hold_and_cancelled_waiting_lease_release_cleanly() -> None:
+    gates = PrinterAdmissionGates()
+    waiting = asyncio.Event()
+
+    async with gates.hold("printer"):
+        async with gates.hold("printer"):
+            pass
+
+        async def borrow() -> None:
+            waiting.set()
+            async with gates.lease("printer"):
+                pytest.fail("cancelled waiter acquired the gate")
+
+        task = asyncio.create_task(borrow())
+        await waiting.wait()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_hold_rejects_execution_without_an_asyncio_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gates = PrinterAdmissionGates()
+    monkeypatch.setattr(asyncio, "current_task", lambda: None)
+
+    with pytest.raises(RuntimeError, match="requires an asyncio task"):
+        async with gates.hold("printer"):
+            pass
