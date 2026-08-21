@@ -114,6 +114,13 @@ def test_owner_security_is_configured_as_one_independent_pair() -> None:
                 owner_authenticator=owner,
                 owner_sessions=sessions,
             )
+    with pytest.raises(ValueError, match="require owner"):
+        create_api(
+            registry,
+            BearerAuthenticator(TOKEN),
+            controls,  # type: ignore[arg-type]
+            lifecycle=object(),  # type: ignore[arg-type]
+        )
 
 
 class FakeControls:

@@ -1,8 +1,9 @@
 # Moonraker onboarding core contract
 
-Status: onboarding is implemented under issue #63 — onboarding core, and issue
-#68 — runtime supervisor adds registry-backed monitoring. Startup wiring, the
-shared actuator gate, API, and browser route remain later slices.
+Status: onboarding is implemented under issue #63 — onboarding core. Issue
+#68 — runtime supervisor through #70 — runtime bootstrap add registry-backed
+runtime composition, and #72 — lifecycle routes adds its secret-free HTTP
+consumer. Runtime handoff and the browser route remain later slices.
 
 ## Direct probe
 
@@ -117,7 +118,8 @@ Moonraker simulation as a regression gate.
   canonical per-printer lifecycle, actuator, and runtime admission. Issue #70
   — runtime bootstrap implements startup reconciliation, one exact file import,
   canonical UUID routing, restart recovery, and cross-printer fault isolation.
-- Issue #65 — protected onboarding API adds the separately authenticated,
-  authorized, bounded API.
-- Issue #59 may add the accepted setup/recovery browser flow only after those
-  machine boundaries are complete.
+- Issue #72 — lifecycle routes adds the separately authenticated, authorized,
+  bounded API. Issue #73 — runtime handoff remains required to activate each
+  committed result.
+- Issue #59 — embedded setup/recovery may add the accepted browser flow only
+  after those machine boundaries are complete.

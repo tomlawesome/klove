@@ -27,6 +27,8 @@ from klove.domain.onboarding import (
 from klove.domain.onboarding_requests import (
     CreatePrinterRequest,
     DisablePrinterRequest,
+    InspectPrinterRequest,
+    LifecycleResultRequest,
     RemovePrinterRequest,
     RotateCompatibilityCredentialRequest,
     RotateMoonrakerCredentialRequest,
@@ -157,6 +159,33 @@ class PrinterLifecycleService:
     async def create(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Create one registration only after direct current Moonraker evidence."""
         return await self._create(RegistryOperationKind.CREATE, request)
+
+    async def inspect(self, request: InspectPrinterRequest) -> PrinterIdentityEvidence:
+        """Return bounded direct evidence without storing the submitted credential."""
+        try:
+            return await self._probe.probe(
+                request.endpoint,
+                request.moonraker_credential.get_secret_value(),
+            )
+        except MoonrakerProbeError as exc:
+            raise LifecycleServiceError(LifecycleFailureCode.PROBE_FAILED) from exc
+        except Exception as exc:
+            raise LifecycleServiceError(LifecycleFailureCode.INTERNAL_FAILURE) from exc
+
+    def result(self, request: LifecycleResultRequest) -> RegisteredPrinter:
+        """Return and finalize one exact durable result without replaying secret input."""
+        try:
+            operation = self._store.lookup_operation(request.idempotency_key)
+        except Exception as exc:
+            raise _service_error(exc) from exc
+        if operation is None or (
+            operation.operation is not request.operation
+            or operation.printer_uuid != request.printer_uuid
+            or operation.actor != request.actor
+            or operation.request_origin != request.request_origin
+        ):
+            raise LifecycleServiceError(LifecycleFailureCode.CONFLICT)
+        return self._durable_result(operation)
 
     async def bootstrap_import(self, request: CreatePrinterRequest) -> RegisteredPrinter:
         """Import one file-configured printer through the exact create contract."""
