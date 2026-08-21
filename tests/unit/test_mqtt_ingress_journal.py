@@ -170,6 +170,33 @@ def test_every_operation_rechecks_private_permissions(tmp_path: Path) -> None:
             action()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX private-file contract")
+def test_initialize_rejects_public_symlink_directory_and_unsafe_parent(tmp_path: Path) -> None:
+    public = tmp_path / "public.sqlite3"
+    public.touch(mode=0o600)
+    public.chmod(0o644)
+    with pytest.raises(JournalError):
+        MqttIngressJournal(public).initialize()
+
+    target = tmp_path / "target.sqlite3"
+    target.touch(mode=0o600)
+    link = tmp_path / "link.sqlite3"
+    link.symlink_to(target)
+    with pytest.raises(JournalError):
+        MqttIngressJournal(link).initialize()
+
+    directory = tmp_path / "directory.sqlite3"
+    directory.mkdir()
+    with pytest.raises(JournalError):
+        MqttIngressJournal(directory).initialize()
+
+    public_parent = tmp_path / "public-parent"
+    public_parent.mkdir()
+    public_parent.chmod(0o755)
+    with pytest.raises(JournalError):
+        MqttIngressJournal(public_parent / "mqtt.sqlite3").initialize()
+
+
 def test_rejects_missing_parent_future_version_and_wrong_schema(tmp_path: Path) -> None:
     with pytest.raises(JournalError):
         MqttIngressJournal(tmp_path / "missing" / "mqtt.sqlite3").initialize()
