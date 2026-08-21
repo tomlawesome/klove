@@ -11,6 +11,11 @@ The lane is deliberately absent from routine CI. The official archive is about
 2.1 GB, its raw disk is about 8.4 GB, and ARM execution on the x86-64 development
 host uses slow TCG emulation. The scripts publish no image or port.
 
+The lifecycle keeps preparation/source ownership, QEMU/container ownership,
+and evidence archival in separate sourced shell modules. The public stage
+entrypoints remain `prepare`, `up`, `probe`, `contract`, and `down`; each stage
+retains the same exact state and resource checks.
+
 ## Exact inputs
 
 | Input | Immutable identity |
