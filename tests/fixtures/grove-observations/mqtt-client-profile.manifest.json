@@ -7,10 +7,10 @@
   },
   "observation": {
     "component": "Grove Bambu MQTT client connected to an isolated Grove virtual printer",
-    "scenario": "Two generated client sessions against a bounded TLS MQTT recorder with the first PUBACK delayed"
+    "scenario": "Two normal generated sessions plus a three-session 75-second withheld-PUBACK hold and two forced reconnects"
   },
   "capture": {
-    "harness_revision": "a4761724b03ac7182eca8e23070566cf173040f2",
+    "harness_revision": "68278f32326308b3ba82472bb9fdb0838d14ca86",
     "command": "run grove-observer:cdf6b829 and an independently generated bounded TLS MQTT recorder on one internal rootless-Docker network; complete setup and register the generated client through the public API",
     "tool_versions": {
       "docker": "29.7.2",
@@ -18,18 +18,19 @@
       "python": "3.13 stdlib bounded recorder",
       "git": "pinned checkout verified by git rev-parse"
     },
-    "captured_at_utc": "2026-08-21T19:01:26Z"
+    "captured_at_utc": "2026-08-21T19:54:41Z"
   },
   "generated_data": true,
   "sanitization_rules": [
     "replace the generated serial with the literal {serial} in topic templates",
     "replace generated printer and session identifiers with literal template fields",
+    "retain only boolean packet-id/payload-hash relationships, never their values",
     "retain only protocol tokens and externally observed scalar bounds",
     "exclude payload bodies, source text, logs, certificates, and credentials"
   ],
   "media_type": "application/json",
-  "byte_count": 1110,
-  "sha256": "sha256:6d95538ec4395402585806c818d079f5a544cd3a720873557248a44e13121938",
+  "byte_count": 1641,
+  "sha256": "sha256:78d3db3bcb66090f81e55a2eac7ef019a8bccce5cb178e49cf212ceaa8b9326c",
   "review": {
     "uses_generated_fake_credentials": true,
     "contains_no_credentials": true,
@@ -42,12 +43,17 @@
   },
   "retained_values": [
     {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "generated_serial", "classification": "externally_observed_fact"},
     {"locator": "observed.tls_versions", "classification": "externally_observed_fact"},
+    {"locator": "observed.tls_cipher_suite", "classification": "externally_observed_fact"},
+    {"locator": "observed.tls_session_reused", "classification": "externally_observed_fact"},
     {"locator": "observed.mqtt_protocol_name", "classification": "required_protocol_token"},
     {"locator": "observed.mqtt_protocol_level", "classification": "required_protocol_token"},
     {"locator": "observed.clean_session", "classification": "externally_observed_fact"},
     {"locator": "observed.keepalive_seconds", "classification": "externally_observed_fact"},
     {"locator": "observed.client_id_pattern", "classification": "required_protocol_token"},
+    {"locator": "observed.client_id_printer_id_is_decimal", "classification": "externally_observed_fact"},
+    {"locator": "observed.client_id_session_counter_is_decimal", "classification": "externally_observed_fact"},
     {"locator": "observed.username", "classification": "required_protocol_token"},
     {"locator": "observed.password_is_access_code", "classification": "externally_observed_fact"},
     {"locator": "observed.will_present", "classification": "externally_observed_fact"},
@@ -59,6 +65,14 @@
     {"locator": "observed.next_packet_before_first_puback", "classification": "externally_observed_fact"},
     {"locator": "observed.initial_commands", "classification": "required_protocol_token"},
     {"locator": "observed.initial_publish_payload_bytes", "classification": "externally_observed_fact"},
-    {"locator": "observed.client_sessions_observed", "classification": "externally_observed_fact"}
+    {"locator": "observed.client_sessions_observed", "classification": "externally_observed_fact"},
+    {"locator": "observed.qos1_connected_hold_seconds", "classification": "externally_observed_fact"},
+    {"locator": "observed.qos1_retransmissions_during_hold", "classification": "externally_observed_fact"},
+    {"locator": "observed.pingreq_times_ms", "classification": "externally_observed_fact"},
+    {"locator": "observed.reconnect_duplicate_flag", "classification": "externally_observed_fact"},
+    {"locator": "observed.reconnect_reuses_prior_packet_id", "classification": "externally_observed_fact"},
+    {"locator": "observed.reconnect_reuses_prior_payload_hash", "classification": "externally_observed_fact"},
+    {"locator": "observed.reconnect_fresh_initial_precedes_outstanding", "classification": "externally_observed_fact"},
+    {"locator": "observed.second_reconnect_retransmits_all_unacked", "classification": "externally_observed_fact"}
   ]
 }

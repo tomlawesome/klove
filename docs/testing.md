@@ -113,6 +113,16 @@ and confined to that least-privilege job. The fixture uses an internal-only
 network, generated ephemeral credentials, unique project identity, exact
 context/daemon-bound cleanup, and finite Docker timeouts.
 
+Grove clean-room observations use the separate rootless-Docker lifecycle:
+`scripts/grove-observation-up.sh RUN_ID` and
+`scripts/grove-observation-down.sh RUN_ID`. The scripts create only the exact
+same-name internal network and container for their validated run ID, record the
+Docker context and daemon identity in ignored state, and refuse cleanup if that
+origin or either recorded resource no longer matches. The generated virtual
+printer access code exists only in transient process memory; it is never shown
+or retained. This harness is observation infrastructure, not an MQTT or FTPS
+runtime implementation.
+
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and
 does not authorize generic G-code in `src/klove`. The start adapter and journal

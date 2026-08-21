@@ -19,8 +19,11 @@ capture now establishes MQTT 3.1.1 CONNECT identity fields, clean-session and
 keepalive behavior, the two exact QoS-0 subscriptions, and initial QoS-1
 non-retained publishes. The setup completion defined by ADR 0006 supplies one
 stable `KLOVE-<UPPERCASE-UUID>` serial, one compatibility host, and one
-20-character access code. Request/report schemas, a request payload bound, and
-QoS-1 retransmission/reconnect behavior remain incomplete.
+20-character access code. Request/report schemas and a request payload bound
+remain incomplete. A separate fault capture establishes no connected-session
+retry over a 75-second withheld-PUBACK hold plus exact DUP, packet-id,
+payload-hash, and ordering relationships after two forced reconnects; it does
+not complete the protocol gate.
 
 ## Proposed decision
 
