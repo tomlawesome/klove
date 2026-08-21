@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import klove
@@ -92,6 +94,20 @@ def test_all_github_actions_are_pinned_to_full_commit_shas() -> None:
         references = uses_pattern.findall(workflow.read_text(encoding="utf-8"))
         assert references, workflow
         assert all(re.fullmatch(r"[0-9a-f]{40}", reference) for reference in references), workflow
+
+
+def test_grove_observation_manifest_gate_accepts_only_the_tracked_directory() -> None:
+    result = subprocess.run(  # noqa: S603 -- test invokes the interpreter with a repository-owned validator.
+        [sys.executable, str(ROOT / "scripts" / "validate_grove_observations.py")],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "" and result.stderr == ""
 
 
 def test_preview_publication_requires_native_moonraker_integration() -> None:
