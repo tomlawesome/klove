@@ -135,7 +135,10 @@ def test_preview_publication_requires_native_moonraker_integration() -> None:
     assert "needs: fast" in browser
     assert "permissions:\n      contents: read" in browser
     assert 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"' in browser
-    assert "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5" in browser
+    assert (
+        "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0"
+        in browser
+    )
     assert 'node-version: "22.17.0"' in browser
     assert "cache: npm" in browser and "cache-dependency-path: package-lock.json" in browser
     assert "run: npm ci" in browser
