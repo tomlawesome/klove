@@ -533,7 +533,7 @@ ratos_require_contract_container_identity() {
                 ratos_contract_memory=100663296
                 ratos_contract_nano_cpus=500000000
                 ratos_contract_entrypoint=null
-                ratos_contract_command='["/usr/local/bin/python","/opt/klove-ratos/contract/exercise_contract.py"]'
+                ratos_contract_command='["/usr/local/bin/python","/opt/klove-ratos/contract/ratos_exercise_contract.py"]'
             else
                 ratos_contract_pids=64
                 ratos_contract_memory=268435456

@@ -429,6 +429,18 @@ def test_ratos_cleanup_traps_exit_on_signals() -> None:
         assert all(line == "trap - EXIT HUP INT TERM" for line in combined_traps)
 
 
+def test_ratos_contract_runner_command_paths_match_and_are_exact() -> None:
+    contract_script = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
+    library = (ROOT / "scripts" / "ratos-emulation-lib.sh").read_text(encoding="utf-8")
+
+    expected_command = "/opt/klove-ratos/contract/ratos_exercise_contract.py"
+    launcher_command = f"/usr/local/bin/python {expected_command}"
+    verifier_command = f'"/usr/local/bin/python","{expected_command}"'
+
+    assert launcher_command in contract_script
+    assert verifier_command in library
+
+
 def test_ratos_contract_lifecycle_is_confined_and_exactly_torn_down() -> None:
     up = (ROOT / "scripts" / "ratos-emulation-up.sh").read_text(encoding="utf-8")
     contract = (ROOT / "scripts" / "ratos-emulation-contract.sh").read_text(encoding="utf-8")
