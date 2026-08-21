@@ -37,6 +37,11 @@ from klove.persistence.printer_registry_errors import (
 
 FENCE_CONFLICT_MESSAGE: Final = "registry printer has unresolved actuator fence"
 _MAX_PAGE_SIZE: Final = 1_000
+_SUPPORTED_OWNER_SCHEMA_VERSIONS: Final = {
+    FenceOwnerStore.CONTROL_JOURNAL: frozenset({1}),
+    FenceOwnerStore.START_JOURNAL: frozenset({1}),
+    FenceOwnerStore.DISPATCH_JOURNAL: frozenset({1}),
+}
 _UUID4_CHECK = (
     "length({column}) = 36 AND {column} NOT GLOB '*[^0-9a-f-]*' "
     "AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
@@ -384,7 +389,9 @@ def _validate_owner_store(connection: sqlite3.Connection, reference: FenceRefere
     except ValidationError as exc:
         raise RegistryStoreError from exc
     if (
-        metadata.installation_uuid != _registry_installation_uuid(connection)
+        metadata.schema_version not in _SUPPORTED_OWNER_SCHEMA_VERSIONS[metadata.owner_store]
+        or metadata.owner_store is not reference.owner_store
+        or metadata.installation_uuid != _registry_installation_uuid(connection)
         or metadata.store_id != reference.store_id
         or metadata.schema_version != reference.owner_schema_version
     ):
@@ -794,6 +801,8 @@ class SqliteFenceCatalogue:
             connection.close()
 
     def register_store_metadata(self, metadata: FenceStoreMetadata) -> None:
+        if metadata.schema_version not in _SUPPORTED_OWNER_SCHEMA_VERSIONS[metadata.owner_store]:
+            raise RegistryConflictError
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")

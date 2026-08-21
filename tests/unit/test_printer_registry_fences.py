@@ -188,6 +188,8 @@ def test_store_metadata_accepts_exact_duplicate_and_rejects_substitution(tmp_pat
         store.register_fence_store(metadata.model_copy(update={"store_id": _uuid(42)}))
     with pytest.raises(RegistryConflictError):
         store.register_fence_store(metadata.model_copy(update={"installation_uuid": _uuid(43)}))
+    with pytest.raises(RegistryConflictError):
+        store.register_fence_store(metadata.model_copy(update={"schema_version": 2}))
 
 
 def test_existing_printer_commit_is_fenced_inside_its_write_transaction(tmp_path: Path) -> None:
