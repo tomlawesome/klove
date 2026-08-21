@@ -494,6 +494,13 @@ before work begins on the next dependent implementation. ADR 0004 upload
 remains non-actuating by itself; ADR 0005 print start is internal and is not a
 public dispatch workflow.
 
+The next independent Grove-bridge design slice is issue #10 — MQTT
+compatibility facade. Proposed ADR 0009 defines its fail-closed identity,
+topic-isolation, resource, replay, control-composition, and recovery boundary.
+Runtime implementation remains blocked until ADR-0008-compliant black-box
+evidence completes the exact Grove packet and payload profile and ADR 0009 is
+accepted. FTPS and artifact dispatch remain separate later boundaries.
+
 1. Keep the native integration lane as a required regression gate and execute
    the RatOS v2.1.0 procedure on supported ARM hardware before stable
    promotion. Track this under [integration #48](https://github.com/tomlawesome/klove/issues/48)
