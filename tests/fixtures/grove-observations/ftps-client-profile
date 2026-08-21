@@ -1,0 +1,49 @@
+{
+  "profile_version": 1,
+  "transport": "implicit-ftps",
+  "upstream_revision": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4",
+  "generated_serial": "00M00A391800001",
+  "observed": {
+    "control_tls_versions": ["TLSv1.3"],
+    "sessions": [
+      {
+        "username": "bblp",
+        "password_is_access_code": true,
+        "commands": [
+          {"command": "USER", "argument": "bblp"},
+          {"command": "PASS", "argument": "generated_access_code"},
+          {"command": "PBSZ", "argument": "0"},
+          {"command": "PROT", "argument": "P"},
+          {"command": "DELE", "argument": "/observation.3mf"},
+          {"command": "QUIT", "argument": null}
+        ]
+      },
+      {
+        "username": "bblp",
+        "password_is_access_code": true,
+        "commands": [
+          {"command": "USER", "argument": "bblp"},
+          {"command": "PASS", "argument": "generated_access_code"},
+          {"command": "PBSZ", "argument": "0"},
+          {"command": "PROT", "argument": "P"},
+          {"command": "PASV", "argument": null},
+          {"command": "STOR", "argument": "/observation.3mf"},
+          {"command": "QUIT", "argument": null}
+        ],
+        "data_connection": {
+          "tls_version": "TLSv1.3",
+          "same_control_peer": true,
+          "byte_count": 1684,
+          "sha256": "sha256:bc1d1e01a40fcee60437d5302ae87502e693576bdde958db1091b62e279553f1"
+        }
+      }
+    ]
+  },
+  "not_observed": [
+    "FTP reply codes and error handling",
+    "PASV address, port, and NAT behavior",
+    "canonical production upload filename grammar",
+    "multiple or concurrent transfer behavior",
+    "wire retry and disconnect behavior"
+  ]
+}

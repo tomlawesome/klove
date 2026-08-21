@@ -7,27 +7,29 @@
   },
   "observation": {
     "component": "Grove Bambu MQTT client connected to an isolated Grove virtual printer",
-    "scenario": "Generated archive-mode virtual printer; two normal client connections and status bootstrap"
+    "scenario": "Two generated client sessions against a bounded TLS MQTT recorder with the first PUBACK delayed"
   },
   "capture": {
-    "harness_revision": "00814f652a82f880fa566840d3acb0d4b7509e47",
-    "command": "docker build -t grove-observer:cdf6b829 .; docker run --loopback-only; register generated virtual printer and printer through public API",
+    "harness_revision": "a4761724b03ac7182eca8e23070566cf173040f2",
+    "command": "run grove-observer:cdf6b829 and an independently generated bounded TLS MQTT recorder on one internal rootless-Docker network; complete setup and register the generated client through the public API",
     "tool_versions": {
       "docker": "29.7.2",
-      "openssl": "OpenSSL 3.x",
+      "openssl": "OpenSSL 3.5.6",
+      "python": "3.13 stdlib bounded recorder",
       "git": "pinned checkout verified by git rev-parse"
     },
-    "captured_at_utc": "2026-08-21T16:57:53Z"
+    "captured_at_utc": "2026-08-21T19:01:26Z"
   },
   "generated_data": true,
   "sanitization_rules": [
     "replace the generated serial with the literal {serial} in topic templates",
+    "replace generated printer and session identifiers with literal template fields",
     "retain only protocol tokens and externally observed scalar bounds",
     "exclude payload bodies, source text, logs, certificates, and credentials"
   ],
   "media_type": "application/json",
-  "byte_count": 856,
-  "sha256": "sha256:31994d0ca94957a27442330c286b208e4640e865200c6b1d42b4fca803c18cd8",
+  "byte_count": 1110,
+  "sha256": "sha256:6d95538ec4395402585806c818d079f5a544cd3a720873557248a44e13121938",
   "review": {
     "uses_generated_fake_credentials": true,
     "contains_no_credentials": true,
@@ -40,8 +42,23 @@
   },
   "retained_values": [
     {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.tls_versions", "classification": "externally_observed_fact"},
+    {"locator": "observed.mqtt_protocol_name", "classification": "required_protocol_token"},
+    {"locator": "observed.mqtt_protocol_level", "classification": "required_protocol_token"},
+    {"locator": "observed.clean_session", "classification": "externally_observed_fact"},
     {"locator": "observed.keepalive_seconds", "classification": "externally_observed_fact"},
+    {"locator": "observed.client_id_pattern", "classification": "required_protocol_token"},
+    {"locator": "observed.username", "classification": "required_protocol_token"},
+    {"locator": "observed.password_is_access_code", "classification": "externally_observed_fact"},
+    {"locator": "observed.will_present", "classification": "externally_observed_fact"},
     {"locator": "observed.subscriptions", "classification": "externally_observed_fact"},
-    {"locator": "observed.initial_commands", "classification": "required_protocol_token"}
+    {"locator": "observed.server_to_client_topics", "classification": "externally_observed_fact"},
+    {"locator": "observed.publish_qos", "classification": "externally_observed_fact"},
+    {"locator": "observed.publish_retain", "classification": "externally_observed_fact"},
+    {"locator": "observed.publish_dup", "classification": "externally_observed_fact"},
+    {"locator": "observed.next_packet_before_first_puback", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_commands", "classification": "required_protocol_token"},
+    {"locator": "observed.initial_publish_payload_bytes", "classification": "externally_observed_fact"},
+    {"locator": "observed.client_sessions_observed", "classification": "externally_observed_fact"}
   ]
 }

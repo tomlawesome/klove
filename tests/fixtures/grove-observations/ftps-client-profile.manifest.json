@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "fixture": "ftps-client-profile",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove implicit FTPS upload client driven through the public runtime API",
+    "scenario": "Generated archive-mode public-runtime DELE and protected PASV STOR"
+  },
+  "capture": {
+    "harness_revision": "a4761724b03ac7182eca8e23070566cf173040f2",
+    "command": "run grove-observer:cdf6b829 and an independently authored bounded implicit-FTPS recorder on one internal rootless-Docker network; register one generated virtual printer and drive one harmless generated archive through Grove's public API",
+    "tool_versions": {
+      "docker": "29.7.2",
+      "openssl": "OpenSSL 3.5.6",
+      "python": "3.13.15 stdlib bounded recorder",
+      "git": "pinned checkout verified by git rev-parse"
+    },
+    "captured_at_utc": "2026-08-21T19:22:32Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "retain exact wire command tokens, generated-file path, and transfer integrity facts only",
+    "record generated access-code equality as a boolean and exclude its value",
+    "exclude certificates, private keys, endpoint addresses, raw traces, replies, and operational logs"
+  ],
+  "media_type": "application/json",
+  "byte_count": 1678,
+  "sha256": "sha256:dfe5372d8ec11baf08ba180f2a66d1c60f9d44616268efe7f4f13cbb91c5da64",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.control_tls_versions", "classification": "externally_observed_fact"},
+    {"locator": "observed.sessions", "classification": "externally_observed_fact"},
+    {"locator": "not_observed", "classification": "externally_observed_fact"}
+  ]
+}

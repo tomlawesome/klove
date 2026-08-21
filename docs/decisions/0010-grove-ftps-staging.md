@@ -12,13 +12,14 @@ publishes a separate MQTT `print.project_file` request. ADR 0006 intends a
 compatibility facade, while ADR 0007 requires a separately approved adapter
 before any northbound file source may reach its dispatch coordinator.
 
-The repository currently establishes only that the listener is implicit FTPS,
-normally on port 990, and that the generated 20-character compatibility access
-code routes a login to one printer. It does not define the observed login
-fields, FTP commands, paths, passive data connection, TLS profile, transfer
-acknowledgement, retry behavior, or the later MQTT correlation. Guessing any of
-those behaviors would create an unauthenticated path, overwrite, traversal,
-cross-printer disclosure, resource-exhaustion, or unintended dispatch risk.
+The retained normal-path client capture establishes two implicit-FTPS TLS 1.3
+sessions, the generated access-code mapping, ordered cleanup and protected
+passive-upload commands, and exact transfer integrity for one generated test
+archive. It does not establish reply/error semantics, PASV deployment and NAT
+behavior, production filename grammar, concurrency, retry/disconnect behavior,
+or the later MQTT correlation. Guessing any of those behaviors would create an
+unauthenticated path, overwrite, traversal, cross-printer disclosure,
+resource-exhaustion, or unintended dispatch risk.
 
 ## Proposed decision
 

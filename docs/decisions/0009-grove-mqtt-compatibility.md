@@ -14,11 +14,13 @@ actuate. No accepted decision currently defines an MQTT listener, its TLS and
 authentication policy, topic authorization, QoS 1 replay handling, resource
 bounds, or the translation into ADR 0001's control contract.
 
-The supported Grove revision is pinned by ADR 0008. It publishes requests to
-`device/{serial}/request`, subscribes to `device/{serial}/report`, and expects a
-TLS MQTT service. The setup completion defined by ADR 0006 supplies one stable
-`KLOVE-<UPPERCASE-UUID>` serial, one compatibility host, and one 20-character
-access code. Those facts are not enough to infer the remaining wire protocol.
+The supported Grove revision is pinned by ADR 0008. The retained normal-session
+capture now establishes MQTT 3.1.1 CONNECT identity fields, clean-session and
+keepalive behavior, the two exact QoS-0 subscriptions, and initial QoS-1
+non-retained publishes. The setup completion defined by ADR 0006 supplies one
+stable `KLOVE-<UPPERCASE-UUID>` serial, one compatibility host, and one
+20-character access code. Request/report schemas, a request payload bound, and
+QoS-1 retransmission/reconnect behavior remain incomplete.
 
 ## Proposed decision
 

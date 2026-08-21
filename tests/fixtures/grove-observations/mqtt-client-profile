@@ -5,22 +5,29 @@
   "generated_serial": "00M00A391800001",
   "observed": {
     "tls_versions": ["TLSv1.3"],
-    "mqtt_protocol_level": "not retained: encrypted CONNECT packet was not persisted",
+    "mqtt_protocol_name": "MQTT",
+    "mqtt_protocol_level": 4,
+    "clean_session": true,
     "keepalive_seconds": 30,
+    "client_id_pattern": "bambuddy_{serial}_{printer-id}_{session-counter}",
+    "username": "bblp",
+    "password_is_access_code": true,
+    "will_present": false,
     "subscriptions": [
       {"topic": "device/{serial}/report", "qos": 0},
       {"topic": "device/{serial}/request", "qos": 0}
     ],
     "server_to_client_topics": ["device/{serial}/request"],
+    "publish_qos": 1,
+    "publish_retain": false,
+    "publish_dup": false,
+    "next_packet_before_first_puback": true,
     "initial_commands": ["pushall", "get_version", "extrusion_cali_get"],
+    "initial_publish_payload_bytes": [35, 56, 109],
     "client_sessions_observed": 2
   },
   "not_observed": [
-    "CONNECT client identifier",
-    "clean-session flag",
-    "access-code field encoding",
-    "publish QoS and retain flags",
-    "acknowledgement ordering",
-    "request payload bounds"
+    "QoS 1 retransmission timing after withheld acknowledgements",
+    "request payload upper bound"
   ]
 }

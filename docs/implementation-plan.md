@@ -72,8 +72,9 @@ Last updated: 2026-08-21
   proved the controlled configuration, production observation, and the three
   dedicated controls, but no single uninterrupted run has yet completed the
   lost-response case and archived `contract-passed`; the issue remains open.
-- [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39)
-  records the remaining account-level GitHub Projects permission blocker.
+- [Project-view issue #39](https://github.com/tomlawesome/klove/issues/39) is
+  complete. The private account-level roadmap project is populated and linked
+  to this repository as its default repository.
 - This document remains the architecture and sequencing source of truth; GitHub
   issues hold delivery status and evidence.
 
@@ -488,19 +489,23 @@ intake-through-completion proof are complete. ADR 0004 upload remains
 non-actuating by itself; ADR 0005 print start remains internal; no public or
 generic G-code path exists.
 
-1. Finish [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
+1. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
+   Normal-session ADR-0008 MQTT and FTPS client captures are retained behind
+   strict disabled-runtime profile gates. Complete the remaining MQTT
+   schema/QoS fault matrix and FTPS reply/PASV/retry fault matrix before
+   accepting and implementing proposed ADR 0009 under #10 — MQTT facade or
+   proposed ADR 0010 under #14 — FTPS ingress. Then deliver #60 — minimal Grove
+   contribution and #13 — deployment guidance against one pinned supported
+   Grove revision.
+2. Finish the supplemental
+   [#51 — RatOS virtual-MCU proof](https://github.com/tomlawesome/klove/issues/51)
    only after focused diagnosis justifies one fresh-COW exact-release run. The
-   run must prove the lost-response fence and archive `contract-passed`.
-   Supported hardware remains release-acceptance authority.
-2. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
-   Obtain exact ADR-0008-compliant black-box wire evidence before accepting and
-   implementing proposed ADR 0009 under #10 — MQTT facade or proposed ADR 0010
-   under #14 — FTPS ingress. Then deliver #60 — minimal Grove contribution and
-   #13 — deployment guidance against one pinned supported Grove revision.
+   run must prove the lost-response fence and archive `contract-passed`; it does
+   not block M3 delivery. Supported hardware remains release-acceptance
+   authority.
 3. Complete [#3 — stable promotion](https://github.com/tomlawesome/klove/issues/3)
-   only after documented production-like printer acceptance. Promote the exact
-   tested preview digest without rebuilding. Resolve #39 — delivery roadmap
-   project when account-level GitHub Projects write permission is available.
+   only after documented production-like printer acceptance at the end of the
+   milestone suite. Promote the exact tested preview digest without rebuilding.
 4. Separately decide and test bounded temperature/speed plus explicitly mapped
    fan/light controls. Keep jog and extrusion disabled until proven;
    [#15 — live-control safety envelope](https://github.com/tomlawesome/klove/issues/15)
