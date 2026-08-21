@@ -26,6 +26,8 @@ from klove.domain.onboarding import (
 from klove.domain.onboarding_requests import (
     CreatePrinterRequest,
     DisablePrinterRequest,
+    InspectPrinterRequest,
+    LifecycleResultRequest,
     RemovePrinterRequest,
     RotateCompatibilityCredentialRequest,
     RotateMoonrakerCredentialRequest,
@@ -178,6 +180,28 @@ def create_request(
     )
 
 
+def inspect_request() -> InspectPrinterRequest:
+    return InspectPrinterRequest(
+        printer_uuid=PRINTER_UUID,
+        actor="owner:local",
+        request_origin="https://grove.example.test",
+        endpoint=ENDPOINT,
+        moonraker_credential=SecretStr(MOONRAKER_CREDENTIAL),
+    )
+
+
+def result_request(**updates: object) -> LifecycleResultRequest:
+    values: dict[str, object] = {
+        "idempotency_key": IDEMPOTENCY_KEY,
+        "printer_uuid": PRINTER_UUID,
+        "operation": RegistryOperationKind.CREATE,
+        "actor": "owner:local",
+        "request_origin": "https://grove.example.test",
+    }
+    values.update(updates)
+    return LifecycleResultRequest.model_validate(values)
+
+
 def update_request(
     revision: int,
     index: int,
@@ -241,6 +265,95 @@ def rotate_compatibility_request(
         request_origin="https://grove.example.test",
         expected_revision=revision,
     )
+
+
+@pytest.mark.asyncio
+async def test_inspection_returns_only_bounded_probe_evidence(tmp_path: Path) -> None:
+    service, _secrets, _store, probe, _fences = make_service(tmp_path)
+    assert isinstance(probe, FakeProbe)
+
+    observed = await service.inspect(inspect_request())
+
+    assert observed == evidence()
+    assert probe.calls == [(ENDPOINT, MOONRAKER_CREDENTIAL)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (MoonrakerProbeError(), LifecycleFailureCode.PROBE_FAILED),
+        (RuntimeError("private remote body"), LifecycleFailureCode.INTERNAL_FAILURE),
+    ],
+)
+async def test_inspection_maps_probe_failures_to_bounded_codes(
+    tmp_path: Path,
+    failure: Exception,
+    expected: LifecycleFailureCode,
+) -> None:
+    service, _secrets, _store, _probe, _fences = make_service(
+        tmp_path,
+        probe=FakeProbe([failure]),
+    )
+    with pytest.raises(LifecycleServiceError) as denied:
+        await service.inspect(inspect_request())
+    assert denied.value.code is expected
+    assert "private remote body" not in str(denied.value)
+
+
+@pytest.mark.asyncio
+async def test_result_recovers_exact_committed_operation_without_reprobe(tmp_path: Path) -> None:
+    service, secrets, _store, probe, _fences = make_service(tmp_path)
+    assert isinstance(probe, FakeProbe)
+    committed = await service.create(create_request())
+    probe_calls = len(probe.calls)
+    restarted_store = PrinterStore(tmp_path / "registry.sqlite3", secrets)
+    restarted_store.initialize()
+    restarted = PrinterLifecycleService(
+        restarted_store,
+        secrets,
+        probe,
+        FakeFences(),
+        admissions=PrinterAdmissionGates(),
+    )
+
+    recovered = restarted.result(result_request())
+
+    assert recovered == committed
+    assert len(probe.calls) == probe_calls
+
+
+@pytest.mark.asyncio
+async def test_result_denies_missing_or_mismatched_operation(tmp_path: Path) -> None:
+    service, _secrets, _store, _probe, _fences = make_service(tmp_path)
+    with pytest.raises(LifecycleServiceError) as missing:
+        service.result(result_request())
+    assert missing.value.code is LifecycleFailureCode.CONFLICT
+    await service.create(create_request())
+    for request in (
+        result_request(actor="owner:other"),
+        result_request(operation=RegistryOperationKind.UPDATE),
+        result_request(printer_uuid=OTHER_PRINTER_UUID),
+        result_request(request_origin="https://other.example.test"),
+    ):
+        with pytest.raises(LifecycleServiceError) as denied:
+            service.result(request)
+        assert denied.value.code is LifecycleFailureCode.CONFLICT
+
+
+def test_result_maps_registry_lookup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _secrets, store, _probe, _fences = make_service(tmp_path)
+
+    def fail_lookup(_key: str) -> None:
+        raise RegistryStoreError
+
+    monkeypatch.setattr(store, "lookup_operation", fail_lookup)
+    with pytest.raises(LifecycleServiceError) as denied:
+        service.result(result_request())
+    assert denied.value.code is LifecycleFailureCode.STORAGE_UNAVAILABLE
 
 
 @pytest.mark.asyncio

@@ -30,9 +30,10 @@ probe, and typed create/update/rotate/disable/remove orchestration. Issue #64 �
 runtime fleet adds registry-backed startup, monitoring, control routing, shared
 admission, restart recovery, and one exact file-bootstrap import. Issue #71 —
 owner session adds the separate owner credential, exact-origin and CSRF
-evidence, bounded restart-invalidated sessions, and strict cookie policy, but
-exposes no lifecycle route. Issue #72 — lifecycle routes and issue #73 —
-runtime handoff must complete issue #65 — protected onboarding API, followed by
+evidence, bounded restart-invalidated sessions, and strict cookie policy. Issue
+#72 — lifecycle routes exposes the strict secret-free inspect and registry
+mutation boundary. Issue #73 — runtime handoff must complete issue #65 —
+protected onboarding API, followed by
 issue #59 — embedded setup/recovery. Once those and issue #10 — MQTT
 facade and issue #14 — FTPS facade ship, an authorized Grove user will select
 **Klipper via Klove**,

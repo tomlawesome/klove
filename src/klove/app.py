@@ -98,6 +98,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
             controls,
             owner_authenticator=owner_authenticator,
             owner_sessions=owner_sessions,
+            lifecycle=lifecycle if owner_sessions is not None else None,
         )
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()

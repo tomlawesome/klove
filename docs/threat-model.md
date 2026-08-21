@@ -1,6 +1,7 @@
 # Klove threat model
 
-Status: active through runtime bootstrap, owner-session security, and the
+Status: active through durable typed print start, onboarding core, runtime
+bootstrap, owner-session security, secret-free lifecycle routes, and the
 accepted authenticated dispatch-ingress contract
 
 ## Protected assets
@@ -54,8 +55,9 @@ evidence. Issue #68 — runtime supervisor, issue #69 — shared runtime gate, a
 issue #70 — runtime bootstrap implement canonical runtime wiring. Issue #71 —
 owner session implements the independent credential, exact-origin/CSRF request
 evidence, and bounded restart-invalidated session substrate. Issue #72 —
-lifecycle routes, issue #73 — runtime handoff, and #59 — embedded setup/recovery
-remain required before Klove claims product onboarding.
+lifecycle routes implements the strict secret-free HTTP boundary. Issue #73 —
+runtime handoff and #59 — embedded setup/recovery remain required before Klove
+claims product onboarding.
 
 - Klove independently authenticates an owner over HTTPS before issuing a
   server-side setup session. The owner credential is never sent to Grove,

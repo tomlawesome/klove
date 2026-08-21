@@ -3,10 +3,12 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from klove.domain.onboarding import MoonrakerEndpoint
+from klove.domain.onboarding import MoonrakerEndpoint, RegistryOperationKind
 from klove.domain.onboarding_requests import (
     CreatePrinterRequest,
     DisablePrinterRequest,
+    InspectPrinterRequest,
+    LifecycleResultRequest,
     RemovePrinterRequest,
     RotateCompatibilityCredentialRequest,
     RotateMoonrakerCredentialRequest,
@@ -82,6 +84,37 @@ def test_every_lifecycle_request_is_strict_frozen_and_secret_safe() -> None:
         )
     with pytest.raises(ValidationError):
         create.display_name = "mutable"
+
+
+def test_inspect_and_result_requests_are_exact_and_exclude_bootstrap() -> None:
+    inspected = InspectPrinterRequest(
+        printer_uuid=PRINTER_UUID,
+        actor="owner",
+        request_origin="https://grove.example.test",
+        endpoint=ENDPOINT,
+        moonraker_credential=SecretStr(MOONRAKER_CREDENTIAL),
+    )
+    result = LifecycleResultRequest(
+        idempotency_key=IDEMPOTENCY_KEY,
+        printer_uuid=PRINTER_UUID,
+        operation="create",  # type: ignore[arg-type]
+        actor="owner",
+        request_origin="https://grove.example.test",
+    )
+    assert inspected.moonraker_credential.get_secret_value() == MOONRAKER_CREDENTIAL
+    assert result.operation is RegistryOperationKind.CREATE
+
+    for values in (
+        {**result.model_dump(mode="python"), "operation": "bootstrap_import"},
+        {**result.model_dump(mode="python"), "operation": object()},
+        {**result.model_dump(mode="python"), "actor": " owner"},
+        {**inspected.model_dump(mode="python"), "moonraker_credential": "short"},
+    ):
+        model = (
+            InspectPrinterRequest if "moonraker_credential" in values else LifecycleResultRequest
+        )
+        with pytest.raises(ValidationError):
+            model.model_validate(values)
 
 
 @pytest.mark.parametrize(

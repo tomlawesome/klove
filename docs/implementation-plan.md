@@ -473,11 +473,13 @@ registry-backed monitor activation is implemented under #68 — runtime
 supervisor, and shared admission is implemented under #69 — shared runtime
 gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
 owner authentication and request security are implemented under #71 — owner
-session. Strict lifecycle routes and runtime handoff remain #72 — lifecycle
-routes and #73 — runtime handoff within #65 — protected onboarding API. The
-exact substrate is `docs/owner-session-security.md`. After that protected API
-chain completes, ADR 0007's accepted ingress is implemented by #75 — dispatch
-coordinator and #76 — native dispatch proof under #12 — end-to-end dispatch.
+session. Strict secret-free lifecycle routes are implemented under #72 —
+lifecycle routes. Runtime handoff remains #73 — runtime handoff within #65 —
+protected onboarding API. The exact HTTP boundary is `docs/onboarding-api.md`.
+After that protected API chain completes, ADR 0007's accepted ingress is
+implemented by #75 — dispatch coordinator and #76 — native dispatch proof under
+#12 — end-to-end dispatch. The end-to-end lifecycle proof in #12 — onboarded
+lifecycle proof consumes that canonical onboarded printer.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 — RatOS contract and does not
 block focused development. Each safety-critical prerequisite is delivered

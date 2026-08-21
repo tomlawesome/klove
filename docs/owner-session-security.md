@@ -1,9 +1,9 @@
 # Owner-session security contract
 
 Issue #71 — owner session implements the independent authentication and
-request-security substrate required by ADR 0006. It does not expose a lifecycle
-route or HTML surface. Issue #72 — lifecycle routes is the only next slice
-allowed to consume this boundary.
+request-security substrate required by ADR 0006. Issue #72 — lifecycle routes
+now consumes it through the contract in `docs/onboarding-api.md`. Neither slice
+adds an HTML surface.
 
 ## Configuration and authentication
 
@@ -44,10 +44,10 @@ release the claim and refresh inactivity time. Completion, cancellation, or an
 unsafe outcome invalidates it. Capacity is bounded and expired entries are
 removed before a new session is admitted; capacity exhaustion fails closed.
 
-## Remaining boundary
+## Lifecycle consumer
 
 This substrate grants no printer lifecycle or runtime authority by itself.
-Issue #72 — lifecycle routes must strictly decode requests, authenticate the
-owner credential before issuance, use the exact raw-header checks above, and
-invalidate sessions at the required terminal transitions. Issue #73 — runtime
-handoff must then reconcile committed mutations into runtime activation.
+Issue #72 — lifecycle routes strictly decodes requests, authenticates the owner
+credential before issuance, uses the exact raw-header checks above, and
+invalidates sessions at the required terminal transitions. Issue #73 — runtime
+handoff must reconcile committed mutations into runtime activation.

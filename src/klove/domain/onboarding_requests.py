@@ -5,7 +5,65 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from klove.domain.artifacts import CanonicalUuid4, SafetyProfile
-from klove.domain.onboarding import AuditText, DisplayName, MoonrakerEndpoint
+from klove.domain.onboarding import (
+    AuditText,
+    DisplayName,
+    MoonrakerEndpoint,
+    RegistryOperationKind,
+)
+
+
+class InspectPrinterRequest(BaseModel):
+    """Directly inspect one proposed endpoint without persisting its credential."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    printer_uuid: CanonicalUuid4
+    actor: AuditText
+    request_origin: AuditText
+    endpoint: MoonrakerEndpoint
+    moonraker_credential: SecretStr
+
+    @field_validator("actor", "request_origin")
+    @classmethod
+    def audit_text_is_exact(cls, value: str) -> str:
+        return _exact_text(value)
+
+    @field_validator("moonraker_credential")
+    @classmethod
+    def moonraker_credential_is_bounded(cls, value: SecretStr) -> SecretStr:
+        _visible_secret(value.get_secret_value())
+        return value
+
+
+class LifecycleResultRequest(BaseModel):
+    """Identify one exact durable mutation result without repeating secret input."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    idempotency_key: CanonicalUuid4
+    printer_uuid: CanonicalUuid4
+    operation: RegistryOperationKind
+    actor: AuditText
+    request_origin: AuditText
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def operation_is_exact_known_text(cls, value: object) -> object:
+        if type(value) is str:
+            return RegistryOperationKind(value)
+        return value
+
+    @field_validator("actor", "request_origin")
+    @classmethod
+    def audit_text_is_exact(cls, value: str) -> str:
+        return _exact_text(value)
+
+    @model_validator(mode="after")
+    def operation_is_browser_lifecycle(self) -> LifecycleResultRequest:
+        if self.operation is RegistryOperationKind.BOOTSTRAP_IMPORT:
+            raise ValueError("bootstrap operations are not browser lifecycle results")
+        return self
 
 
 class LifecycleRequest(BaseModel):
