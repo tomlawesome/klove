@@ -447,10 +447,13 @@ and secret-store foundation is implemented under #62 — registry storage, the d
 probe/orchestration library is implemented under #63 — onboarding core, and
 registry-backed monitor activation is implemented under #68 — runtime
 supervisor, and shared admission is implemented under #69 — shared runtime
-gate. Startup wiring is implemented under #70 — runtime bootstrap. Protected
-API work remains #65 — protected onboarding API. ADR 0007's accepted dispatch
-ingress is implemented next by #75 — dispatch coordinator and #76 — native
-dispatch proof under #12 — end-to-end dispatch.
+gate. Startup wiring is implemented under #70 — runtime bootstrap. Independent
+owner authentication and request security are implemented under #71 — owner
+session. Strict lifecycle routes and runtime handoff remain #72 — lifecycle
+routes and #73 — runtime handoff within #65 — protected onboarding API. The
+exact substrate is `docs/owner-session-security.md`. After that protected API
+chain completes, ADR 0007's accepted ingress is implemented by #75 — dispatch
+coordinator and #76 — native dispatch proof under #12 — end-to-end dispatch.
 The implemented RatOS contract fixture remains a separate incomplete
 exact-release acceptance follow-up under #51 — RatOS contract and does not
 block focused development. Each safety-critical prerequisite is delivered

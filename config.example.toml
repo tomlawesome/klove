@@ -8,6 +8,13 @@ database_file = "/var/lib/klove/printer-registry.sqlite3"
 secret_directory = "/var/lib/klove/registry-secrets"
 allowed_probe_cidrs = ["192.168.1.0/24"]
 
+[onboarding]
+# The owner-session substrate exists, but lifecycle routes are not exposed yet.
+enabled = false
+session_capacity = 128
+session_inactivity_seconds = 900
+session_absolute_seconds = 1800
+
 [control]
 enabled = true
 request_timeout_seconds = 10
