@@ -138,6 +138,7 @@ def test_ratos_readiness_transport_failure_retains_server_evidence(
     assert captured["server"] == {"status": "ok", "klippy_state": "ready", "klippy_connected": True}
     assert captured["printer"] == {
         "status": "unavailable",
+        "http_status": None,
         "message": "unknown",
         "message_sha256": None,
         "message_bytes": 0,

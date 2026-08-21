@@ -726,7 +726,11 @@ def _wait_printer_ready(
             status, body = _http_request(
                 18080, "/printer/info", headers=headers, host_header="ratos.local"
             )
-            last_printer = {"status": "ok" if status == 200 else "error", **_message_evidence(None)}
+            last_printer = {
+                "status": "ok" if status == 200 else "error",
+                "http_status": status if 200 <= status <= 599 else None,
+                **_message_evidence(None),
+            }
             try:
                 parsed = _parse_json(body, "/printer/info")
                 if status == 200:
@@ -736,9 +740,8 @@ def _wait_printer_ready(
                     )
                     last_printer.update(_message_evidence(printer.get("state_message")))
                 else:
-                    last_printer.update(
-                        _message_evidence(_mapping(parsed, "printer error").get("message"))
-                    )
+                    error = _mapping(_mapping(parsed, "printer error").get("error"), "error")
+                    last_printer.update(_message_evidence(error.get("message")))
             except (RuntimeError, json.JSONDecodeError):
                 printer = {}
             if (
@@ -749,7 +752,7 @@ def _wait_printer_ready(
             ):
                 return
         except (ConnectionError, OSError):
-            last_printer = {"status": "unavailable", **_message_evidence(None)}
+            last_printer = {"status": "unavailable", "http_status": None, **_message_evidence(None)}
         time.sleep(2)
     if failure_stage is not None and config is not None:
         _write_readiness_failure(
