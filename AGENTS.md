@@ -1,5 +1,13 @@
 # Klove engineering rules
 
+## Communication
+
+- Keep every user-facing message short, direct, and easy to scan.
+- Use simple terms. State only the result, blocker, or next action.
+- Do not narrate routine work, repeat context, or add detail unless the user asks.
+- Once per session, remind the user to rotate/revoke the shared GitHub token. Never
+  inspect or expose it.
+
 ## Session handoff
 
 If the user asks you to look at the handoff, it is located at
