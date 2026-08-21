@@ -399,6 +399,9 @@ def test_initialize_rolls_back_schema_creation_errors(
         def fetchone(self) -> tuple[int]:
             return (0,)
 
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return []
+
     class Connection:
         def execute(self, query: str, _params: object = None) -> Cursor:
             operation_name = query.strip().split(maxsplit=1)[0]
@@ -956,6 +959,7 @@ def test_low_level_pragma_and_required_reference_decoders_are_strict() -> None:
     for value in (None, (), (True,), ("1",), (1, 2)):
         with pytest.raises(RegistryStoreError):
             _pragma_integer(Connection(value), "user_version")  # type: ignore[arg-type]
+    assert _pragma_integer(Connection((1,)), "user_version") == 1  # type: ignore[arg-type]
     assert _required_reference(MOONRAKER_REF) == MOONRAKER_REF
     with pytest.raises(RegistryTransitionError):
         _required_reference(None)

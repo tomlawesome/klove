@@ -69,8 +69,11 @@ references.
 The schema is exact and `STRICT`. Startup validates the schema version, table
 and index definitions, canonical JSON, denormalized lookup columns, SQLite
 integrity result, private ownership, and the HMAC-key identity recorded in the
-database. A future or weakened schema is rejected; migrations require a later
-explicitly tested slice.
+database. A future or weakened schema is rejected. ADR 0011 supplies the exact
+transactional migration runner and immutable version-1 compatibility harness;
+version 1 remains current and has no production migration step. Every later
+schema version requires its own accepted exact descriptor and contiguous
+migration.
 
 ## Backup and restore
 

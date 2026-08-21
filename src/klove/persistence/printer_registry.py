@@ -26,6 +26,7 @@ from klove.persistence.printer_registry_errors import (
     RegistryStoreError,
     RegistryTransitionError,
 )
+from klove.persistence.printer_registry_migrations import ensure_registry_schema
 from klove.persistence.printer_registry_reconciliation import (
     _all_operations,
     _cleanup_operation,
@@ -97,27 +98,27 @@ class PrinterStore:
             prepare_private_file(self._path)
             connection = self._connect()
             try:
-                version = _pragma_integer(connection, "user_version")
-                if version == 0:
-                    connection.execute("BEGIN IMMEDIATE")
-                    try:
-                        connection.execute(_PRINTER_TABLE_SQL)
-                        connection.execute(_OPERATION_TABLE_SQL)
-                        connection.execute(_OPERATION_INDEX_SQL)
-                        connection.execute(_METADATA_TABLE_SQL)
-                        connection.execute(
-                            "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
-                            ("request_hmac_key_sha256", self._secrets.key_identity),
-                        )
-                        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-                        connection.execute("COMMIT")
-                    except sqlite3.Error:
-                        connection.execute("ROLLBACK")
-                        raise
-                elif version != _SCHEMA_VERSION:
-                    raise RegistryStoreError
-                _validate_schema(connection)
-                _validate_metadata(connection, self._secrets.key_identity)
+
+                def initialize_current(target: sqlite3.Connection) -> None:
+                    target.execute(_PRINTER_TABLE_SQL)
+                    target.execute(_OPERATION_TABLE_SQL)
+                    target.execute(_OPERATION_INDEX_SQL)
+                    target.execute(_METADATA_TABLE_SQL)
+                    target.execute(
+                        "INSERT INTO registry_metadata (key, value) VALUES (?, ?)",
+                        ("request_hmac_key_sha256", self._secrets.key_identity),
+                    )
+
+                def validate_current(target: sqlite3.Connection) -> None:
+                    _validate_schema(target)
+                    _validate_metadata(target, self._secrets.key_identity)
+
+                ensure_registry_schema(
+                    connection,
+                    current_version=_SCHEMA_VERSION,
+                    initialize_current=initialize_current,
+                    validators={_SCHEMA_VERSION: validate_current},
+                )
             finally:
                 connection.close()
             self.reconcile()
