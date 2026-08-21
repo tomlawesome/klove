@@ -36,6 +36,7 @@ implementation roadmap remain the canonical detailed contracts and status.
 - [ADR 0007: authenticated dispatch ingress](decisions/0007-authenticated-dispatch-ingress.md)
 - [ADR 0008: clean-room Grove provenance](decisions/0008-grove-provenance.md)
 - [Proposed ADR 0009: Grove MQTT compatibility boundary](decisions/0009-grove-mqtt-compatibility.md)
+- [Proposed ADR 0010: Grove FTPS artifact staging](decisions/0010-grove-ftps-staging.md)
 - [Implementation roadmap](implementation-plan.md)
 - [Onboarding core](onboarding-core.md)
 - [Registry storage](registry-storage.md)
