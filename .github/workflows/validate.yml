@@ -2,7 +2,7 @@ name: Validate Klove
 
 on:
   pull_request:
-    branches: [main, develop, preview]
+    branches: [main, dev, develop, preview]
   push:
     branches: [preview, "hotfix/**"]
   workflow_dispatch:
