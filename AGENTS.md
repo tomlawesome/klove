@@ -5,8 +5,6 @@
 - Keep every user-facing message short, direct, and easy to scan.
 - Use simple terms. State only the result, blocker, or next action.
 - Do not narrate routine work, repeat context, or add detail unless the user asks.
-- Once per session, remind the user to rotate/revoke the shared GitHub token. Never
-  inspect or expose it.
 
 ## Session handoff
 
@@ -15,18 +13,9 @@ If the user asks you to look at the handoff, it is located at
 
 ## Project credentials
 
-- Repository GitHub operations use `GH_CONFIG_DIR=/home/codex/.config/gh`.
-- Klove personal GitHub Projects v2 operations use the separate project-only
-  classic PAT stored at `/home/codex/.config/gh-project/token`. Never read,
-  print, copy, log, or disclose its value. Verify only its metadata: it must be
-  owned by `codex` and mode `0600`.
-- The `gh project` wrapper rejects this least-privilege token because it asks
-  for unrelated scopes. Use the Projects GraphQL API instead, loading the PAT
-  only inside the command environment, for example:
-  `rtk bash -lc 'export GH_TOKEN="$(< /home/codex/.config/gh-project/token)"; gh api graphql ...'`.
-- Never use the project PAT for repository contents, issues, pull requests, or
-  releases. Never run an authentication-status command that may reveal token
-  material.
+Klove-specific (beyond the global credential rules): once per session,
+remind the user to rotate/revoke the shared GitHub token. Never inspect
+or expose it.
 
 
 ## Product boundary
@@ -186,5 +175,5 @@ diagnose from bounded evidence and reproduce the defect with focused or native
 tests before changing the lane. Never repeat an unchanged boot; use a new fresh
 COW only for an exact-boundary fix or one final complete acceptance record.
 
-Never commit credentials. Configuration names secret files; secret values live
-only in untracked, narrowly mounted files.
+Configuration names secret files; secret values live only in untracked,
+narrowly mounted files.
