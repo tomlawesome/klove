@@ -2,7 +2,7 @@
 
 Klove uses three protected branches:
 
-1. `develop` is the integration lane for ordinary pull requests.
+1. `dev` is the integration lane for ordinary pull requests.
 2. `preview` is the production-like acceptance lane. A push builds one image,
    runs its immutable runtime contract, rejects high or critical
    vulnerabilities, emits an SPDX SBOM, and publishes provenance and SBOM

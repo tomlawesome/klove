@@ -122,8 +122,8 @@ its durable pre-dispatch reservation.
 
 ## Delivery lanes
 
-- Ordinary work branches from and targets protected `develop`.
-- A release candidate is merged from `develop` to protected `preview` only
+- Ordinary work branches from and targets protected `dev`.
+- A release candidate is merged from `dev` to protected `preview` only
   after fast and integration checks pass.
 - A `preview` push builds, scans, attests, and publishes one uniquely identified
   container digest.
