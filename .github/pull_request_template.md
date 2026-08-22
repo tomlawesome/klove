@@ -2,8 +2,8 @@
 
 Describe the observable outcome and link the delivery issue.
 
-Ordinary branches start from and target `develop`. Release trains merge
-`develop` into `preview`, then the accepted `preview` into `main`.
+Ordinary branches start from and target `dev`. Release trains merge
+`dev` into `preview`, then the accepted `preview` into `main`.
 
 ## Safety and compatibility
 

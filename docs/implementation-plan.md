@@ -5,7 +5,7 @@ Last updated: 2026-08-21
 
 ## Delivery policy
 
-- Ordinary work starts from and targets protected `develop`.
+- Ordinary work starts from and targets protected `dev`.
 - `preview` is the protected, exact-container acceptance lane.
 - A successful `preview` push publishes a unique `preview-<run>-<attempt>`
   candidate tag and moves the `preview` pointer to that exact recorded digest.
@@ -22,7 +22,7 @@ Last updated: 2026-08-21
 - [Programme roadmap #38](https://github.com/tomlawesome/klove/issues/38) is the
   top-level GitHub execution register.
 - [Typed job-control issue #4](https://github.com/tomlawesome/klove/issues/4)
-  and its epic are complete on protected `develop`.
+  and its epic are complete on protected `dev`.
 - [Delivery-lane issue #2](https://github.com/tomlawesome/klove/issues/2) is
   complete. Protected preview run `31741422470` published the attested candidate
   `ghcr.io/tomlawesome/klove@sha256:7be3122ef7427fe9d49a27980de16363f4be2ed8f28ec1ab73b2e18dab690fc8`.
@@ -58,7 +58,7 @@ Last updated: 2026-08-21
   records the v3 exact printer UUID and safety-profile approval boundary.
 - [Bounded upload issue #8](https://github.com/tomlawesome/klove/issues/8) and
   [PR #55](https://github.com/tomlawesome/klove/pull/55) are complete on
-  protected `develop`.
+  protected `dev`.
 - [Durable print-start issue #9](https://github.com/tomlawesome/klove/issues/9)
   is implemented under accepted ADR 0005 with no northbound route. ADR 0007's
   authenticated dispatch-ingress contract is implemented by #75 — dispatch
@@ -66,7 +66,7 @@ Last updated: 2026-08-21
   — end-to-end dispatch.
 - [Native integration issue #48](https://github.com/tomlawesome/klove/issues/48)
   and [RatOS emulation spike #50](https://github.com/tomlawesome/klove/issues/50)
-  are complete on protected `develop`.
+  are complete on protected `dev`.
 - [RatOS contract spike #51](https://github.com/tomlawesome/klove/issues/51)
   has an implemented controlled host-MCU contract lane. Exact-release runs
   proved the controlled configuration, production observation, and the three
@@ -102,7 +102,7 @@ semantic completeness.
   reduction, disconnect handling, and bounded reconnect.
 - [x] Deterministic fake Moonraker contract tests.
 - [x] Critical-boundary 100% coverage gate and project-wide coverage evidence.
-- [x] `main` is the default branch; `develop`, `preview`, and `main` require pull
+- [x] `main` is the default branch; `dev`, `preview`, and `main` require pull
   requests and resolved conversations and reject force-pushes and deletion.
   Default Actions permissions are read-only and `production` is restricted to
   reviewed `main` deployments.
@@ -153,7 +153,7 @@ denied or classified without reaching an actuator.
   completed slice.
 - [x] Complete documentation review and the full local gate.
 - [x] Obtain clean GitHub PR CI and merge through the protected workflow into
-  `develop`.
+  `dev`.
 
 Exit criterion: one authenticated, current, exact pause/resume/cancel request is
 dispatched at most once and reported confirmed only from later evidence for the
@@ -187,7 +187,7 @@ fails closed.
   sizes/checksums, macro ownership, attended safety checks, and an evidence
   template. Do not call the native stack RatOS; full-system emulation is
   supplemental only when it faithfully boots the exact image.
-- [x] Obtain clean GitHub PR CI and merge through protected `develop` in
+- [x] Obtain clean GitHub PR CI and merge through protected `dev` in
   [PR #49](https://github.com/tomlawesome/klove/pull/49).
 
 Exit criterion: a reproducible confined run passes against the pinned real
@@ -219,7 +219,7 @@ until actually executed.
 - [ ] Complete one uninterrupted exact-release run that also proves the
   deliberately lost response becomes `outcome_unknown` with no second dispatch
   and archives the atomic `contract-passed` evidence marker.
-- [x] Prepare the fixture for protected `develop` with clean fast and native
+- [x] Prepare the fixture for protected `dev` with clean fast and native
   integration validation, without treating partial emulation evidence as
   acceptance.
 - [x] Split the RatOS orchestration shell into explicit ownership, QEMU,
@@ -249,7 +249,7 @@ partial observations are diagnostic evidence only.
 - [x] Add accepted and rejected JSON fixtures for every contract boundary plus
   positive, negative, and configuration tests.
 - [x] Complete independent review and the full local gate.
-- [x] Obtain clean GitHub PR CI and merge through protected `develop`.
+- [x] Obtain clean GitHub PR CI and merge through protected `dev`.
 
 Exit criterion: untrusted artifact metadata can be represented and evaluated
 without aliases or inference, while no archive extraction, Moonraker upload, or
@@ -479,7 +479,7 @@ before any product caller can reach it. The complete contract is
 Exit criterion: #75 — dispatch coordinator is implemented without a northbound
 adapter or additional actuator. #76 — native dispatch proof passed against the
 real pinned Moonraker fixture and the complete chain is merged into protected
-`develop`.
+`dev`.
 
 ## Next slices
 
