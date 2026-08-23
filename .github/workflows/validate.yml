@@ -83,7 +83,10 @@ jobs:
 
   exact-container:
     name: Exact container contract
-    if: github.event_name == 'push' && github.ref_name == 'preview'
+    if: >-
+      (github.event_name == 'push' && github.ref_name == 'preview') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci: acceptance'))
     needs: [fast, browser, moonraker-sim]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -127,12 +130,15 @@ jobs:
             --volume "${PWD}/.klove-supply-chain:/evidence" \
             "${TRIVY_IMAGE}" image --skip-db-update --format spdx-json \
             --output /evidence/image.spdx.json klove:preview-test
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - name: Log in to publish the tested preview image
+        if: github.event_name == 'push' && github.ref_name == 'preview'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish exact tested preview
+        if: github.event_name == 'push' && github.ref_name == 'preview'
         id: publish
         env:
           IMAGE: ghcr.io/${{ github.repository }}
@@ -150,6 +156,7 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "candidate=${image}:${candidate}" >> "${GITHUB_OUTPUT}"
       - name: Attest build provenance
+        if: github.event_name == 'push' && github.ref_name == 'preview'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.publish.outputs.image }}
@@ -157,6 +164,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest software bill of materials
+        if: github.event_name == 'push' && github.ref_name == 'preview'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.publish.outputs.image }}
