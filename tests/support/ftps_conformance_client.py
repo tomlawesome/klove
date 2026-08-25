@@ -144,7 +144,7 @@ class FtpsConformanceClient:
                     reply_codes.append(_expect(control, 226, self._max_reply_bytes).code)
                 _send(control, "QUIT")
                 reply_codes.append(_expect(control, 221, self._max_reply_bytes).code)
-                _reject_extra_reply(control)
+                _reject_extra_reply(control, self._timeout)
             return FtpsConformanceResult(
                 operation=operation,
                 remote_path=self._remote_path,
@@ -265,7 +265,9 @@ def _send_chunks(
     return byte_count, f"sha256:{digest.hexdigest()}"
 
 
-def _reject_extra_reply(connection: ssl.SSLSocket) -> None:
-    ready, _, _ = select.select([connection], [], [], 0)
-    if ready and connection.recv(1):
+def _reject_extra_reply(connection: ssl.SSLSocket, timeout: float) -> None:
+    ready, _, _ = select.select([connection], [], [], timeout)
+    if not ready:
+        raise FtpsConformanceError("FTP close timed out")
+    if connection.recv(1):
         raise FtpsConformanceError("excess FTP replies")

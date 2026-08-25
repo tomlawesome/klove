@@ -5,6 +5,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -494,20 +495,31 @@ def test_data_tls_version_mismatch_is_denied(
 
 def test_excess_reply_is_denied(certificate_files: tuple[Path, Path]) -> None:
     certificate, private_key = certificate_files
-    responses = [
-        b"220 ready\r\n",
-        b"331 password\r\n",
-        b"230 logged in\r\n",
-        b"200 pbsz\r\n",
-        b"200 prot\r\n",
-        b"250 deleted\r\n",
-        b"221 bye\r\n999 extra\r\n",
-    ]
+
+    def delayed_extra_reply(control: socket.socket, _context: ssl.SSLContext) -> None:
+        exact_cleanup_handler(control, _context)
+        time.sleep(0.05)
+        send_raw_reply(control, b"999 extra\r\n")
+
     with (
-        running_server(certificate, private_key, scripted_handler(responses)) as port,
+        running_server(certificate, private_key, delayed_extra_reply) as port,
         pytest.raises(FtpsConformanceError, match="excess"),
     ):
         client(port).cleanup()
+
+
+def test_control_close_timeout_is_denied(certificate_files: tuple[Path, Path]) -> None:
+    certificate, private_key = certificate_files
+
+    def delayed_close(control: socket.socket, context: ssl.SSLContext) -> None:
+        exact_cleanup_handler(control, context)
+        time.sleep(0.2)
+
+    with (
+        running_server(certificate, private_key, delayed_close) as port,
+        pytest.raises(FtpsConformanceError, match="close timed out"),
+    ):
+        client(port, timeout=0.05).cleanup()
 
 
 def test_upload_bound_and_chunk_type_are_denied_without_secretful_errors(
