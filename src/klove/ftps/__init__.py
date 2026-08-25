@@ -1,4 +1,4 @@
-"""Fail-closed FTPS observation and staging primitives with no protocol listener."""
+"""Fail-closed FTPS observation, staging, and bounded listener primitives."""
 
 from klove.ftps.profile import (
     FtpsCommand,
@@ -10,6 +10,7 @@ from klove.ftps.profile import (
     assess_ftps_observation_profile,
     ftps_listener_disposition,
 )
+from klove.ftps.server import FtpsTlsServer
 
 __all__ = [
     "FtpsCommand",
@@ -18,6 +19,7 @@ __all__ = [
     "FtpsObservationProfile",
     "FtpsProfileAssessment",
     "FtpsSession",
+    "FtpsTlsServer",
     "assess_ftps_observation_profile",
     "ftps_listener_disposition",
 ]

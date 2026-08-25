@@ -41,6 +41,12 @@ that the protocol model is complete. The suite therefore also includes:
   count, SHA-256, value classifications, and source/secret/privacy review;
   `scripts/validate_grove_observations.py` is the repository gate for this
   version-1 manifest and fixture-digest contract;
+- black-box loopback conformance coverage for the bounded implicit-TLS FTPS
+  listener class: the accepted cleanup and protected passive-upload reply
+  sequences, TLS-only control and data channels, same-peer data binding,
+  authentication/revalidation denial, bounded private staging, and no
+  downstream action. This exercises the class only; it does not establish
+  Grove acceptance, dispatch authority, or production readiness;
 - control tests for exact token/job/state matching, per-printer serialization,
   history job-id/start-time bracketing, telemetry-stable control tokens, final
   exact-token rechecks, single dispatch, cross-key uncertainty fencing,

@@ -369,7 +369,8 @@ class GroveBridgeConfig(BaseModel):
     max_sessions_per_printer: int = Field(default=2, ge=1, le=8)
     max_commands_per_session: int = Field(default=256, ge=1, le=4096)
     session_idle_seconds: float = Field(default=60.0, ge=30, le=300, allow_inf_nan=False)
-    transfer_timeout_seconds: float = Field(default=300.0, ge=1, le=3600, allow_inf_nan=False)
+    transfer_timeout_seconds: float = Field(default=300.0, ge=1, le=300, allow_inf_nan=False)
+    staging_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
     shutdown_timeout_seconds: float = Field(default=10.0, ge=1, le=60, allow_inf_nan=False)
     max_concurrent_transfers: int = Field(default=4, ge=1, le=64)
     ingress_capacity: int = Field(default=4096, ge=1, le=100_000)
@@ -443,6 +444,8 @@ class GroveBridgeConfig(BaseModel):
             raise ValueError("disabled bridge cannot retain active listener settings")
         if self.max_sessions_per_printer > self.max_sessions:
             raise ValueError("per-printer sessions cannot exceed the global limit")
+        if self.enabled and self.max_commands_per_session < 7:
+            raise ValueError("enabled FTPS profile requires seven bounded commands")
         if (
             self.mqtt_journal_file == self.staging_directory
             or self.mqtt_journal_file.is_relative_to(self.staging_directory)
