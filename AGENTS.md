@@ -11,13 +11,6 @@
 If the user asks you to look at the handoff, it is located at
 `/home/codex/projects/klove/.agents/handoffs/current.md`.
 
-## Project credentials
-
-Klove-specific (beyond the global credential rules): once per session,
-remind the user to rotate/revoke the shared GitHub token. Never inspect
-or expose it.
-
-
 ## Product boundary
 
 Klove is a headless, automation-first security and translation layer. Grove
