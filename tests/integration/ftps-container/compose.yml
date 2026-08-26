@@ -1,0 +1,86 @@
+services:
+  prepare:
+    image: ${KLOVE_FTPS_IMAGE:?image required}
+    pull_policy: never
+    entrypoint: ["python", "/fixture/prepare.py"]
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["SETGID", "SETUID"]
+    security_opt: ["no-new-privileges:true"]
+    user: "0:0"
+    pids_limit: 16
+    mem_limit: 32m
+    cpus: 0.25
+    volumes:
+      - runtime-secrets:/run/klove-secrets
+      - contract-trust:/var/lib/klove/ftps-staging
+      - ${KLOVE_FTPS_INPUT:?input required}:/input:ro
+      - ./prepare.py:/fixture/prepare.py:ro
+    networks:
+      - private
+    labels:
+      io.klove.ftps-container.role: prepare
+
+  klove:
+    image: ${KLOVE_FTPS_IMAGE:?image required}
+    pull_policy: never
+    entrypoint: ["python", "/fixture/runtime.py"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    command: ["--config", "/run/klove-secrets/config.toml"]
+    expose:
+      - "8080"
+      - "990"
+      - "50000-50009"
+    volumes:
+      - runtime-secrets:/run/klove-secrets:ro
+      - klove-state:/var/lib/klove
+      - staging-state:/var/lib/klove/ftps-staging
+      - ./runtime.py:/fixture/runtime.py:ro
+    networks:
+      private:
+        ipv4_address: ${KLOVE_FTPS_SERVICE_IP:?service IP required}
+    labels:
+      io.klove.ftps-container.role: runtime
+
+  contract:
+    image: ${KLOVE_FTPS_IMAGE:?image required}
+    pull_policy: never
+    entrypoint: ["python", "/fixture/probe.py"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "10001:10001"
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    volumes:
+      - contract-trust:/trust:ro
+      - staging-state:/staging:ro
+      - ./probe.py:/fixture/probe.py:ro
+    networks:
+      private:
+        ipv4_address: ${KLOVE_FTPS_CLIENT_IP:?client IP required}
+    labels:
+      io.klove.ftps-container.role: contract
+
+volumes:
+  contract-trust:
+  klove-state:
+  runtime-secrets:
+  staging-state:
+
+networks:
+  private:
+    external: true
+    name: ${KLOVE_FTPS_NETWORK:?network required}
