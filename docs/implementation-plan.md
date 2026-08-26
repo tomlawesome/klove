@@ -490,12 +490,15 @@ non-actuating by itself; ADR 0005 print start remains internal; no public or
 generic G-code path exists.
 
 1. Complete [#32 — Grove bridge](https://github.com/tomlawesome/klove/issues/32).
-   ADRs 0009 and 0010 are accepted, and PR #120 merged their evidence-backed
-   MQTT/TLS and implicit-FTPS runtime foundations. Complete #10 — MQTT facade
-   and #14 — FTPS ingress by wiring their application composition gates and
-   passing end-to-end validation. Then validate and propose #60 — minimal Grove
-   contribution upstream, and finish #13 — deployment guidance against the
-   pinned supported Grove revision.
+   ADR 0010 is accepted; ADR 0009 remains proposed and implementation-prohibited
+   until its observation gates complete. PR #120 merged their evidence-backed
+   MQTT/TLS and implicit-FTPS foundations. Complete the MQTT observation gate
+   before accepting ADR 0009 or composing its runtime, and complete #10 — MQTT
+   facade and #14 — FTPS ingress only within their accepted boundaries and
+   end-to-end validation. Keep #60 — minimal Grove integration local until
+   Klove is feature-complete and owner-led real-printer and real-print acceptance
+   passes; only then consider an upstream proposal. Finish #13 — deployment
+   guidance against the pinned supported Grove revision.
 2. Complete [#3 — stable promotion](https://github.com/tomlawesome/klove/issues/3)
    only after documented production-like printer acceptance at the end of the
    milestone suite. Promote the exact tested preview digest without rebuilding.
