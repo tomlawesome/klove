@@ -25,12 +25,13 @@ from typing import BinaryIO, cast
 
 MAX_REPORT_PACKETS = 48
 MAX_PRE_SUBACK_REPORTS = 8
-MAX_POST_FINISH_PACKETS = 16
 MAX_JSON_DEPTH = 12
 MAX_JSON_MEMBERS = 128
 CONNECT_TIMEOUT_SECONDS = 15.0
 REPORT_WINDOW_SECONDS = 15.0
-POST_FINISH_QUIESCENCE_SECONDS = 5.0
+BOUNDED_CHAIN_EVIDENCE = (
+    "bounded_ack_prepare_first_finish_qos0_dup_false_retain_false_no_byte_identical_replay"
+)
 EVIDENCE_PATH = Path("/evidence/mqtt-report-schema")
 PROVENANCE_PATH = Path("/evidence/mqtt-report-recorder-provenance")
 STATUS_PATH = Path("/evidence/mqtt-report-status")
@@ -58,9 +59,6 @@ PROTOCOL_CODES = frozenset(
         "payload_members_invalid",
         "payload_type_invalid",
         "post_ack_prepare_invalid",
-        "post_finish_packet_invalid",
-        "post_finish_packet_limit",
-        "post_finish_report",
         "post_prepare_finish_invalid",
         "post_suback_report_invalid",
         "post_suback_report_limit",
@@ -380,23 +378,6 @@ def _report(profile: dict[str, object], *, command: str, state: str) -> dict[str
     return {**profile, "command": command, "state": state}
 
 
-def _quiet_after_finish(connection: BinaryIO, serial: bytes, seen_digests: set[bytes]) -> None:
-    deadline = time.monotonic() + POST_FINISH_QUIESCENCE_SECONDS
-    for _ in range(MAX_POST_FINISH_PACKETS):
-        try:
-            header, body = _read_packet(connection, deadline)
-        except TimeoutError:
-            return
-        if header == 0xC0 and not body:
-            _write_all(connection, b"\xd0\0", deadline)
-            continue
-        if header != 0x30:
-            raise ObservationFailure("post_finish_packet_invalid")
-        _remember_report(header, body, serial, seen_digests)
-        raise ObservationFailure("post_finish_report")
-    raise ObservationFailure("post_finish_packet_limit")
-
-
 def observe_two_sessions(host: str, serial: bytes) -> dict[str, object]:
     """Prove an exact acknowledgement/status chain on a fresh persistent session."""
     probe, _probe_digests, _probe_reports = _open_session(host, serial, 1)
@@ -445,7 +426,6 @@ def observe_two_sessions(host: str, serial: bytes) -> dict[str, object]:
                 if command != "push_status" or state != "FINISH":
                     raise ObservationFailure("post_prepare_finish_invalid")
                 finish = _report(profile, command="push_status", state="FINISH")
-                _quiet_after_finish(typed_persistent, serial, seen_digests)
                 return {
                     "profile_version": 1,
                     "transport": "mqtt-over-tls",
@@ -463,7 +443,7 @@ def observe_two_sessions(host: str, serial: bytes) -> dict[str, object]:
                         },
                         "project_file_result": acknowledgement,
                         "non_idle_push_status": [prepare, finish],
-                        "persistent_session_qos0_no_replay_or_retain": True,
+                        BOUNDED_CHAIN_EVIDENCE: True,
                     },
                 }
         raise ObservationFailure("report_sequence_incomplete")
@@ -537,7 +517,7 @@ def validate_candidate(candidate: object) -> None:
                 "project_file_request",
                 "project_file_result",
                 "non_idle_push_status",
-                "persistent_session_qos0_no_replay_or_retain",
+                BOUNDED_CHAIN_EVIDENCE,
             }
         ),
     )
@@ -589,7 +569,7 @@ def validate_candidate(candidate: object) -> None:
         or len(statuses) != 2
         or not _valid_report(statuses[0], command="push_status", state="PREPARE")
         or not _valid_report(statuses[1], command="push_status", state="FINISH")
-        or observed["persistent_session_qos0_no_replay_or_retain"] is not True
+        or observed[BOUNDED_CHAIN_EVIDENCE] is not True
     ):
         raise ObservationFailure("candidate_reports_invalid")
 

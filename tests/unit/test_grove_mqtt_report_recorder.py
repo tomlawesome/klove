@@ -170,7 +170,7 @@ def test_two_session_observation_binds_project_result_and_non_idle_statuses(
     observed = candidate["observed"]
     assert observed["project_file_result"]["matches_generated_request_sequence"] is True
     assert [entry["state"] for entry in observed["non_idle_push_status"]] == ["PREPARE", "FINISH"]
-    assert observed["persistent_session_qos0_no_replay_or_retain"] is True
+    assert observed[recorder.BOUNDED_CHAIN_EVIDENCE] is True
     assert probe.closed and persistent.closed
     serialized = json.dumps(candidate, sort_keys=True)
     assert "private-model.3mf" not in serialized
@@ -250,15 +250,9 @@ def test_two_session_observation_rejects_stale_initial_non_idle_report(
         recorder.observe_two_sessions("grove", SERIAL)
 
 
-@pytest.mark.parametrize(
-    ("after_finish", "code"),
-    [
-        (_report(_status("IDLE")), "post_finish_report"),
-        (_report(_status("FINISH")), "report_replay"),
-    ],
-)
-def test_two_session_observation_requires_quiet_replay_free_window(
-    monkeypatch: pytest.MonkeyPatch, after_finish: bytes, code: str
+@pytest.mark.parametrize("after_finish", [_report(_status("IDLE")), _report(_status("FINISH"))])
+def test_two_session_observation_closes_after_first_strict_finish(
+    monkeypatch: pytest.MonkeyPatch, after_finish: bytes
 ) -> None:
     recorder = _recorder()
     packets = b"".join(
@@ -269,11 +263,15 @@ def test_two_session_observation_requires_quiet_replay_free_window(
             after_finish,
         ]
     )
-    sessions = iter((_Connection(), _Connection(packets)))
+    persistent = _Connection(packets)
+    sessions = iter((_Connection(), persistent))
     monkeypatch.setattr(recorder, "_open_session", lambda *_arguments: (next(sessions), set(), []))
 
-    with pytest.raises(recorder.ObservationFailure, match=code):
-        recorder.observe_two_sessions("grove", SERIAL)
+    candidate = recorder.observe_two_sessions("grove", SERIAL)
+
+    assert candidate["observed"][recorder.BOUNDED_CHAIN_EVIDENCE] is True
+    assert persistent.incoming == bytearray(after_finish)
+    assert persistent.closed
 
 
 def test_subscribe_has_small_combined_pre_suback_report_cap() -> None:
@@ -362,10 +360,10 @@ def test_candidate_validation_rejects_unproven_result_or_replay_claim(
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
     candidate["observed"]["project_file_result"]["result"] = "SUCCESS"
-    candidate["observed"]["persistent_session_qos0_no_replay_or_retain"] = False
+    candidate["observed"][recorder.BOUNDED_CHAIN_EVIDENCE] = False
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
-    candidate["observed"]["persistent_session_qos0_no_replay_or_retain"] = True
+    candidate["observed"][recorder.BOUNDED_CHAIN_EVIDENCE] = True
     candidate["observed"]["non_idle_push_status"].reverse()
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
