@@ -29,8 +29,10 @@ versioned completion handoff into Grove's existing printer-create flow, and
 feature gates that hide unsupported Bambu behavior. Grove must never receive
 Moonraker credentials or implement Klipper semantics. Do not revive the retired
 native-provider programme or create a persistent Grove fork without a new
-accepted decision. Any Grove contribution is developed in a fork and proposed
-upstream normally.
+accepted decision. Keep Grove changes local as a compatibility test harness
+until Klove is feature-complete and the owner has completed real-printer and
+real-print acceptance. Only then may a Grove contribution be developed in a
+fork and proposed upstream normally.
 
 The registry and onboarding core implemented by issues #62–#63 are the only
 canonical product printer store and lifecycle boundary. Keep secret values
