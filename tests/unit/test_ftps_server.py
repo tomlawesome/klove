@@ -224,6 +224,35 @@ def test_bind_diagnostic_releases_control_port_on_interruption(
     assert control.closed is True
 
 
+def test_bind_diagnostic_requires_enabled_exact_bridge_config(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="enabled Grove bridge"):
+        FtpsBindSetDiagnostic(GroveBridgeConfig())
+    with pytest.raises(ValueError, match="enabled Grove bridge"):
+        FtpsBindSetDiagnostic(cast(GroveBridgeConfig, object()))
+
+
+def test_bind_diagnostic_chains_release_interruption_from_pending_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    release_interruption = KeyboardInterrupt("release interrupted")
+    pending_interruption = KeyboardInterrupt("bind interrupted")
+    control = ProbeSocket(settings.ftps_control_port, release_interruption)
+
+    def open_probe(_host: str, port: int) -> ProbeSocket:
+        if port == settings.ftps_control_port:
+            return control
+        raise pending_interruption
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    with pytest.raises(KeyboardInterrupt, match="bind interrupted") as caught:
+        FtpsBindSetDiagnostic(settings).check()
+
+    assert caught.value.__cause__ is release_interruption
+    assert control.close_attempts == 1
+
+
 def test_bind_diagnostic_attempts_every_close_and_returns_fixed_release_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -265,6 +294,29 @@ def test_bind_diagnostic_attempts_every_close_before_reraising_interruption(
     monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
 
     with pytest.raises(KeyboardInterrupt):
+        FtpsBindSetDiagnostic(settings).check()
+
+    assert all(probe.close_attempts == 1 for probe in original)
+
+
+def test_bind_diagnostic_preserves_first_release_interruption_after_all_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    original = [
+        ProbeSocket(settings.ftps_control_port, KeyboardInterrupt("later interruption")),
+        ProbeSocket(settings.ftps_passive_port_min, KeyboardInterrupt("first interruption")),
+        ProbeSocket(settings.ftps_passive_port_min + 1),
+        ProbeSocket(settings.ftps_passive_port_max),
+    ]
+    probes = list(original)
+
+    def open_probe(_host: str, _port: int) -> ProbeSocket:
+        return probes.pop(0)
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    with pytest.raises(KeyboardInterrupt, match="first interruption"):
         FtpsBindSetDiagnostic(settings).check()
 
     assert all(probe.close_attempts == 1 for probe in original)
@@ -340,6 +392,29 @@ def test_bind_diagnostic_rejects_broadcast_or_mismatched_topology(
         assert FtpsBindSetDiagnostic(settings).check() == FtpsBindDiagnosticResult(
             False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
         )
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"ftps_advertised_ipv4": None},
+        {"listen_host": "not-an-ip-address"},
+        {"ftps_advertised_ipv4": "not-an-ip-address"},
+    ],
+)
+def test_bind_diagnostic_rejects_defensively_invalid_topology_without_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: dict[str, str | None]
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(update=update)
+    monkeypatch.setattr(
+        server_module,
+        "_open_probe_socket",
+        lambda _host, _port: pytest.fail("unsupported topology must not bind"),
+    )
+
+    assert FtpsBindSetDiagnostic(settings).check() == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
+    )
 
 
 def real_socket_or_skip() -> socket.socket:
