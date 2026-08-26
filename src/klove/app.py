@@ -14,8 +14,10 @@ from aiohttp import web
 from klove.adapters.moonraker.client import MoonrakerMonitor
 from klove.adapters.moonraker.control import MoonrakerControlTransport
 from klove.adapters.moonraker.onboarding import EndpointAddressPolicy, MoonrakerOnboardingProbe
-from klove.config import OnboardingConfig, load_config, read_secret
+from klove.config import AppConfig, GroveBridgeConfig, OnboardingConfig, load_config, read_secret
 from klove.domain.onboarding import RegisteredPrinter
+from klove.ftps.server import FtpsTlsServer
+from klove.ftps.staging import FtpsStagingStore
 from klove.northbound.api import create_api, ready_key
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.orchestration.bootstrap import FileBootstrapImporter
@@ -28,6 +30,8 @@ from klove.persistence.secret_store import SecretStore
 from klove.persistence.start_journal import StartJournal
 from klove.registry import PrinterRegistry
 from klove.security.auth import BearerAuthenticator
+from klove.security.compatibility import CompatibilityAuthenticator
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
 from klove.security.frame_handshake import FrameHandshakeStore
 from klove.security.owner_sessions import OwnerCredentialAuthenticator, OwnerSessionStore
 
@@ -40,7 +44,42 @@ class _RuntimeControlConfig:
     verify_tls: bool
 
 
-async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
+@dataclass(frozen=True, slots=True)
+class _CompatibilityBridge:
+    sessions: CompatibilitySessionRegistry | None = None
+    authenticator: CompatibilityAuthenticator | None = None
+    staging: FtpsStagingStore | None = None
+
+    def server(
+        self,
+        config: GroveBridgeConfig,
+        admissions: PrinterAdmissionGates,
+    ) -> FtpsTlsServer | None:
+        """Construct the listener only for one completely initialized bridge."""
+        if self.sessions is None:
+            return None
+        return FtpsTlsServer(
+            config,
+            cast(CompatibilityAuthenticator, self.authenticator),
+            cast(FtpsStagingStore, self.staging),
+            admissions,
+            session_registry=self.sessions,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _CleanupResources:
+    app: web.Application
+    stop_event: asyncio.Event
+    ftps: FtpsTlsServer | None
+    compatibility_sessions: CompatibilitySessionRegistry | None
+    runtime: RegistryRuntimeSupervisor
+    runner: web.AppRunner
+
+
+async def serve(  # noqa: PLR0915 -- explicit application composition and ordered lifecycle.
+    config_path: Path, stop: asyncio.Event | None = None
+) -> None:
     """Reconcile durable state, then run registry-backed routes and the API."""
     config = load_config(config_path)
     stop_event = stop or asyncio.Event()
@@ -51,6 +90,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
     start_journal.initialize()
     registry = PrinterRegistry([])
     admissions = PrinterAdmissionGates()
+    bridge = _initialize_compatibility_bridge(config, store, secrets, admissions)
     controls = ControlService(
         registry,
         {},
@@ -81,6 +121,7 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
                 if config.control.enabled
                 else None
             ),
+            committed_record_observer=bridge.sessions,
         )
         lifecycle = PrinterLifecycleService(
             store,
@@ -90,7 +131,6 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
             admissions=admissions,
             runtime=runtime,
         )
-        await FileBootstrapImporter(lifecycle, store).import_all(config.printers)
         scopes = {"printers:read"}
         if config.control.enabled:
             scopes.add("printers:control")
@@ -114,19 +154,94 @@ async def serve(config_path: Path, stop: asyncio.Event | None = None) -> None:
             completion_handoff=completion_handoff,
         )
         runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
-        site = web.TCPSite(runner, config.api.listen_host, config.api.listen_port)
+        failure: BaseException | None = None
+        ftps: FtpsTlsServer | None = None
         try:
+            await runner.setup()
+            site = web.TCPSite(runner, config.api.listen_host, config.api.listen_port)
             await site.start()
+            await FileBootstrapImporter(lifecycle, store).import_all(config.printers)
+            ftps = bridge.server(config.grove_bridge, admissions)
             active_printers = await runtime.refresh()
+            if ftps is not None:
+                await ftps.start()
             app[ready_key].ready = True
             LOGGER.info("klove ready active_printers=%d", len(active_printers))
             await stop_event.wait()
-        finally:
-            app[ready_key].ready = False
-            stop_event.set()
-            await runtime.shutdown()
-            await runner.cleanup()
+        except BaseException as exc:
+            failure = exc
+        cleanup = asyncio.create_task(
+            _cleanup_runtime(
+                _CleanupResources(app, stop_event, ftps, bridge.sessions, runtime, runner)
+            ),
+            name="klove-runtime-cleanup",
+        )
+        while True:
+            try:
+                cleanup_failure = await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError as exc:
+                if failure is None:
+                    failure = exc
+                continue
+        if failure is not None:
+            if cleanup_failure is not None:
+                failure.add_note("runtime cleanup also failed")
+            raise failure
+        if cleanup_failure is not None:
+            raise cleanup_failure
+
+
+def _initialize_compatibility_bridge(
+    config: AppConfig,
+    store: PrinterStore,
+    secrets: SecretStore,
+    admissions: PrinterAdmissionGates,
+) -> _CompatibilityBridge:
+    """Recover bridge storage without touching it while the gate is disabled."""
+    if not config.grove_bridge.enabled:
+        return _CompatibilityBridge()
+    sessions = CompatibilitySessionRegistry()
+    authenticator = CompatibilityAuthenticator(store, secrets, admissions)
+    staging = FtpsStagingStore(
+        config.grove_bridge.staging_directory,
+        limits=config.artifacts,
+        capacity=config.grove_bridge.ingress_capacity,
+    )
+    staging.initialize()
+    staging.reconcile()
+    return _CompatibilityBridge(
+        sessions=sessions,
+        authenticator=authenticator,
+        staging=staging,
+    )
+
+
+async def _cleanup_runtime(resources: _CleanupResources) -> BaseException | None:
+    """Stop every independently owned runtime surface and retain the first failure."""
+    resources.app[ready_key].ready = False
+    resources.stop_event.set()
+    failure: BaseException | None = None
+    if resources.ftps is not None:
+        for _attempt in range(2):
+            try:
+                await resources.ftps.close()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+    if resources.compatibility_sessions is not None:
+        try:
+            resources.compatibility_sessions.fence_all()
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+    for operation in (resources.runtime.shutdown, resources.runner.cleanup):
+        try:
+            await operation()
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+    return failure
 
 
 def _control_transport(
