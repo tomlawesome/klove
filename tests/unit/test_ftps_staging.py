@@ -778,3 +778,357 @@ def test_verified_source_open_failure_does_not_close_invalid_descriptor(
     with pytest.raises(OSError):
         staging._open_verified_source(source, artifact)
     assert closed == []
+
+
+def test_reconcile_discards_only_an_exact_verified_incomplete_transfer(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    receiving = directory / f"{STAGE_ID}.receiving"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    receiving.write_bytes(b"partial")
+    receiving.chmod(0o600)
+
+    value.reconcile()
+
+    assert not list(directory.iterdir())
+
+
+def test_reconcile_restarts_interrupted_incomplete_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    receiving = directory / f"{STAGE_ID}.receiving"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    receiving.write_bytes(b"partial")
+    receiving.chmod(0o600)
+    real_unlink = Path.unlink
+
+    def fail_reservation_removal(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == reservation_path:
+            raise OSError
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_reservation_removal)
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert reservation_path.exists()
+    assert not receiving.exists()
+
+    monkeypatch.undo()
+    value.reconcile()
+    assert not list(directory.iterdir())
+
+
+def test_reconcile_restarts_after_partial_recovery_receipt_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    source = directory / f"{STAGE_ID}.source"
+    receipt = directory / f"{STAGE_ID}.receipt"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    source.write_bytes(b"archive")
+    source.chmod(0o600)
+
+    def write_partial(path: Path, artifact: StagedArtifact) -> None:
+        payload = json.dumps(
+            staging._receipt_document(artifact),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        path.write_bytes(payload[: len(payload) // 2])
+        path.chmod(0o600)
+        raise OSError
+
+    monkeypatch.setattr(staging, "_write_receipt", write_partial)
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert reservation_path.exists()
+    assert source.exists()
+    assert receipt.exists()
+
+    monkeypatch.undo()
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert reservation_path.exists()
+    assert source.exists()
+    assert not receipt.exists()
+
+    value.reconcile()
+    assert value.inspect(reservation()).archive_size_bytes == 7
+
+
+def test_reconcile_retains_nonpartial_malformed_recovery_receipt(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    source = directory / f"{STAGE_ID}.source"
+    receipt = directory / f"{STAGE_ID}.receipt"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    source.write_bytes(b"archive")
+    source.chmod(0o600)
+    receipt.write_bytes(b"not-a-recovery-receipt" * 32)
+    receipt.chmod(0o600)
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert reservation_path.exists()
+    assert source.exists()
+    assert receipt.exists()
+
+
+@pytest.mark.parametrize("fault", ["malformed", "cross_id", "permission", "link"])
+def test_reconcile_rejects_unsafe_incomplete_transfer_without_removal(
+    tmp_path: Path, fault: str
+) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    receiving = directory / f"{STAGE_ID}.receiving"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    receiving.write_bytes(b"partial")
+    receiving.chmod(0o600)
+    if fault == "malformed":
+        reservation_path.write_text("{}")
+        reservation_path.chmod(0o600)
+    elif fault == "cross_id":
+        reservation_path.unlink()
+        staging._write_document(
+            reservation_path,
+            staging._reservation_document(reservation(staging_id=SECOND_STAGE_ID)),
+        )
+    elif fault == "permission":
+        receiving.chmod(0o644)
+    else:
+        os.link(receiving, directory / "receiving-link")
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert reservation_path.exists()
+    assert receiving.exists()
+
+
+def test_reconcile_recovers_post_link_commit_and_finalizes_receipt_write_restart(
+    tmp_path: Path,
+) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    source = directory / f"{STAGE_ID}.source"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    source.write_bytes(b"archive")
+    source.chmod(0o600)
+
+    value.reconcile()
+
+    artifact = value.inspect(reservation())
+    assert artifact.archive_size_bytes == 7
+    assert artifact.archive_sha256 == "sha256:" + hashlib.sha256(b"archive").hexdigest()
+    assert {path.name for path in directory.iterdir()} == {
+        f"{STAGE_ID}.source",
+        f"{STAGE_ID}.receipt",
+    }
+    value.reconcile()
+    assert value.inspect(reservation()) == artifact
+
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    value.reconcile()
+    assert value.inspect(reservation()) == artifact
+    assert not reservation_path.exists()
+
+
+@pytest.mark.parametrize("fault", ["oversize", "linked", "receipt_write"])
+def test_reconcile_retains_unresolved_post_link_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    value = store(tmp_path, limit=7)
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    source = directory / f"{STAGE_ID}.source"
+    staging._write_document(reservation_path, staging._reservation_document(reservation()))
+    source.write_bytes(b"archive" if fault != "oversize" else b"oversized")
+    source.chmod(0o600)
+    if fault == "linked":
+        os.link(source, directory / "source-link")
+    if fault == "receipt_write":
+        monkeypatch.setattr(
+            staging,
+            "_write_receipt",
+            lambda *_args: (_ for _ in ()).throw(OSError()),
+        )
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert reservation_path.exists()
+    assert source.exists()
+    assert not (directory / f"{STAGE_ID}.receipt").exists()
+
+
+def test_reconcile_finishes_exact_consumption_and_removal_transitions(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    artifact = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    updating = directory / f"{STAGE_ID}.updating"
+    staging._write_receipt(
+        updating,
+        StagedArtifact(
+            reservation=artifact.reservation,
+            archive_size_bytes=artifact.archive_size_bytes,
+            archive_sha256=artifact.archive_sha256,
+            consumed=True,
+        ),
+    )
+
+    value.reconcile()
+    assert value.inspect(reservation()).consumed is True
+
+    receipt = directory / f"{STAGE_ID}.receipt"
+    removing = directory / f"{STAGE_ID}.removing"
+    os.replace(receipt, removing)
+    value.reconcile()
+    assert not list(directory.iterdir())
+
+    artifact = value.stage(reservation(), [b"archive"])
+    consumed = value.consume(reservation())
+    os.replace(directory / f"{STAGE_ID}.receipt", removing)
+    (directory / f"{STAGE_ID}.source").unlink()
+    value.reconcile()
+    assert not list(directory.iterdir())
+    assert artifact.consumed is False
+    assert consumed.consumed is True
+
+
+@pytest.mark.parametrize("fault", ["unconsumed_update", "cross_id_update", "unconsumed_remove"])
+def test_reconcile_retains_ambiguous_transition_evidence(tmp_path: Path, fault: str) -> None:
+    value = store(tmp_path)
+    artifact = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    if fault == "unconsumed_remove":
+        os.replace(directory / f"{STAGE_ID}.receipt", directory / f"{STAGE_ID}.removing")
+    else:
+        updating = directory / f"{STAGE_ID}.updating"
+        update = (
+            artifact
+            if fault == "unconsumed_update"
+            else StagedArtifact(
+                reservation=reservation(staging_id=SECOND_STAGE_ID),
+                archive_size_bytes=artifact.archive_size_bytes,
+                archive_sha256=artifact.archive_sha256,
+                consumed=True,
+            )
+        )
+        staging._write_receipt(updating, update)
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert list(directory.iterdir())
+
+
+def test_reconcile_rejects_cross_reservation_after_receipt_write(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    artifact = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    reservation_path = directory / f"{STAGE_ID}.reservation"
+    staging._write_document(
+        reservation_path,
+        staging._reservation_document(reservation(printer_uuid=OTHER_PRINTER_ID)),
+    )
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert value.inspect(reservation()) == artifact
+    assert reservation_path.exists()
+
+
+@pytest.mark.parametrize("state", ["source_only", "unconsumed_removing_only"])
+def test_reconcile_rejects_unknown_or_unconsumed_removing_state(tmp_path: Path, state: str) -> None:
+    value = store(tmp_path)
+    value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    if state == "source_only":
+        (directory / f"{STAGE_ID}.receipt").unlink()
+    else:
+        os.replace(directory / f"{STAGE_ID}.receipt", directory / f"{STAGE_ID}.removing")
+        (directory / f"{STAGE_ID}.source").unlink()
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert list(directory.iterdir())
+
+
+def test_reconcile_validates_all_entries_before_any_recovery(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    directory = tmp_path / "ftps-staging"
+    staging._write_document(
+        directory / f"{STAGE_ID}.reservation", staging._reservation_document(reservation())
+    )
+    receiving = directory / f"{STAGE_ID}.receiving"
+    receiving.write_bytes(b"partial")
+    receiving.chmod(0o600)
+    unknown = directory / "unknown"
+    unknown.write_bytes(b"evidence")
+    unknown.chmod(0o600)
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert receiving.exists()
+    assert unknown.read_bytes() == b"evidence"
+
+
+def test_reconcile_is_serialized_with_capacity_admission(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    entered = Event()
+    release = Event()
+    failures: list[BaseException] = []
+    writers: list[staging.FtpsStagingWriter] = []
+    original_actions = value._reconciliation_actions
+
+    def blocking_actions() -> list[tuple[str, staging._StagePaths, StagedArtifact | None]]:
+        entered.set()
+        assert release.wait(2)
+        return original_actions()
+
+    value._reconciliation_actions = blocking_actions  # type: ignore[method-assign]
+
+    def reconcile() -> None:
+        try:
+            value.reconcile()
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = Thread(target=reconcile)
+    thread.start()
+    assert entered.wait(2)
+    admission_done = Event()
+
+    def begin() -> None:
+        try:
+            writers.append(value.begin(reservation()))
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            admission_done.set()
+
+    admission = Thread(target=begin)
+    admission.start()
+    assert not admission_done.wait(0.1)
+    release.set()
+    thread.join(2)
+    admission.join(2)
+    assert not thread.is_alive()
+    assert not admission.is_alive()
+    assert not failures
+    assert len(writers) == 1
+    writers[0].abort()

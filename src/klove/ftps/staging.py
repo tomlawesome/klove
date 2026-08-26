@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from types import TracebackType
-from typing import Final, Self
+from typing import Final, Self, cast
 from uuid import UUID, uuid4
 
 from klove.domain.artifacts import ArtifactLimits
@@ -195,6 +195,115 @@ class FtpsStagingStore:
     def initialize(self) -> None:
         """Require the deployment-created owner-only staging directory."""
         self._require_directory()
+
+    def reconcile(self) -> None:
+        """Validate and recover only exact durable stages left by an interrupted process."""
+        self._require_directory()
+        with self._capacity_lock:
+            actions = self._reconciliation_actions()
+            try:
+                for action, paths, artifact in actions:
+                    if action == "stable":
+                        continue
+                    if action == "discard_reservation":
+                        paths.reservation.unlink()
+                    elif action == "discard_partial_receipt":
+                        paths.receipt.unlink()
+                        fsync_directory(self._directory)
+                        raise FtpsStagingError
+                    elif action == "discard_incomplete":
+                        paths.receiving.unlink()
+                        paths.reservation.unlink()
+                    elif action == "write_receipt":
+                        _write_receipt(paths.receipt, cast(StagedArtifact, artifact))
+                        paths.reservation.unlink()
+                    elif action == "remove_reservation":
+                        paths.reservation.unlink()
+                    elif action == "finish_consuming":
+                        os.replace(paths.updating, paths.receipt)
+                    elif action == "finish_removing_source":
+                        paths.source.unlink()
+                        paths.removing.unlink()
+                    elif action == "finish_removing_marker":
+                        paths.removing.unlink()
+                    else:  # pragma: no cover - actions are closed by _reconciliation_actions.
+                        raise FtpsStagingError
+                    fsync_directory(self._directory)
+            except (OSError, PrivateFileError, ValueError) as exc:
+                raise FtpsStagingError from exc
+
+    def _reconciliation_actions(self) -> list[tuple[str, _StagePaths, StagedArtifact | None]]:
+        stages: dict[str, set[str]] = defaultdict(set)
+        try:
+            for path in self._directory.iterdir():
+                match = _STAGE_ENTRY.fullmatch(path.name)
+                if match is None:
+                    raise FtpsStagingError
+                _require_unlinked_private_file(path)
+                stages[match.group(1)].add(match.group(2))
+            return [
+                self._reconciliation_action(stage_id, entries)
+                for stage_id, entries in stages.items()
+            ]
+        except (OSError, PrivateFileError, ValueError, json.JSONDecodeError) as exc:
+            raise FtpsStagingError from exc
+
+    def _reconciliation_action(
+        self, stage_id: str, entries: set[str]
+    ) -> tuple[str, _StagePaths, StagedArtifact | None]:
+        paths = self._paths_for_id(stage_id)
+        state = frozenset(entries)
+        artifact: StagedArtifact | None = None
+        if state == frozenset({"reservation"}):
+            _require_stage_reservation(paths.reservation, stage_id)
+            action = "discard_reservation"
+        elif state == frozenset({"reservation", "receiving"}):
+            _require_stage_reservation(paths.reservation, stage_id)
+            action = "discard_incomplete"
+        elif state == frozenset({"reservation", "source"}):
+            reservation = _require_stage_reservation(paths.reservation, stage_id)
+            artifact = _artifact_from_source(paths.source, reservation, self._limits)
+            action = "write_receipt"
+        elif state == frozenset({"reservation", "source", "receipt"}):
+            action = self._reservation_source_receipt_action(paths, stage_id)
+        elif state == frozenset({"source", "receipt"}):
+            artifact = _require_stage_receipt(paths.receipt, stage_id)
+            _open_and_close_verified_source(paths.source, artifact)
+            action = "stable"
+        elif state == frozenset({"source", "receipt", "updating"}):
+            artifact = _require_stage_receipt(paths.receipt, stage_id)
+            updating = _require_stage_receipt(paths.updating, stage_id)
+            if artifact.consumed or updating != replace(artifact, consumed=True):
+                raise FtpsStagingError
+            _open_and_close_verified_source(paths.source, artifact)
+            action = "finish_consuming"
+        elif state == frozenset({"source", "removing"}):
+            artifact = _require_stage_receipt(paths.removing, stage_id)
+            if not artifact.consumed:
+                raise FtpsStagingError
+            _open_and_close_verified_source(paths.source, artifact)
+            action = "finish_removing_source"
+        elif state == frozenset({"removing"}):
+            artifact = _require_stage_receipt(paths.removing, stage_id)
+            if not artifact.consumed:
+                raise FtpsStagingError
+            action = "finish_removing_marker"
+        else:
+            raise FtpsStagingError
+        return action, paths, artifact
+
+    def _reservation_source_receipt_action(self, paths: _StagePaths, stage_id: str) -> str:
+        reservation = _require_stage_reservation(paths.reservation, stage_id)
+        recovered = _artifact_from_source(paths.source, reservation, self._limits)
+        try:
+            artifact = _require_stage_receipt(paths.receipt, stage_id)
+        except (FtpsStagingError, ValueError, json.JSONDecodeError):
+            if not _is_exact_partial_receipt(paths.receipt, recovered):
+                raise
+            return "discard_partial_receipt"
+        if artifact != recovered:
+            raise FtpsStagingError
+        return "remove_reservation"
 
     def create_reservation(
         self,
@@ -399,7 +508,10 @@ class FtpsStagingStore:
             raise FtpsStagingError from exc
 
     def _paths(self, reservation: FtpsStageReservation) -> _StagePaths:
-        base = self._directory / reservation.staging_id
+        return self._paths_for_id(reservation.staging_id)
+
+    def _paths_for_id(self, stage_id: str) -> _StagePaths:
+        base = self._directory / stage_id
         return _StagePaths(
             reservation=base.with_suffix(".reservation"),
             receiving=base.with_suffix(".receiving"),
@@ -435,6 +547,22 @@ class _StagePaths:
 def _require_reservation(value: object) -> None:
     if type(value) is not FtpsStageReservation:
         raise FtpsStagingError
+
+
+def _require_stage_reservation(path: Path, stage_id: str) -> FtpsStageReservation:
+    _require_unlinked_private_file(path)
+    reservation = _read_reservation(path)
+    if reservation.staging_id != stage_id:
+        raise FtpsStagingError
+    return reservation
+
+
+def _require_stage_receipt(path: Path, stage_id: str) -> StagedArtifact:
+    _require_unlinked_private_file(path)
+    artifact = _read_receipt(path)
+    if artifact.reservation.staging_id != stage_id:
+        raise FtpsStagingError
+    return artifact
 
 
 def _require_canonical_uuid4(value: object) -> None:
@@ -498,15 +626,26 @@ def _write_document(path: Path, document: dict[str, object]) -> None:
 
 
 def _write_receipt(path: Path, artifact: StagedArtifact) -> None:
-    _write_document(
-        path,
-        {
-            **_reservation_document(artifact.reservation),
-            "archive_sha256": artifact.archive_sha256,
-            "archive_size_bytes": artifact.archive_size_bytes,
-            "consumed": artifact.consumed,
-        },
-    )
+    _write_document(path, _receipt_document(artifact))
+
+
+def _receipt_document(artifact: StagedArtifact) -> dict[str, object]:
+    return {
+        **_reservation_document(artifact.reservation),
+        "archive_sha256": artifact.archive_sha256,
+        "archive_size_bytes": artifact.archive_size_bytes,
+        "consumed": artifact.consumed,
+    }
+
+
+def _is_exact_partial_receipt(path: Path, artifact: StagedArtifact) -> bool:
+    _require_unlinked_private_file(path)
+    expected = json.dumps(
+        _receipt_document(artifact), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
+    if path.lstat().st_size >= len(expected):
+        return False
+    return expected.startswith(path.read_bytes())
 
 
 def _read_reservation(path: Path) -> FtpsStageReservation:
@@ -590,3 +729,35 @@ def _open_verified_source(path: Path, artifact: StagedArtifact) -> int:
         if descriptor >= 0:
             os.close(descriptor)
         raise
+
+
+def _open_and_close_verified_source(path: Path, artifact: StagedArtifact) -> None:
+    descriptor = _open_verified_source(path, artifact)
+    os.close(descriptor)
+
+
+def _artifact_from_source(
+    path: Path, reservation: FtpsStageReservation, limits: ArtifactLimits
+) -> StagedArtifact:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (os.name != "nt" and (metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077))
+            or metadata.st_size > limits.max_archive_compressed_bytes
+        ):
+            raise FtpsStagingError
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, _CHUNK_BYTES):
+            digest.update(chunk)
+        return StagedArtifact(
+            reservation=reservation,
+            archive_size_bytes=metadata.st_size,
+            archive_sha256=f"sha256:{digest.hexdigest()}",
+        )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
