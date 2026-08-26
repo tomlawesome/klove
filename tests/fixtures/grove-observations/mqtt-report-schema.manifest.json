@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "fixture": "mqtt-report-schema",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove virtual-printer MQTT server",
+    "scenario": "Generated project-file success acknowledgement followed by PREPARE and first FINISH status"
+  },
+  "capture": {
+    "harness_revision": "f1a72a11d3071cd5fd8de563631160a6372e6fdf",
+    "command": "scripts/capture-grove-mqtt-reports.sh mqttreport-20260826-09",
+    "tool_versions": {
+      "docker": "client/server 29.7.2",
+      "python": "3.13.15 stdlib bounded recorder",
+      "openssl": "OpenSSL 3.5.6",
+      "grove-observer-image": "grove-observer@sha256:283e1e0c5e7b9a349d813591997b0f407dc264bb1cdfb8f01c018b3a91a40bd5"
+    },
+    "captured_at_utc": "2026-08-26T10:33:32Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "retain exact MQTT topic templates, QoS and publish flags, ordered protocol states, result tokens, and structural member schemas only",
+    "replace the generated serial with the literal {serial} template and retain generated sequence equality as a boolean only",
+    "retain one shared PREPARE/FINISH report schema only after observing exact equality of topic, QoS, flags, member schema, and command",
+    "exclude payload values, credentials, packet identifiers, endpoint addresses, certificates, raw traces, and logs"
+  ],
+  "media_type": "application/json",
+  "byte_count": 20899,
+  "sha256": "sha256:e6c596f358ff759b5562fba3fad366847ab77f1c36d54e1a6c746308f3191b77",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.two_session_lifecycle", "classification": "externally_observed_fact"},
+    {"locator": "observed.project_file_request", "classification": "externally_observed_fact"},
+    {"locator": "observed.project_file_result", "classification": "externally_observed_fact"},
+    {"locator": "observed.non_idle_push_status.shared_report", "classification": "externally_observed_fact"},
+    {"locator": "observed.non_idle_push_status.states", "classification": "required_protocol_token"},
+    {"locator": "observed.non_idle_push_status.finish_matches_shared_report", "classification": "externally_observed_fact"},
+    {"locator": "observed.bounded_ack_prepare_first_finish_qos0_dup_false_retain_false_no_byte_identical_replay", "classification": "externally_observed_fact"}
+  ]
+}
