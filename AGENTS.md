@@ -11,6 +11,13 @@
 If the user asks you to look at the handoff, it is located at
 `/home/codex/projects/klove/.agents/handoffs/current.md`.
 
+## Autonomous delivery
+
+When the owner grants autonomous delivery across Klove, treat the roadmap as
+the work queue rather than stopping at the current task's boundary. A local
+blocker means selecting another safe, unblocked roadmap item; stop only when the
+overall authorised scope has no useful work that does not require the owner.
+
 ## Product boundary
 
 Klove is a headless, automation-first security and translation layer. Grove
