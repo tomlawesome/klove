@@ -122,7 +122,10 @@ async def test_real_conformance_cleanup_and_upload_create_only_private_stage(
     settings = config(tmp_path)
     settings.staging_directory.mkdir(mode=0o700)
     staging = FtpsStagingStore(
-        settings.staging_directory, limits=ArtifactLimits(), capacity=settings.ingress_capacity
+        settings.staging_directory,
+        limits=ArtifactLimits(),
+        capacity=settings.ingress_capacity,
+        clock_ms=lambda: 1_000,
     )
     staging.initialize()
     auth = Authenticator()
