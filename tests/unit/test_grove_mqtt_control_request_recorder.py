@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import ssl
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -53,13 +55,13 @@ def _packet(header: int, body: bytes) -> bytes:
             return bytes((header,)) + bytes(encoded) + body
 
 
-def _connect() -> bytes:
+def _connect(serial: bytes = SERIAL) -> bytes:
     return _packet(
         0x10,
         _string(b"MQTT")
         + bytes((4, 0xC2))
         + (30).to_bytes(2, "big")
-        + _string(b"bambuddy_" + SERIAL + b"_1_1")
+        + _string(b"bambuddy_" + serial + b"_1_1")
         + _string(b"bblp")
         + _string(b"TEST0000"),
     )
@@ -121,6 +123,89 @@ class _Connection:
         return None
 
 
+class _EofConnection(_Connection):
+    def read(self, size: int) -> bytes:
+        if not self.incoming:
+            return b""
+        return super().read(size)
+
+
+class _RaggedEofConnection(_Connection):
+    def read(self, size: int) -> bytes:
+        if not self.incoming:
+            raise ssl.SSLEOFError(8, "ragged EOF")
+        return super().read(size)
+
+
+class _Listener:
+    def __init__(
+        self,
+        connections: list[_Connection],
+        *,
+        on_accept: Callable[[int], None] | None = None,
+    ) -> None:
+        self.connections = connections
+        self.on_accept = on_accept
+        self.accepts = 0
+        self.timeouts: list[float] = []
+
+    def settimeout(self, value: float) -> None:
+        self.timeouts.append(value)
+
+    def accept(self) -> tuple[_Connection, tuple[str, int]]:
+        if self.accepts == len(self.connections):
+            raise TimeoutError
+        connection = self.connections[self.accepts]
+        self.accepts += 1
+        if self.on_accept is not None:
+            self.on_accept(self.accepts)
+        return connection, ("192.0.2.1", 8883)
+
+
+class _WrappedConnection:
+    def __init__(self, connection: _Connection) -> None:
+        self.connection = connection
+        self.closed = False
+
+    def __enter__(self) -> _Connection:
+        return self.connection
+
+    def __exit__(self, *_arguments: object) -> None:
+        self.closed = True
+
+
+class _TlsContext:
+    def __init__(self) -> None:
+        self.sessions: list[_WrappedConnection] = []
+
+    def wrap_socket(
+        self,
+        connection: _Connection,
+        *,
+        server_side: bool,
+        suppress_ragged_eofs: bool,
+    ) -> _WrappedConnection:
+        assert server_side is True
+        assert suppress_ragged_eofs is False
+        wrapped = _WrappedConnection(connection)
+        self.sessions.append(wrapped)
+        return wrapped
+
+
+def _probe_flow() -> list[bytes]:
+    return [*_initial_flow(), _packet(0xE0, b"")]
+
+
+def _control_flow() -> list[bytes]:
+    return [
+        *_initial_flow(),
+        _publish({"print": {"command": "pause", "sequence_id": "0"}}, 6),
+        _publish({"print": {"command": "resume", "sequence_id": "1"}}, 7),
+        _publish({"print": {"command": "stop", "sequence_id": "2"}}, 8),
+        _publish({"print": {"command": "pause", "sequence_id": "0"}}, 9),
+    ]
+
+
 def test_recorder_retains_only_static_control_schema_and_order() -> None:
     recorder = _recorder()
     packets = [
@@ -156,6 +241,116 @@ def test_recorder_retains_only_static_control_schema_and_order() -> None:
         b"@\x02\0\x08",
         b"@\x02\0\x09",
     ]
+
+
+def test_recorder_requires_exactly_two_tls_sessions_before_controls() -> None:
+    recorder = _recorder()
+    probe = _Connection(_probe_flow())
+    persistent = _Connection(_control_flow())
+    extra = _Connection(_control_flow())
+    listener = _Listener([probe, persistent, extra])
+    context = _TlsContext()
+
+    candidate = recorder.observe_two_tls_sessions(listener, context)
+
+    assert candidate["observed"]["post_control_quiescence_observed"] is True
+    assert listener.accepts == recorder.MAX_TLS_SESSIONS
+    assert [wrapped.connection for wrapped in context.sessions] == [probe, persistent]
+    assert all(wrapped.closed for wrapped in context.sessions)
+    assert not extra.writes
+    assert probe.writes[-3:] == [b"@\x02\0\x01", b"@\x02\0\x02", b"@\x02\0\x03"]
+    assert persistent.writes[-4:] == [
+        b"@\x02\0\x06",
+        b"@\x02\0\x07",
+        b"@\x02\0\x08",
+        b"@\x02\0\x09",
+    ]
+
+
+def test_recorder_accepts_only_clean_probe_disconnect_or_eof() -> None:
+    recorder = _recorder()
+    candidate = recorder.observe_two_sessions(
+        _EofConnection(_initial_flow()), _Connection(_control_flow())
+    )
+
+    assert candidate["observed"]["post_control_quiescence_observed"] is True
+    for probe_packets in (
+        [*_initial_flow(), _packet(0xC0, b"")],
+        [*_initial_flow(), _packet(0xE0, b"x")],
+        _initial_flow(),
+    ):
+        with pytest.raises((recorder.ObservationFailure, TimeoutError)):
+            recorder.observe_two_sessions(_Connection(probe_packets), _Connection(_control_flow()))
+
+
+def test_recorder_rejects_ragged_tls_eof_in_either_session() -> None:
+    recorder = _recorder()
+    with pytest.raises(ssl.SSLEOFError):
+        recorder.observe_two_tls_sessions(
+            _Listener([_RaggedEofConnection(_initial_flow()), _Connection(_control_flow())]),
+            _TlsContext(),
+        )
+    with pytest.raises(ssl.SSLEOFError):
+        recorder.observe_two_tls_sessions(
+            _Listener([_Connection(_probe_flow()), _RaggedEofConnection(_initial_flow())]),
+            _TlsContext(),
+        )
+
+
+def test_recorder_rejects_probe_controls_missing_persistent_session_and_serial_mismatch() -> None:
+    recorder = _recorder()
+    probe_control = [
+        *_initial_flow(),
+        _publish({"print": {"command": "pause", "sequence_id": "0"}}, 6),
+    ]
+    no_persistent_handshake = [
+        _publish({"print": {"command": "pause", "sequence_id": "0"}}, 6),
+    ]
+    mismatched_persistent = [
+        _connect(b"OTHER0000000001"),
+        *_initial_flow()[1:],
+    ]
+
+    persistent_after_probe_control = _Connection(_control_flow())
+    with pytest.raises(recorder.ObservationFailure):
+        recorder.observe_two_sessions(_Connection(probe_control), persistent_after_probe_control)
+    assert not persistent_after_probe_control.writes
+    with pytest.raises(recorder.ObservationFailure):
+        recorder.observe_two_sessions(
+            _Connection(_probe_flow()), _Connection(no_persistent_handshake)
+        )
+    with pytest.raises(recorder.ObservationFailure):
+        recorder.observe_two_sessions(
+            _Connection(_probe_flow()), _Connection(mismatched_persistent)
+        )
+
+
+def test_recorder_rejects_missing_second_session() -> None:
+    recorder = _recorder()
+    listener = _Listener([_Connection(_probe_flow())])
+
+    with pytest.raises(TimeoutError):
+        recorder.observe_two_tls_sessions(listener, _TlsContext())
+    assert listener.accepts == 1
+
+
+def test_recorder_uses_one_bounded_deadline_for_both_accepts() -> None:
+    recorder = _recorder()
+    now = [0.0]
+
+    def advance(accepts: int) -> None:
+        now[0] += 40.0 if accepts == 1 else 6.0
+
+    listener = _Listener(
+        [_Connection(_probe_flow()), _Connection(_control_flow())], on_accept=advance
+    )
+
+    def clock() -> float:
+        return now[0]
+
+    with pytest.raises(TimeoutError):
+        recorder.observe_two_tls_sessions(listener, _TlsContext(), clock=clock)
+    assert listener.timeouts == [45.0, 5.0]
 
 
 def test_recorder_marks_same_control_payload_replay_without_retaining_identity() -> None:

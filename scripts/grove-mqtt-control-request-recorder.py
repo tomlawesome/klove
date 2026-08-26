@@ -13,7 +13,7 @@ import re
 import socket
 import ssl
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any, BinaryIO, cast
@@ -21,6 +21,9 @@ from typing import Any, BinaryIO, cast
 MAX_CONTROL_PACKETS = 32
 CONTROL_WINDOW_SECONDS = 30.0
 POST_CONTROL_QUIESCENCE_SECONDS = 5.0
+PROBE_CLOSE_TIMEOUT_SECONDS = 10.0
+LISTENER_ACCEPT_TIMEOUT_SECONDS = 45.0
+MAX_TLS_SESSIONS = 2
 EXPECTED_CONTROLS = ("pause", "resume", "stop")
 CONTROL_FIELDS = frozenset({"command", "sequence_id"})
 EVIDENCE_PATH = Path("/evidence/mqtt-control-request-schema")
@@ -151,7 +154,8 @@ def _write_all(connection: BinaryIO, payload: bytes, deadline: float | None = No
     INITIAL._write_all(connection, payload, deadline=deadline)
 
 
-def _observe_initial_session(connection: BinaryIO) -> bytes:
+def _observe_initial_session_inner(connection: BinaryIO) -> bytes:
+    """Require one exact initial request handshake and return its bound serial."""
     header, body = INITIAL.read_packet(connection)
     if header != 0x10:
         raise ObservationFailure("connect_missing")
@@ -159,37 +163,84 @@ def _observe_initial_session(connection: BinaryIO) -> bytes:
     _write_all(connection, b"\x20\x02\0\0")
     expected_subscriptions = (b"report", b"request")
     subscriptions = 0
-    initial_requests = 0
-    while initial_requests < len(INITIAL.EXPECTED_COMMANDS):
+    requests: list[dict[str, object]] = []
+    subscription_packet_ids: list[bytes] = []
+    first_packet_id: bytes | None = None
+    for _ in range(8):
         header, body = INITIAL.read_packet(connection)
         if header >> 4 == 8:
             if subscriptions >= len(expected_subscriptions) or header != 0x82:
                 raise ObservationFailure("subscribe_unexpected")
-            response, _packet_id = INITIAL._subscribe_packet(
+            response, packet_id = INITIAL._subscribe_packet(
                 body, serial, expected_subscriptions[subscriptions]
             )
+            if packet_id in subscription_packet_ids:
+                raise ObservationFailure("subscribe_packet_id_reused")
             _write_all(connection, response)
+            subscription_packet_ids.append(packet_id)
             subscriptions += 1
             continue
         if header >> 4 != 3 or subscriptions != len(expected_subscriptions):
             raise ObservationFailure("initial_session_invalid")
         request, packet_id = INITIAL.parse_publish(header, body, serial)
-        expected = INITIAL.EXPECTED_COMMANDS[initial_requests]
+        request_index = len(requests)
+        expected = INITIAL.EXPECTED_COMMANDS[request_index] if request_index < 3 else None
         if (
             request["command"] != expected
-            or request["payload_bytes"] != INITIAL.EXPECTED_PAYLOAD_BYTES[initial_requests]
+            or request["payload_bytes"] != INITIAL.EXPECTED_PAYLOAD_BYTES[request_index]
         ):
             raise ObservationFailure("initial_sequence_invalid")
-        _write_all(connection, b"\x40\x02" + packet_id)
-        initial_requests += 1
-    return cast(bytes, serial)
+        requests.append(request)
+        first_packet_id = INITIAL._ack_initial_publish(
+            connection, requests, packet_id, first_packet_id
+        )
+        if len(requests) == len(INITIAL.EXPECTED_COMMANDS):
+            return cast(bytes, serial)
+    raise ObservationFailure("initial_requests_incomplete")
 
 
-def observe_connection(  # noqa: PLR0912, PLR0915 -- bounded protocol state machine.
-    connection: Any,
-) -> dict[str, object]:
-    """Observe controls and their bounded post-control replay behaviour."""
-    serial = _observe_initial_session(connection)
+def _observe_initial_session(connection: BinaryIO) -> bytes:
+    try:
+        return _observe_initial_session_inner(connection)
+    except INITIAL.ObservationFailure as error:
+        raise ObservationFailure("initial_session_invalid") from error
+
+
+def _wait_for_probe_close_inner(
+    connection: BinaryIO,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Accept only a complete DISCONNECT or an immediate clean EOF from the probe."""
+    deadline = clock() + PROBE_CLOSE_TIMEOUT_SECONDS
+    INITIAL._prepare_deadline(connection, deadline, clock)
+    header = connection.read(1)
+    INITIAL._check_deadline(deadline, clock)
+    if not header:
+        return
+    if len(header) != 1:
+        raise ObservationFailure("probe_close_invalid")
+    remaining = INITIAL.decode_remaining_length(
+        lambda: INITIAL._read_exact(connection, 1, deadline=deadline, clock=clock)
+    )
+    body = INITIAL._read_exact(connection, remaining, deadline=deadline, clock=clock)
+    if header[0] != 0xE0 or body:
+        raise ObservationFailure("probe_close_invalid")
+
+
+def _wait_for_probe_close(
+    connection: BinaryIO,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    try:
+        _wait_for_probe_close_inner(connection, clock=clock)
+    except INITIAL.ObservationFailure as error:
+        raise ObservationFailure("probe_close_invalid") from error
+
+
+def _observe_controls(connection: BinaryIO, serial: bytes) -> dict[str, object]:  # noqa: PLR0912, PLR0915
+    """Observe controls only after this session's independently complete handshake."""
     overall_deadline = time.monotonic() + CONTROL_WINDOW_SECONDS
     quiescence_deadline: float | None = None
     requests: list[dict[str, object]] = []
@@ -257,6 +308,68 @@ def observe_connection(  # noqa: PLR0912, PLR0915 -- bounded protocol state mach
             continue
         raise ObservationFailure("control_packet_invalid")
     raise ObservationFailure("control_requests_incomplete")
+
+
+def observe_connection(connection: Any) -> dict[str, object]:
+    """Observe one persistent session for unit-level protocol checks."""
+    return _observe_controls(connection, _observe_initial_session(connection))
+
+
+def observe_two_sessions(probe: BinaryIO, persistent: BinaryIO) -> dict[str, object]:
+    """Require one clean probe session before a fresh persistent control session."""
+    probe_serial = _observe_initial_session(probe)
+    _wait_for_probe_close(probe)
+    persistent_serial = _observe_initial_session(persistent)
+    if persistent_serial != probe_serial:
+        raise ObservationFailure("session_serial_mismatch")
+    return _observe_controls(persistent, persistent_serial)
+
+
+def _accept_before_deadline(
+    listener: Any,
+    deadline: float,
+    clock: Callable[[], float],
+) -> tuple[Any, Any]:
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise TimeoutError
+    listener.settimeout(remaining)
+    accepted = cast(tuple[Any, Any], listener.accept())
+    if clock() >= deadline:
+        raise TimeoutError
+    return accepted
+
+
+def observe_two_tls_sessions(
+    listener: Any,
+    context: Any,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    """Accept exactly two bounded TLS sessions, closing the probe before persistent use."""
+    deadline = clock() + LISTENER_ACCEPT_TIMEOUT_SECONDS
+    probe_plain, _probe_peer = _accept_before_deadline(listener, deadline, clock)
+    probe_plain.settimeout(PROBE_CLOSE_TIMEOUT_SECONDS)
+    with context.wrap_socket(
+        probe_plain,
+        server_side=True,
+        suppress_ragged_eofs=False,
+    ) as probe:
+        probe.settimeout(PROBE_CLOSE_TIMEOUT_SECONDS)
+        probe_serial = _observe_initial_session(probe)
+        _wait_for_probe_close(probe)
+    persistent_plain, _persistent_peer = _accept_before_deadline(listener, deadline, clock)
+    persistent_plain.settimeout(PROBE_CLOSE_TIMEOUT_SECONDS)
+    with context.wrap_socket(
+        persistent_plain,
+        server_side=True,
+        suppress_ragged_eofs=False,
+    ) as persistent:
+        persistent.settimeout(PROBE_CLOSE_TIMEOUT_SECONDS)
+        persistent_serial = _observe_initial_session(persistent)
+        if persistent_serial != probe_serial:
+            raise ObservationFailure("session_serial_mismatch")
+        return _observe_controls(persistent, persistent_serial)
 
 
 def _require_exact_mapping(value: object, keys: frozenset[str]) -> dict[str, object]:
@@ -431,13 +544,10 @@ def main() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("0.0.0.0", 8883))  # noqa: S104 -- internal-only Docker network.
-        listener.listen(1)
-        listener.settimeout(45)
+        listener.listen(MAX_TLS_SESSIONS)
+        listener.settimeout(LISTENER_ACCEPT_TIMEOUT_SECONDS)
         _private_json(READY_PATH, {"status": "ready"})
-        plain, _peer = listener.accept()
-        with context.wrap_socket(plain, server_side=True) as protected:
-            protected.settimeout(10)
-            candidate = observe_connection(protected)
+        candidate = observe_two_tls_sessions(listener, context)
     _private_json(EVIDENCE_PATH, candidate)
     _private_json(PROVENANCE_PATH, _tool_versions())
     print("MQTT control request observation completed", flush=True)
