@@ -311,6 +311,30 @@ async def test_stale_mqtt_session_is_closed_before_connack(tmp_path: Path) -> No
     assert server._printer_sessions == {}
 
 
+async def test_current_mqtt_session_registers_and_unregisters_on_eof(tmp_path: Path) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(record)
+    auth = Authenticator()
+    auth.authenticated = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server, _auth, _ingress, _reports = make_server(tmp_path, auth=auth)
+    server._session_registry = sessions
+
+    target = await run_session(server, connect(serial=record.proxy_serial))
+
+    assert bytes(target.output) == encode_connack()
+    assert sessions._sessions == {}
+
+
 async def test_command_limit_closes_after_exact_bound(tmp_path: Path) -> None:
     server, _auth, ingress, _reports = make_server(tmp_path, max_commands=1)
     command = b'{"print":{"command":"pause","sequence_id":"1"}}'

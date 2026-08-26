@@ -1012,6 +1012,95 @@ async def test_lifecycle_revocation_closes_accepted_data_before_stage(
     assert not server._transfers.locked()
 
 
+async def test_stale_ftps_session_is_closed_before_230(tmp_path: Path) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(
+        record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    )
+    auth = Authenticator()
+    auth.principal = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, auth),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+        session_registry=sessions,
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"USER bblp\r\n" + f"PASS {ACCESS_CODE}\r\n".encode())
+    writer = Writer()
+    task = asyncio.create_task(server._session(reader, cast(asyncio.StreamWriter, writer)))
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert writer.closed
+    assert b"230 Authenticated" not in writer.output
+
+
+async def test_upload_retains_passive_listener_until_a_later_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = config(tmp_path).model_copy(
+        update={"shutdown_timeout_seconds": 0.01, "transfer_timeout_seconds": 1.0}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    passive = HangingPassiveServer()
+    data_reader = asyncio.StreamReader()
+    data_reader.feed_data(b"one")
+    data_reader.feed_eof()
+    data_writer = Writer(peer=("127.0.0.1", 2), ssl_object=object())
+
+    async def open_passive(_peer: str, slot: _DataConnectionSlot) -> HangingPassiveServer:
+        server._passive_servers.add(cast(asyncio.Server, passive))
+        assert slot.accept(
+            (data_reader, cast(asyncio.StreamWriter, data_writer), "127.0.0.1", True)
+        )
+        return passive
+
+    monkeypatch.setattr(server, "_open_passive", open_passive)
+
+    async def receive_stage(
+        _reader: asyncio.StreamReader,
+        _writer: asyncio.StreamWriter,
+        _principal: CompatibilityPrincipal,
+        _client_path: str,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(server, "_receive_stage", receive_stage)
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"USER bblp\r\n"
+        + f"PASS {ACCESS_CODE}\r\n".encode()
+        + b"PBSZ 0\r\nPROT P\r\nPASV\r\nSTOR /observation.3mf\r\nQUIT\r\n"
+    )
+    writer = Writer()
+    await server._session(reader, cast(asyncio.StreamWriter, writer))
+
+    assert data_writer.closed
+    assert cast(asyncio.Server, passive) in server._passive_servers
+    await server._close_passive_servers()
+    assert cast(asyncio.Server, passive) in server._passive_servers
+    passive.hanging = False
+    await server.close()
+    assert cast(asyncio.Server, passive) not in server._passive_servers
+
+
 async def test_lifecycle_revocation_bounds_hanging_passive_close_and_cleans_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
