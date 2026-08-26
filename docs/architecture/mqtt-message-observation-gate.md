@@ -31,6 +31,15 @@ count, and retains the observed first-PUBACK ordering. It contains neither
 payload values nor packet identifiers, credentials, endpoint data, certificates,
 or raw trace material.
 
+`mqtt-control-request-schema` separately retains the complete bounded control
+sequence after public controls: `pause`, `resume`, `stop`, then a separate
+same-payload `pause` publish. Each request is QoS 1 on
+`device/{serial}/request`, with the observed `print` member schema, occurrence
+relation, flags, byte count, PUBACK ordering, and post-control quiescence. It
+contains neither payload values nor packet identifiers, credentials, endpoint
+data, certificates, or raw trace material. This observation is not evidence
+that control is safe or authorised.
+
 This is non-runtime evidence only. It grants no MQTT listener, request handler,
 credential lookup, control, upload, or print authority. Any runtime use needs a
 separate accepted decision, bounded implementation, and its own negative tests.

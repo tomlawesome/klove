@@ -1,0 +1,119 @@
+{
+  "profile_version": 1,
+  "transport": "mqtt-over-tls",
+  "observed": {
+    "control_requests": [
+      {
+        "operation": "pause",
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {"name": "command", "present": true, "schema": {"type": "string"}},
+                  {"name": "sequence_id", "present": true, "schema": {"type": "string"}}
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 51,
+        "request_occurrence": "first_observed_publish",
+        "puback_after_publish": true
+      },
+      {
+        "operation": "resume",
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {"name": "command", "present": true, "schema": {"type": "string"}},
+                  {"name": "sequence_id", "present": true, "schema": {"type": "string"}}
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 52,
+        "request_occurrence": "first_observed_publish",
+        "puback_after_publish": true
+      },
+      {
+        "operation": "stop",
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {"name": "command", "present": true, "schema": {"type": "string"}},
+                  {"name": "sequence_id", "present": true, "schema": {"type": "string"}}
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 50,
+        "request_occurrence": "first_observed_publish",
+        "puback_after_publish": true
+      },
+      {
+        "operation": "pause",
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {"name": "command", "present": true, "schema": {"type": "string"}},
+                  {"name": "sequence_id", "present": true, "schema": {"type": "string"}}
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 51,
+        "request_occurrence": "separate_publish_same_payload",
+        "prior_publish_dup": false,
+        "matches_prior_publish": false,
+        "puback_after_publish": true
+      }
+    ],
+    "post_control_quiescence_observed": true
+  }
+}
