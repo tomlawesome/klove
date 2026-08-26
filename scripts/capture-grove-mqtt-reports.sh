@@ -234,10 +234,12 @@ import stat
 import sys
 
 schema_path, recorder_path = map(pathlib.Path, sys.argv[1:3])
-for path in (schema_path, recorder_path):
+for label, path in (("SCHEMA", schema_path), ("PROVENANCE", recorder_path)):
     if not path.is_file() or path.is_symlink() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+        print(f"MQTT_REPORT_CAPTURE_FINAL_{label}_PATH_INVALID", file=sys.stderr)
         raise SystemExit(1)
     if not 0 < path.stat().st_size <= 32 * 1024:
+        print(f"MQTT_REPORT_CAPTURE_FINAL_{label}_SIZE_INVALID", file=sys.stderr)
         raise SystemExit(1)
 spec = importlib.util.spec_from_file_location("report_observer", sys.argv[8])
 if spec is None or spec.loader is None:
