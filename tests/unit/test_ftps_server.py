@@ -9,6 +9,7 @@ import ssl
 import subprocess
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,6 +28,8 @@ from klove.ftps.server import (
     _bound_port,
     _DataConnectionSlot,
     _ipv4,
+    _PassiveEndpoint,
+    _PassiveLease,
     _pasv_reply,
     _tls_context,
     _wait_closed,
@@ -461,6 +464,37 @@ def real_readiness_config_or_skip(tmp_path: Path) -> GroveBridgeConfig:
     )
 
 
+def real_ownership_config_or_skip(tmp_path: Path, *, passive_count: int = 2) -> GroveBridgeConfig:
+    """Find one momentarily free exact control port and contiguous passive set."""
+    for _attempt in range(100):
+        seed = real_bind_or_skip(0)
+        control = real_bind_or_skip(0)
+        base = cast(int, seed.getsockname()[1])
+        control_port = cast(int, control.getsockname()[1])
+        seed.close()
+        control.close()
+        if base + passive_count - 1 > 65535 or control_port in range(base, base + passive_count):
+            continue
+        held: list[socket.socket] = []
+        try:
+            for port in range(base, base + passive_count):
+                held.append(real_bind_or_skip(port))
+        except OSError:
+            for probe in held:
+                probe.close()
+            continue
+        for probe in held:
+            probe.close()
+        return readiness_config(tmp_path).model_copy(
+            update={
+                "ftps_control_port": control_port,
+                "ftps_passive_port_min": base,
+                "ftps_passive_port_max": base + passive_count - 1,
+            }
+        )
+    pytest.skip("no contiguous loopback passive range was available")
+
+
 def test_bind_diagnostic_real_loopback_success_releases_every_port(tmp_path: Path) -> None:
     settings = real_readiness_config_or_skip(tmp_path)
 
@@ -498,11 +532,94 @@ def test_bind_diagnostic_real_loopback_passive_conflict_releases_control(tmp_pat
     released_control.close()
 
 
+async def test_runtime_ownership_real_loopback_is_exact_exclusive_and_released(
+    tmp_path: Path,
+) -> None:
+    generate_certificate(tmp_path)
+    settings = real_ownership_config_or_skip(tmp_path)
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+
+    await server.start()
+    ports = (
+        settings.ftps_control_port,
+        *range(settings.ftps_passive_port_min, settings.ftps_passive_port_max + 1),
+    )
+    assert cast(Any, server.sockets[0]).getsockname() == (
+        settings.listen_host,
+        settings.ftps_control_port,
+    )
+    for port in ports:
+        with pytest.raises(OSError):
+            real_bind_or_skip(port)
+
+    await server.close()
+    for port in ports:
+        released = real_bind_or_skip(port)
+        released.close()
+
+
+async def test_runtime_ownership_serializes_concurrent_start_and_close(tmp_path: Path) -> None:
+    generate_certificate(tmp_path)
+    settings = real_ownership_config_or_skip(tmp_path)
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+
+    starts = await asyncio.gather(server.start(), server.start(), return_exceptions=True)
+    assert sum(result is None for result in starts) == 1
+    assert sum(isinstance(result, RuntimeError) for result in starts) == 1
+
+    await asyncio.gather(server.close(), server.close())
+    for port in (
+        settings.ftps_control_port,
+        *range(settings.ftps_passive_port_min, settings.ftps_passive_port_max + 1),
+    ):
+        released = real_bind_or_skip(port)
+        released.close()
+
+
+async def test_runtime_ownership_real_loopback_each_conflict_releases_all_prior_ports(
+    tmp_path: Path,
+) -> None:
+    settings = real_ownership_config_or_skip(tmp_path, passive_count=3)
+    ports = (
+        settings.ftps_control_port,
+        *range(settings.ftps_passive_port_min, settings.ftps_passive_port_max + 1),
+    )
+    for conflict in ports:
+        blocker = real_bind_or_skip(conflict)
+        server = FtpsTlsServer(
+            settings,
+            cast(CompatibilityAuthenticator, Authenticator()),
+            cast(FtpsStagingStore, Staging()),
+            ADMISSIONS,
+        )
+        try:
+            with pytest.raises(OSError):
+                await server.start()
+            for port in ports:
+                if port == conflict:
+                    continue
+                released = real_bind_or_skip(port)
+                released.close()
+        finally:
+            blocker.close()
+            await server.close()
+
+
 async def test_real_conformance_cleanup_and_upload_create_only_private_stage(
     tmp_path: Path,
 ) -> None:
     generate_certificate(tmp_path)
-    settings = config(tmp_path)
+    settings = real_readiness_config_or_skip(tmp_path)
     settings.staging_directory.mkdir(mode=0o700)
     staging = FtpsStagingStore(
         settings.staging_directory,
@@ -549,7 +666,7 @@ async def test_real_conformance_cleanup_and_upload_create_only_private_stage(
 
 
 async def test_authentication_and_revalidation_denials_never_stage(tmp_path: Path) -> None:
-    settings = config(tmp_path)
+    settings = real_readiness_config_or_skip(tmp_path)
     settings.staging_directory.mkdir(mode=0o700)
     staging = FtpsStagingStore(
         settings.staging_directory, limits=ArtifactLimits(), capacity=settings.ingress_capacity
@@ -557,6 +674,7 @@ async def test_authentication_and_revalidation_denials_never_stage(tmp_path: Pat
     auth = Authenticator()
     auth.principal = None
     server = FtpsTlsServer(settings, cast(CompatibilityAuthenticator, auth), staging, ADMISSIONS)
+    server._ready = True
     reader = asyncio.StreamReader()
     reader.feed_data(b"USER bblp\r\n" + f"PASS {ACCESS_CODE}\r\n".encode())
     reader.feed_eof()
@@ -608,9 +726,17 @@ class PassiveServer:
         self.sockets = sockets if sockets is not None else [BoundSocket(port)]
         self.closed = False
         self.waited = False
+        self.start_calls = 0
+        self.close_clients_calls = 0
+
+    async def start_serving(self) -> None:
+        self.start_calls += 1
 
     def close(self) -> None:
         self.closed = True
+
+    def close_clients(self) -> None:
+        self.close_clients_calls += 1
 
     async def wait_closed(self) -> None:
         self.waited = True
@@ -627,6 +753,18 @@ class HangingPassiveServer(PassiveServer):
         self.wait_calls += 1
         if self.hanging:
             await asyncio.Event().wait()
+
+
+class UncertainCloseServer(PassiveServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_calls == 1:
+            raise OSError("close outcome is uncertain")
+        super().close()
 
 
 class BoundSocket:
@@ -767,7 +905,7 @@ def test_constructor_accepts_supported_private_topology(
 
 async def test_plaintext_never_reaches_protocol(tmp_path: Path) -> None:
     generate_certificate(tmp_path)
-    settings = config(tmp_path)
+    settings = real_readiness_config_or_skip(tmp_path)
     settings.staging_directory.mkdir(mode=0o700)
     server = FtpsTlsServer(
         settings,
@@ -801,7 +939,8 @@ def test_tls_context_is_tls13_only(tmp_path: Path) -> None:
 async def test_start_refuses_repeat_and_close_stops_every_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings = config(tmp_path)
+    generate_certificate(tmp_path)
+    settings = real_readiness_config_or_skip(tmp_path)
     server = FtpsTlsServer(
         settings,
         cast(CompatibilityAuthenticator, Authenticator()),
@@ -816,10 +955,10 @@ async def test_start_refuses_repeat_and_close_stops_every_admission(
         return listener
 
     monkeypatch.setattr(asyncio, "start_server", start_server)
-    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _private_key: object())
     await server.start()
-    assert started[0]["limit"] == 513
-    assert started[0]["ssl_handshake_timeout"] == settings.session_idle_seconds
+    assert all(call["start_serving"] is False for call in started)
+    assert started[-1]["limit"] == 513
+    assert started[-1]["ssl_handshake_timeout"] == settings.session_idle_seconds
     with pytest.raises(RuntimeError, match="already started"):
         await server.start()
 
@@ -834,6 +973,158 @@ async def test_start_refuses_repeat_and_close_stops_every_admission(
     assert writer.closed
     with pytest.raises(RuntimeError, match="closing"):
         await server.start()
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"ftps_control_port": True},
+        {"ftps_passive_port_min": 0},
+        {"ftps_passive_port_max": 65536},
+        {"ftps_passive_port_min": 49003, "ftps_passive_port_max": 49001},
+        {"ftps_passive_port_min": 49001, "ftps_passive_port_max": 49065},
+        {"ftps_control_port": 49001},
+        {"mqtt_port": 49000},
+        {"mqtt_port": 49002},
+    ],
+)
+async def test_start_rejects_forged_socket_set_before_opening_any_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: dict[str, object]
+) -> None:
+    forged = readiness_config(tmp_path).model_copy(update=update)
+    server = FtpsTlsServer(
+        forged,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_open_owned_socket",
+        lambda _host, _port: pytest.fail("forged socket set must not open a port"),
+    )
+
+    with pytest.raises(ValueError, match="supported private FTPS topology"):
+        await server.start()
+
+
+@pytest.mark.parametrize("failure", [OSError("transfer failed"), asyncio.CancelledError()])
+async def test_start_transfer_failure_closes_every_raw_and_transferred_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={"ftps_passive_port_min": 49001, "ftps_passive_port_max": 49002}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    opened: list[ProbeSocket] = []
+
+    def open_owned(_host: str, port: int) -> ProbeSocket:
+        owned = ProbeSocket(port)
+        opened.append(owned)
+        return owned
+
+    class TransferredServer(PassiveServer):
+        def __init__(self, owned: ProbeSocket) -> None:
+            super().__init__(port=owned.port)
+            self.owned = owned
+
+        def close(self) -> None:
+            super().close()
+            self.owned.close()
+
+    calls = 0
+
+    async def create_server(
+        _loop: object, _factory: object, *, sock: ProbeSocket, **_kwargs: object
+    ) -> TransferredServer:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure
+        return TransferredServer(sock)
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(server_module, "_open_owned_socket", open_owned)
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+
+    with pytest.raises(type(failure)):
+        await server.start()
+
+    assert len(opened) == 3
+    assert all(owned.close_attempts == 1 for owned in opened)
+    assert not server._owned_servers
+    assert not server._owned_sockets
+
+
+async def test_control_never_activates_when_passive_activation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={"ftps_passive_port_min": 49001, "ftps_passive_port_max": 49002}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    opened: list[ProbeSocket] = []
+
+    def open_owned(_host: str, port: int) -> ProbeSocket:
+        owned = ProbeSocket(port)
+        opened.append(owned)
+        return owned
+
+    class ActivationServer(PassiveServer):
+        def __init__(self, owned: ProbeSocket, *, fail: bool = False) -> None:
+            super().__init__(port=owned.port)
+            self.owned = owned
+            self.fail = fail
+
+        async def start_serving(self) -> None:
+            self.start_calls += 1
+            if self.fail:
+                raise OSError("activation failed")
+
+        def close(self) -> None:
+            super().close()
+            self.owned.close()
+
+    passives: list[ActivationServer] = []
+
+    async def create_server(
+        _loop: object, _factory: object, *, sock: ProbeSocket, **_kwargs: object
+    ) -> ActivationServer:
+        passive = ActivationServer(sock, fail=len(passives) == 1)
+        passives.append(passive)
+        return passive
+
+    control: ActivationServer | None = None
+
+    async def start_server(*_args: object, **kwargs: object) -> ActivationServer:
+        nonlocal control
+        control = ActivationServer(cast(ProbeSocket, kwargs["sock"]))
+        return control
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(server_module, "_open_owned_socket", open_owned)
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+    monkeypatch.setattr(asyncio, "start_server", start_server)
+
+    with pytest.raises(OSError, match="activation failed"):
+        await server.start()
+
+    assert [passive.start_calls for passive in passives] == [1, 1]
+    assert control is not None and control.start_calls == 0
+    assert all(owned.close_attempts == 1 for owned in opened)
+    assert not server._owned_servers
 
 
 async def test_sockets_and_close_cancel_pending_sessions(tmp_path: Path) -> None:
@@ -871,6 +1162,7 @@ async def test_accept_fail_closed_limits_errors_and_cancellation(
     assert closing.closed
 
     server._closing = False
+    server._ready = True
     server._sessions.add(cast(asyncio.Task[None], object()))
     limited = Writer()
     await server._accept(asyncio.StreamReader(), cast(asyncio.StreamWriter, limited))
@@ -1311,8 +1603,123 @@ async def test_session_fails_closed_for_impossible_protocol_actions(
         await server._session(reader, cast(asyncio.StreamWriter, Writer()))
 
 
+async def test_passive_leases_are_distinct_bounded_and_reusable(tmp_path: Path) -> None:
+    settings = config(tmp_path).model_copy(
+        update={"ftps_passive_port_min": 40000, "ftps_passive_port_max": 40001}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    first_endpoint = _PassiveEndpoint(40000, cast(asyncio.Server, PassiveServer(port=40000)))
+    second_endpoint = _PassiveEndpoint(40001, cast(asyncio.Server, PassiveServer(port=40001)))
+    server._passive_endpoints = {40000: first_endpoint, 40001: second_endpoint}
+    server._ready = True
+    first_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    second_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+
+    first = await server._open_passive("127.0.0.1", first_slot)
+    second = await server._open_passive("127.0.0.1", second_slot)
+    with pytest.raises(OSError, match="lease is available"):
+        await server._open_passive(
+            "127.0.0.1", _DataConnectionSlot(asyncio.get_running_loop().create_future())
+        )
+
+    assert first.endpoint is first_endpoint
+    assert second.endpoint is second_endpoint
+    first_slot.close()
+    first.release()
+    replacement = await server._open_passive(
+        "127.0.0.1", _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    )
+    assert replacement.endpoint is first_endpoint
+    assert replacement is not first
+    first.release()
+    assert first_endpoint.lease is replacement
+
+
+async def test_accept_time_passive_lease_cannot_enter_its_successor(tmp_path: Path) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    endpoint = _PassiveEndpoint(40400, cast(asyncio.Server, PassiveServer(port=40400)))
+    first_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    first = _PassiveLease(endpoint, "127.0.0.1", first_slot)
+    endpoint.lease = first
+    accepted_snapshot = first
+    first_slot.close()
+    first.release()
+    second_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    second = _PassiveLease(endpoint, "127.0.0.1", second_slot)
+    endpoint.lease = second
+    server._ready = True
+    stale_writer = Writer(peer=("127.0.0.1", 4), ssl_object=object())
+
+    await server._accept_passive(
+        endpoint,
+        accepted_snapshot,
+        asyncio.StreamReader(),
+        cast(asyncio.StreamWriter, stale_writer),
+    )
+
+    assert stale_writer.closed
+    assert not second_slot.future.done()
+    current_writer = Writer(peer=("127.0.0.1", 5), ssl_object=object())
+    current_reader = asyncio.StreamReader()
+    await server._accept_passive(
+        endpoint,
+        second,
+        current_reader,
+        cast(asyncio.StreamWriter, current_writer),
+    )
+    assert second_slot.future.result()[0] is current_reader
+
+
+async def test_uncertain_owned_listener_close_is_retained_and_retried(tmp_path: Path) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    uncertain = UncertainCloseServer()
+    server._owned_servers.add(cast(asyncio.Server, uncertain))
+
+    await server.close()
+    assert cast(asyncio.Server, uncertain) in server._owned_servers
+    assert uncertain.close_clients_calls == 1
+
+    await server.close()
+    assert cast(asyncio.Server, uncertain) not in server._owned_servers
+    assert uncertain.close_calls == 2
+    assert uncertain.close_clients_calls == 2
+
+
+async def test_shutdown_closes_tracked_handshakes_and_post_tls_clients(tmp_path: Path) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    listener = PassiveServer()
+    server._owned_servers.add(cast(asyncio.Server, listener))
+    writer = Writer(ssl_object=object())
+    server._passive_client_writers.add(cast(asyncio.StreamWriter, writer))
+
+    await server.close()
+
+    assert listener.close_clients_calls == 1
+    assert writer.closed
+
+
 async def test_open_passive_checks_all_ports_and_refuses_unprotected_or_wrong_peer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     settings = config(tmp_path).model_copy(
         update={"ftps_passive_port_min": 40000, "ftps_passive_port_max": 40001}
@@ -1323,34 +1730,39 @@ async def test_open_passive_checks_all_ports_and_refuses_unprotected_or_wrong_pe
         cast(FtpsStagingStore, Staging()),
         ADMISSIONS,
     )
-    callbacks: list[Any] = []
-    attempts: list[int] = []
-
-    async def start_server(
-        callback: Any, _host: str, port: int, **_kwargs: object
-    ) -> PassiveServer:
-        callbacks.append(callback)
-        attempts.append(port)
-        if port == 40000:
-            raise OSError("busy")
-        return PassiveServer(port=port)
-
-    monkeypatch.setattr(asyncio, "start_server", start_server)
-    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _private_key: object())
+    endpoint_1 = _PassiveEndpoint(40000, cast(asyncio.Server, PassiveServer(port=40000)))
+    endpoint_2 = _PassiveEndpoint(40001, cast(asyncio.Server, PassiveServer(port=40001)))
+    server._passive_endpoints = {40000: endpoint_1, 40001: endpoint_2}
+    server._ready = True
     slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
     passive = await server._open_passive("127.0.0.1", slot)
-    assert attempts == [40000, 40001]
-    assert passive in server._passive_servers
+    assert passive.endpoint is endpoint_1
+    assert _bound_port(passive) == 40000
 
     wrong = Writer(peer=("127.0.0.2", 4))
-    await callbacks[-1](asyncio.StreamReader(), wrong)
+    await server._accept_passive(
+        endpoint_1,
+        passive,
+        asyncio.StreamReader(),
+        cast(asyncio.StreamWriter, wrong),
+    )
     assert wrong.closed and not slot.future.done()
     unprotected = Writer(peer=("127.0.0.1", 4))
-    await callbacks[-1](asyncio.StreamReader(), unprotected)
+    await server._accept_passive(
+        endpoint_1,
+        passive,
+        asyncio.StreamReader(),
+        cast(asyncio.StreamWriter, unprotected),
+    )
     assert unprotected.closed and not slot.future.done()
     protected = Writer(peer=("127.0.0.1", 4), ssl_object=object())
     data_reader = asyncio.StreamReader()
-    await callbacks[-1](data_reader, protected)
+    await server._accept_passive(
+        endpoint_1,
+        passive,
+        data_reader,
+        cast(asyncio.StreamWriter, protected),
+    )
     assert slot.future.result() == (
         data_reader,
         cast(asyncio.StreamWriter, protected),
@@ -1358,16 +1770,27 @@ async def test_open_passive_checks_all_ports_and_refuses_unprotected_or_wrong_pe
         True,
     )
     duplicate = Writer(peer=("127.0.0.1", 4), ssl_object=object())
-    await callbacks[-1](asyncio.StreamReader(), duplicate)
+    await server._accept_passive(
+        endpoint_1,
+        passive,
+        asyncio.StreamReader(),
+        cast(asyncio.StreamWriter, duplicate),
+    )
     assert duplicate.closed
     slot.close()
+    passive.release()
     late = Writer(peer=("127.0.0.1", 4), ssl_object=object())
-    await callbacks[-1](asyncio.StreamReader(), late)
+    await server._accept_passive(
+        endpoint_1,
+        passive,
+        asyncio.StreamReader(),
+        cast(asyncio.StreamWriter, late),
+    )
     assert late.closed
 
 
 async def test_open_passive_reports_exhaustion_and_stage_aborts_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     server = FtpsTlsServer(
         config(tmp_path),
@@ -1376,13 +1799,9 @@ async def test_open_passive_reports_exhaustion_and_stage_aborts_on_failure(
         ADMISSIONS,
     )
 
-    async def unavailable(*_args: object, **_kwargs: object) -> PassiveServer:
-        raise OSError("busy")
-
-    monkeypatch.setattr(asyncio, "start_server", unavailable)
-    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _private_key: object())
+    server._ready = True
     slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
-    with pytest.raises(OSError, match="no configured"):
+    with pytest.raises(OSError, match=r"no configured.*lease"):
         await server._open_passive("127.0.0.1", slot)
 
     stage = Stage(write_error=OSError("full"))
@@ -1546,3 +1965,1109 @@ async def test_wait_closed_suppresses_socket_errors_and_helper_rejections() -> N
         _bound_port(cast(asyncio.Server, PassiveServer(sockets=[])))
     with pytest.raises(OSError, match="invalid"):
         _bound_port(cast(asyncio.Server, PassiveServer(sockets=[InvalidSocket()])))
+
+
+async def test_socket_ownership_helper_defensive_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    slot.close()
+    assert not slot.accept(
+        (
+            asyncio.StreamReader(),
+            cast(asyncio.StreamWriter, Writer()),
+            "127.0.0.1",
+            True,
+        )
+    )
+    endpoint = _PassiveEndpoint(40400)
+    lease = _PassiveLease(endpoint, "127.0.0.1", slot)
+    assert lease.sockets == ()
+    successor = _PassiveLease(endpoint, "127.0.0.1", slot)
+    endpoint.lease = successor
+    lease.release()
+    lease.release()
+    assert endpoint.lease is successor
+    assert not server_module._valid_owned_socket_config(cast(GroveBridgeConfig, object()))
+
+    settings = readiness_config(tmp_path)
+
+    def invalid_topology(_self: GroveBridgeConfig) -> bool:
+        raise ValueError("forged topology")
+
+    monkeypatch.setattr(GroveBridgeConfig, "has_supported_ftps_topology", invalid_topology)
+    assert not server_module._valid_owned_socket_config(settings)
+
+
+def test_open_owned_socket_rejects_inexact_bound_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InexactSocket:
+        def __init__(self, *_args: object) -> None:
+            self.closed = False
+
+        def setblocking(self, _blocking: bool) -> None:
+            return None
+
+        def bind(self, _address: tuple[str, int]) -> None:
+            return None
+
+        def getsockname(self) -> tuple[str, int]:
+            return ("127.0.0.1", 49001)
+
+        def close(self) -> None:
+            self.closed = True
+
+    opened = InexactSocket()
+    monkeypatch.setattr(socket, "socket", lambda *_args: opened)
+
+    with pytest.raises(OSError, match="exact configured"):
+        server_module._open_owned_socket("127.0.0.1", 49000)
+    assert opened.closed
+
+
+def test_close_owned_sockets_retains_errors_and_first_interruption() -> None:
+    ordinary = ProbeSocket(1, OSError("ordinary"))
+    first = ProbeSocket(2, KeyboardInterrupt("first"))
+    later = ProbeSocket(3, KeyboardInterrupt("later"))
+    clean = ProbeSocket(4)
+    owned = cast(set[socket.socket], {ordinary, first, later, clean})
+
+    interruption = server_module._close_owned_sockets(owned)
+
+    assert interruption is not None and str(interruption) in {"first", "later"}
+    assert cast(socket.socket, clean) not in owned
+    assert {ordinary, first, later} <= cast(set[ProbeSocket], owned)
+    assert all(probe.close_attempts == 1 for probe in (ordinary, first, later, clean))
+
+
+async def test_start_acquisition_chains_release_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FtpsTlsServer(
+        readiness_config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    acquired = ProbeSocket(49000, KeyboardInterrupt("release interrupted"))
+    calls = 0
+
+    def open_owned(_host: str, _port: int) -> ProbeSocket:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return acquired
+        raise OSError("bind interrupted")
+
+    monkeypatch.setattr(server_module, "_open_owned_socket", open_owned)
+
+    with pytest.raises(OSError, match="bind interrupted") as caught:
+        await server.start()
+
+    assert isinstance(caught.value.__cause__, KeyboardInterrupt)
+    assert acquired.close_attempts == 1
+
+
+async def test_owned_listener_close_interruption_combinations(tmp_path: Path) -> None:
+    class InterruptServer(PassiveServer):
+        def __init__(self, message: str) -> None:
+            super().__init__()
+            self.message = message
+
+        def close(self) -> None:
+            raise KeyboardInterrupt(self.message)
+
+    class BareServer:
+        def __init__(self) -> None:
+            self.closed = False
+            self.waited = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            self.waited = True
+
+    bare = BareServer()
+    bare_owner = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    bare_owner._owned_servers.add(cast(asyncio.Server, bare))
+    await bare_owner._close_owned_listeners()
+    assert bare.closed and bare.waited
+
+    server_only = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    interrupted = InterruptServer("server-one")
+    second_interrupted = InterruptServer("server-two")
+    server_only._owned_servers.update(
+        {
+            cast(asyncio.Server, interrupted),
+            cast(asyncio.Server, second_interrupted),
+        }
+    )
+    with pytest.raises(KeyboardInterrupt, match="server"):
+        await server_only._close_owned_listeners()
+
+    socket_only = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    raw = ProbeSocket(1, KeyboardInterrupt("socket"))
+    socket_only._owned_sockets.add(cast(socket.socket, raw))
+    with pytest.raises(KeyboardInterrupt, match="socket"):
+        await socket_only._close_owned_listeners()
+
+    combined = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    combined_server = InterruptServer("server")
+    combined_socket = ProbeSocket(2, KeyboardInterrupt("socket"))
+    combined._owned_servers.add(cast(asyncio.Server, combined_server))
+    combined._owned_sockets.add(cast(socket.socket, combined_socket))
+    with pytest.raises(KeyboardInterrupt, match="server") as caught:
+        await combined._close_owned_listeners()
+    assert isinstance(caught.value.__cause__, KeyboardInterrupt)
+
+
+async def test_construction_cleanup_settles_after_shield_cancellation_and_retains_ambiguity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={"ftps_passive_port_min": 49001, "ftps_passive_port_max": 49002}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    opened: list[ProbeSocket] = []
+
+    def open_owned(_host: str, port: int) -> ProbeSocket:
+        owned = ProbeSocket(port)
+        opened.append(owned)
+        return owned
+
+    class AmbiguousTransferredServer(PassiveServer):
+        def __init__(self, owned: ProbeSocket) -> None:
+            super().__init__(port=owned.port)
+            self.owned = owned
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise OSError("uncertain close")
+            super().close()
+            self.owned.close()
+
+    transferred: AmbiguousTransferredServer | None = None
+    calls = 0
+
+    async def create_server(
+        _loop: object, _factory: object, *, sock: ProbeSocket, **_kwargs: object
+    ) -> AmbiguousTransferredServer:
+        nonlocal calls, transferred
+        calls += 1
+        if calls == 2:
+            raise OSError("construction failed")
+        transferred = AmbiguousTransferredServer(sock)
+        return transferred
+
+    original_shield = asyncio.shield
+    shield_calls = 0
+
+    async def cancelled_shield(awaitable: object) -> object:
+        nonlocal shield_calls
+        shield_calls += 1
+        if shield_calls == 1:
+            raise asyncio.CancelledError
+        return await original_shield(cast(Awaitable[object], awaitable))
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(server_module, "_open_owned_socket", open_owned)
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+    monkeypatch.setattr(asyncio, "shield", cancelled_shield)
+
+    with pytest.raises(OSError, match="construction failed"):
+        await server.start()
+
+    assert transferred is not None
+    assert server._closing
+    assert cast(asyncio.Server, transferred) in server._owned_servers
+    await server.close()
+    assert transferred.close_calls == 2
+    assert all(owned.close_attempts == 1 for owned in opened)
+
+
+async def test_activation_defensive_gap_settles_after_shield_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={"ftps_passive_port_min": 49001, "ftps_passive_port_max": 49002}
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+
+    class MutatingServer(PassiveServer):
+        def __init__(self, port: int, *, mutate: bool = False) -> None:
+            super().__init__(port=port)
+            self.mutate = mutate
+            self.close_calls = 0
+
+        async def start_serving(self) -> None:
+            self.start_calls += 1
+            if self.mutate:
+                server._passive_endpoints[49002].server = None
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise OSError("uncertain close")
+            super().close()
+
+    passives: list[MutatingServer] = []
+
+    async def create_server(
+        _loop: object, _factory: object, *, sock: ProbeSocket, **_kwargs: object
+    ) -> MutatingServer:
+        passive = MutatingServer(sock.port, mutate=not passives)
+        passives.append(passive)
+        return passive
+
+    control = MutatingServer(49000)
+
+    async def start_server(*_args: object, **_kwargs: object) -> MutatingServer:
+        return control
+
+    original_shield = asyncio.shield
+    shield_calls = 0
+
+    async def cancelled_shield(awaitable: object) -> object:
+        nonlocal shield_calls
+        shield_calls += 1
+        if shield_calls == 1:
+            raise asyncio.CancelledError
+        return await original_shield(cast(Awaitable[object], awaitable))
+
+    monkeypatch.setattr(server_module, "_open_owned_socket", lambda _host, port: ProbeSocket(port))
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+    monkeypatch.setattr(asyncio, "start_server", start_server)
+    monkeypatch.setattr(asyncio, "shield", cancelled_shield)
+
+    with pytest.raises(RuntimeError, match="construction was incomplete"):
+        await server.start()
+
+    assert server._closing
+    assert server._passive_endpoints[49002].server is None
+    await server.close()
+    assert all(passive.close_calls == 2 for passive in passives)
+    assert control.close_calls == 2
+
+
+async def test_shutdown_releases_live_passive_lease_and_unready_open_denies(
+    tmp_path: Path,
+) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    with pytest.raises(OSError, match="not owned"):
+        await server._open_passive("127.0.0.1", slot)
+
+    endpoint = _PassiveEndpoint(40400)
+    lease = _PassiveLease(endpoint, "127.0.0.1", slot)
+    endpoint.lease = lease
+    server._passive_endpoints = {40400: endpoint}
+    await server.close()
+    assert lease.released
+
+
+@pytest.mark.parametrize("failure", [OSError("peer failed"), asyncio.CancelledError()])
+async def test_passive_accept_cleanup_propagates_cancellation_only(
+    tmp_path: Path, failure: BaseException
+) -> None:
+    class FailingSlot:
+        def accept(self, _connection: object) -> bool:
+            raise failure
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    endpoint = _PassiveEndpoint(40400)
+    lease = _PassiveLease(
+        endpoint,
+        "127.0.0.1",
+        cast(_DataConnectionSlot, FailingSlot()),
+    )
+    endpoint.lease = lease
+    server._ready = True
+    writer = Writer(peer=("127.0.0.1", 1), ssl_object=object())
+
+    if isinstance(failure, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await server._accept_passive(
+                endpoint,
+                lease,
+                asyncio.StreamReader(),
+                cast(asyncio.StreamWriter, writer),
+            )
+    else:
+        await server._accept_passive(
+            endpoint,
+            lease,
+            asyncio.StreamReader(),
+            cast(asyncio.StreamWriter, writer),
+        )
+    assert writer.closed
+
+
+@pytest.mark.parametrize("failure", [OSError("activation"), asyncio.CancelledError()])
+async def test_control_activation_failure_never_admits_before_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    settings = readiness_config(tmp_path)
+    auth = Authenticator()
+    staging = Staging()
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, auth),
+        cast(FtpsStagingStore, staging),
+        ADMISSIONS,
+    )
+    accepted_writer = Writer()
+
+    class ActivationServer(PassiveServer):
+        def __init__(self, callback: object | None = None) -> None:
+            super().__init__()
+            self.callback = callback
+
+        async def start_serving(self) -> None:
+            self.start_calls += 1
+            if self.callback is not None:
+                reader = asyncio.StreamReader()
+                reader.feed_data(b"USER bblp\r\n" + f"PASS {ACCESS_CODE}\r\n".encode())
+                reader.feed_eof()
+                await cast(Any, self.callback)(reader, cast(asyncio.StreamWriter, accepted_writer))
+                raise failure
+
+    async def create_server(_loop: object, _factory: object, **_kwargs: object) -> ActivationServer:
+        return ActivationServer()
+
+    async def start_server(callback: object, **_kwargs: object) -> ActivationServer:
+        return ActivationServer(callback)
+
+    monkeypatch.setattr(server_module, "_open_owned_socket", lambda _host, port: ProbeSocket(port))
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+    monkeypatch.setattr(asyncio, "start_server", start_server)
+
+    with pytest.raises(type(failure)):
+        await server.start()
+
+    assert accepted_writer.closed
+    assert accepted_writer.output == b""
+    assert auth.authenticate_calls == []
+    assert staging.reservations == []
+    assert not server._ready
+
+
+async def test_passive_accept_time_bound_is_global_before_tls_and_shutdown_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={
+            "ftps_passive_port_min": 49001,
+            "ftps_passive_port_max": 49002,
+            "max_sessions": 4,
+            "max_concurrent_transfers": 1,
+        }
+    )
+    server = FtpsTlsServer(
+        settings,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    factories: list[Callable[[], asyncio.Protocol]] = []
+
+    async def create_server(
+        _loop: object, factory: Callable[[], asyncio.Protocol], **_kwargs: object
+    ) -> PassiveServer:
+        factories.append(factory)
+        return PassiveServer()
+
+    async def start_server(*_args: object, **_kwargs: object) -> PassiveServer:
+        return PassiveServer()
+
+    handshake_release = asyncio.Event()
+    start_tls_calls = 0
+
+    async def start_tls(_loop: object, *_args: object, **_kwargs: object) -> asyncio.Transport:
+        nonlocal start_tls_calls
+        start_tls_calls += 1
+        await handshake_release.wait()
+        raise OSError("test handshake ended")
+
+    class RawTransport(asyncio.Transport):
+        def __init__(self) -> None:
+            self.closed = False
+            self.paused = False
+
+        def pause_reading(self) -> None:
+            self.paused = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(server_module, "_open_owned_socket", lambda _host, port: ProbeSocket(port))
+    monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _key: object())
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(type(loop), "create_server", create_server)
+    monkeypatch.setattr(type(loop), "start_tls", start_tls)
+    monkeypatch.setattr(asyncio, "start_server", start_server)
+    await server.start()
+    assert settings.max_sessions > settings.max_concurrent_transfers
+    assert len(factories) == 2
+
+    first_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    first_lease = await server._open_passive("127.0.0.1", first_slot)
+    second_endpoint = server._passive_endpoints[49002]
+    second_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    second_lease = _PassiveLease(second_endpoint, "127.0.0.1", second_slot)
+    second_endpoint.lease = second_lease
+
+    admitted = factories[0]()
+    assert isinstance(admitted, server_module._PassiveTlsProtocol)
+    admitted_transport = RawTransport()
+    admitted.connection_made(admitted_transport)
+    await asyncio.sleep(0)
+    assert admitted_transport.paused
+    assert start_tls_calls == 1
+    assert len(server._passive_protocols) == 1
+
+    rejected = factories[1]()
+    assert isinstance(rejected, server_module._RejectPassiveProtocol)
+    rejected_transport = RawTransport()
+    rejected.connection_made(rejected_transport)
+    assert rejected_transport.closed
+    assert start_tls_calls == 1
+
+    await server.close()
+    assert admitted_transport.closed
+    assert not server._passive_protocols
+    assert first_lease.released
+    assert second_lease.released
+
+
+async def test_shutdown_baseexception_attempts_every_independent_phase(
+    tmp_path: Path,
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class FatalListener(PassiveServer):
+        def close(self) -> None:
+            raise FatalPhase("listener")
+
+    class FatalWriter(Writer):
+        def close(self) -> None:
+            self.closed = True
+            raise FatalPhase("writer")
+
+    class ProtocolPhase:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    server = FtpsTlsServer(
+        config(tmp_path).model_copy(update={"shutdown_timeout_seconds": 0.03}),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    listener = FatalListener()
+    raw = ProbeSocket(1)
+    fatal_writer = FatalWriter()
+    passive_writer = Writer()
+    protocol = ProtocolPhase()
+    waiting = asyncio.Event()
+
+    async def pending() -> None:
+        await waiting.wait()
+
+    session_task = asyncio.create_task(pending())
+    passive_task = asyncio.create_task(pending())
+    server._owned_servers.add(cast(asyncio.Server, listener))
+    server._owned_sockets.add(cast(socket.socket, raw))
+    server._writers.add(cast(asyncio.StreamWriter, fatal_writer))
+    server._passive_client_writers.add(cast(asyncio.StreamWriter, passive_writer))
+    server._sessions.add(session_task)
+    server._passive_client_tasks.add(passive_task)
+    server._passive_protocols.add(cast(Any, protocol))
+
+    with pytest.raises(FatalPhase, match="listener"):
+        await server.close()
+
+    assert raw.close_attempts == 1
+    assert listener.close_clients_calls == 1
+    assert fatal_writer.closed and passive_writer.closed
+    assert protocol.closed
+    assert session_task.cancelled() and passive_task.cancelled()
+
+
+async def test_shutdown_cancellation_settles_every_later_phase(tmp_path: Path) -> None:
+    release_listener = asyncio.Event()
+
+    class BlockingListener(PassiveServer):
+        async def wait_closed(self) -> None:
+            await release_listener.wait()
+            self.waited = True
+
+    server = FtpsTlsServer(
+        config(tmp_path).model_copy(update={"shutdown_timeout_seconds": 0.3}),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    listener = BlockingListener()
+    raw = ProbeSocket(1)
+    writer = Writer()
+    waiting = asyncio.Event()
+
+    async def pending() -> None:
+        await waiting.wait()
+
+    session_task = asyncio.create_task(pending())
+    server._owned_servers.add(cast(asyncio.Server, listener))
+    server._owned_sockets.add(cast(socket.socket, raw))
+    server._writers.add(cast(asyncio.StreamWriter, writer))
+    server._sessions.add(session_task)
+    close_task = asyncio.create_task(server.close())
+    await asyncio.sleep(0)
+    close_task.cancel()
+    release_listener.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert raw.close_attempts == 1
+    assert writer.closed
+    assert session_task.cancelled()
+
+
+async def test_shutdown_hanging_writer_waits_share_one_phase_deadline(tmp_path: Path) -> None:
+    class HangingWriter(Writer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+            self.wait_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+        async def wait_closed(self) -> None:
+            self.wait_calls += 1
+            await asyncio.Event().wait()
+
+    timeout = 0.1
+    server = FtpsTlsServer(
+        config(tmp_path).model_copy(update={"shutdown_timeout_seconds": timeout}),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    writers = [HangingWriter() for _ in range(4)]
+    server._writers.update(cast(list[asyncio.StreamWriter], writers))
+
+    started = time.monotonic()
+    await server.close()
+    elapsed = time.monotonic() - started
+    await asyncio.sleep(0)
+
+    assert elapsed < timeout * 2.5
+    assert all(writer.close_calls == 1 for writer in writers)
+    assert all(writer.wait_calls == 1 for writer in writers)
+
+
+async def test_writer_settle_phase_defensive_interruptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class OrdinaryFailureWriter(Writer):
+        async def wait_closed(self) -> None:
+            raise OSError("ordinary")
+
+    assert (
+        await server_module._settle_writer_closed(
+            cast(asyncio.StreamWriter, OrdinaryFailureWriter())
+        )
+        is None
+    )
+
+    class CancelledWriter(Writer):
+        async def wait_closed(self) -> None:
+            raise asyncio.CancelledError
+
+    cancelled_server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    cancelled_server._writers.add(cast(asyncio.StreamWriter, CancelledWriter()))
+    interruption = await cancelled_server._close_locked()
+    assert isinstance(interruption, asyncio.CancelledError)
+
+    class HangingWriter(Writer):
+        async def wait_closed(self) -> None:
+            await asyncio.Event().wait()
+
+    wait_server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    wait_server._writers.add(cast(asyncio.StreamWriter, HangingWriter()))
+
+    async def fail_wait(*_args: object, **_kwargs: object) -> object:
+        raise FatalPhase("writer phase")
+
+    monkeypatch.setattr(asyncio, "wait", fail_wait)
+    wait_interruption = await wait_server._close_locked()
+    assert isinstance(wait_interruption, FatalPhase)
+    await asyncio.sleep(0)
+
+
+async def test_passive_tls_protocol_defensive_transport_and_upgrade_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    endpoint = _PassiveEndpoint(40400)
+    slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    lease = _PassiveLease(endpoint, "127.0.0.1", slot)
+    endpoint.lease = lease
+    server._ready = True
+
+    class NonStreamTransport(asyncio.BaseTransport):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    rejected = server_module._PassiveTlsProtocol(
+        server, endpoint, lease, cast(ssl.SSLContext, object())
+    )
+    server._passive_protocols.add(rejected)
+    nonstream = NonStreamTransport()
+    rejected.connection_made(nonstream)
+    assert nonstream.closed and rejected not in server._passive_protocols
+
+    absent = server_module._PassiveTlsProtocol(
+        server, endpoint, lease, cast(ssl.SSLContext, object())
+    )
+    server._passive_protocols.add(absent)
+    await absent._upgrade()
+    assert absent not in server._passive_protocols
+
+    class RawTransport(asyncio.Transport):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    outcomes: list[object] = [None, OSError("TLS failed")]
+
+    async def start_tls(_loop: object, *_args: object, **_kwargs: object) -> object:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(type(loop), "start_tls", start_tls)
+    for _ in range(2):
+        protocol = server_module._PassiveTlsProtocol(
+            server, endpoint, lease, cast(ssl.SSLContext, object())
+        )
+        raw = RawTransport()
+        protocol._transport = raw
+        server._passive_protocols.add(protocol)
+        await protocol._upgrade()
+        assert raw.closed
+        assert protocol not in server._passive_protocols
+
+
+async def test_close_cancellation_chains_settled_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def close_locked() -> BaseException:
+        started.set()
+        await release.wait()
+        return FatalPhase("settled")
+
+    monkeypatch.setattr(server, "_close_locked", close_locked)
+    closing = asyncio.create_task(server.close())
+    await started.wait()
+    closing.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await closing
+    assert isinstance(caught.value.__cause__, FatalPhase)
+
+
+async def test_listener_close_cancellation_chains_settled_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def settle() -> BaseException:
+        started.set()
+        await release.wait()
+        return FatalPhase("listener settled")
+
+    monkeypatch.setattr(server, "_close_owned_listeners_settle", settle)
+    closing = asyncio.create_task(server._close_owned_listeners())
+    await started.wait()
+    closing.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await closing
+    assert isinstance(caught.value.__cause__, FatalPhase)
+
+
+async def test_close_locked_preserves_first_phase_interruption_across_later_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class FailingLease:
+        def release(self) -> None:
+            raise FatalPhase("lease")
+
+    class FailingProtocol:
+        def close(self) -> None:
+            raise FatalPhase("protocol")
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    endpoint = _PassiveEndpoint(40400)
+    endpoint.lease = cast(_PassiveLease, FailingLease())
+    server._passive_endpoints = {40400: endpoint}
+    server._passive_protocols.add(cast(Any, FailingProtocol()))
+
+    async def fail_listeners() -> None:
+        raise FatalPhase("listener")
+
+    monkeypatch.setattr(server, "_close_owned_listeners", fail_listeners)
+    interruption = await server._close_locked()
+    assert isinstance(interruption, FatalPhase) and str(interruption) == "lease"
+
+
+@pytest.mark.parametrize("phase", ["protocol", "writer-close", "writer-wait"])
+async def test_close_locked_records_each_first_phase_interruption(
+    tmp_path: Path, phase: str
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class FailingProtocol:
+        def close(self) -> None:
+            raise FatalPhase("protocol")
+
+    class PhaseWriter(Writer):
+        def close(self) -> None:
+            self.closed = True
+            if phase == "writer-close":
+                raise FatalPhase("writer-close")
+
+        async def wait_closed(self) -> None:
+            if phase == "writer-wait":
+                raise FatalPhase("writer-wait")
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    if phase == "protocol":
+        server._passive_protocols.add(cast(Any, FailingProtocol()))
+    else:
+        server._writers.add(cast(asyncio.StreamWriter, PhaseWriter()))
+    interruption = await server._close_locked()
+    assert isinstance(interruption, FatalPhase) and str(interruption) == phase
+
+
+@pytest.mark.parametrize("wait_failure_call", [1, 2])
+async def test_close_locked_records_wait_interruptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_failure_call: int
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    release = asyncio.Event()
+
+    async def pending() -> None:
+        await release.wait()
+
+    task = asyncio.create_task(pending())
+    server._sessions.add(task)
+    calls = 0
+
+    async def wait(
+        pending_tasks: set[asyncio.Task[None]], *, timeout: float
+    ) -> tuple[set[asyncio.Task[None]], set[asyncio.Task[None]]]:
+        del timeout
+        nonlocal calls
+        calls += 1
+        if calls == wait_failure_call:
+            raise FatalPhase(f"wait-{calls}")
+        return set(), pending_tasks
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+    interruption = await server._close_locked()
+    assert isinstance(interruption, FatalPhase)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_close_locked_records_task_cancel_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class FailingTask:
+        def done(self) -> bool:
+            return False
+
+        def cancel(self) -> None:
+            raise FatalPhase("cancel")
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    server._sessions.update(
+        {
+            cast(asyncio.Task[None], FailingTask()),
+            cast(asyncio.Task[None], FailingTask()),
+        }
+    )
+
+    async def wait(
+        pending_tasks: set[asyncio.Task[None]], *, timeout: float
+    ) -> tuple[set[asyncio.Task[None]], set[asyncio.Task[None]]]:
+        del timeout
+        return set(), pending_tasks
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+    interruption = await server._close_locked()
+    assert isinstance(interruption, FatalPhase) and str(interruption) == "cancel"
+
+
+async def test_listener_settle_records_client_and_wait_interruptions(tmp_path: Path) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class ClientFailureServer(PassiveServer):
+        def __init__(self, failure: BaseException) -> None:
+            super().__init__()
+            self.failure = failure
+
+        def close_clients(self) -> None:
+            raise self.failure
+
+    class WaitFailureServer(PassiveServer):
+        async def wait_closed(self) -> None:
+            raise FatalPhase("wait")
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    servers = {
+        cast(asyncio.Server, ClientFailureServer(OSError("ordinary"))),
+        cast(asyncio.Server, ClientFailureServer(FatalPhase("fatal-one"))),
+        cast(asyncio.Server, ClientFailureServer(FatalPhase("fatal-two"))),
+        cast(asyncio.Server, WaitFailureServer()),
+    }
+    server._owned_servers.update(servers)
+    interruption = await server._close_owned_listeners_settle()
+    assert isinstance(interruption, FatalPhase)
+    assert all(listener in server._owned_servers for listener in servers)
+
+    wait_only = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    wait_server = WaitFailureServer()
+    wait_only._owned_servers.add(cast(asyncio.Server, wait_server))
+    wait_interruption = await wait_only._close_owned_listeners_settle()
+    assert isinstance(wait_interruption, FatalPhase) and str(wait_interruption) == "wait"
+
+
+async def test_close_phase_repeated_failures_preserve_first_and_cover_later_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FatalPhase(BaseException):
+        pass
+
+    class FailingLease:
+        def __init__(self, message: str) -> None:
+            self.message = message
+
+        def release(self) -> None:
+            raise FatalPhase(self.message)
+
+    class FailingWaitWriter(Writer):
+        def __init__(self, message: str) -> None:
+            super().__init__()
+            self.message = message
+
+        async def wait_closed(self) -> None:
+            raise FatalPhase(self.message)
+
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    first_endpoint = _PassiveEndpoint(40400)
+    second_endpoint = _PassiveEndpoint(40401)
+    first_endpoint.lease = cast(_PassiveLease, FailingLease("lease-one"))
+    second_endpoint.lease = cast(_PassiveLease, FailingLease("lease-two"))
+    server._passive_endpoints = {40400: first_endpoint, 40401: second_endpoint}
+    server._writers.update(
+        {
+            cast(asyncio.StreamWriter, FailingWaitWriter("wait-one")),
+            cast(asyncio.StreamWriter, FailingWaitWriter("wait-two")),
+        }
+    )
+    release = asyncio.Event()
+
+    async def pending() -> None:
+        await release.wait()
+
+    task = asyncio.create_task(pending())
+    server._sessions.add(task)
+
+    async def wait(
+        _pending_tasks: set[asyncio.Task[None]], *, timeout: float
+    ) -> tuple[set[asyncio.Task[None]], set[asyncio.Task[None]]]:
+        del timeout
+        raise FatalPhase("wait-phase")
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+    interruption = await server._close_locked()
+    assert isinstance(interruption, FatalPhase)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_listener_close_cancellation_reraises_without_settle_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def settle() -> None:
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(server, "_close_owned_listeners_settle", settle)
+    closing = asyncio.create_task(server._close_owned_listeners())
+    await started.wait()
+    closing.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await closing
+    assert caught.value.__cause__ is None
