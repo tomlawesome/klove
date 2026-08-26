@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -21,6 +22,7 @@ from klove.ftps.staging import (
 
 STAGE_ID = "11111111-1111-4111-8111-111111111111"
 SECOND_STAGE_ID = "44444444-4444-4444-8444-444444444444"
+THIRD_STAGE_ID = "55555555-5555-4555-8555-555555555555"
 PRINTER_ID = "22222222-2222-4222-8222-222222222222"
 OTHER_PRINTER_ID = "33333333-3333-4333-8333-333333333333"
 CLIENT_PATH = "/observation.3mf"
@@ -1132,3 +1134,222 @@ def test_reconcile_is_serialized_with_capacity_admission(tmp_path: Path) -> None
     assert not failures
     assert len(writers) == 1
     writers[0].abort()
+
+
+@pytest.mark.parametrize("consume_first", [False, True])
+def test_same_printer_path_same_bytes_replays_exact_original_receipt(
+    tmp_path: Path, consume_first: bool
+) -> None:
+    value = store(tmp_path)
+    original = value.stage(reservation(), [b"archive"])
+    if consume_first:
+        original = value.consume(reservation())
+
+    replay = value.stage(reservation(staging_id=SECOND_STAGE_ID), [b"archive"])
+
+    assert replay == original
+    assert {path.name for path in (tmp_path / "ftps-staging").iterdir()} == {
+        f"{STAGE_ID}.source",
+        f"{STAGE_ID}.receipt",
+    }
+
+
+def test_same_printer_path_different_bytes_denies_and_preserves_original(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    original = value.stage(reservation(), [b"archive"])
+
+    with pytest.raises(FtpsStagingError):
+        value.stage(reservation(staging_id=SECOND_STAGE_ID), [b"changed"])
+
+    assert value.inspect(reservation()) == original
+    assert {path.name for path in (tmp_path / "ftps-staging").iterdir()} == {
+        f"{STAGE_ID}.source",
+        f"{STAGE_ID}.receipt",
+    }
+
+
+def test_different_printer_or_path_stages_are_isolated(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    first = value.stage(reservation(), [b"archive"])
+    second = value.stage(
+        reservation(staging_id=SECOND_STAGE_ID, printer_uuid=OTHER_PRINTER_ID), [b"archive"]
+    )
+    third = value.stage(
+        reservation(staging_id=THIRD_STAGE_ID, client_path="/other.3mf"), [b"archive"]
+    )
+
+    assert first.reservation.staging_id == STAGE_ID
+    assert second.reservation.staging_id == SECOND_STAGE_ID
+    assert third.reservation.staging_id == THIRD_STAGE_ID
+
+
+def test_multiple_same_key_receipts_deny_new_stage_and_retain_all_evidence(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    first = value.stage(reservation(), [b"archive"])
+    other = reservation(staging_id=SECOND_STAGE_ID, printer_uuid=OTHER_PRINTER_ID)
+    value.stage(other, [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    other_receipt = directory / f"{SECOND_STAGE_ID}.receipt"
+    other_receipt.unlink()
+    staging._write_receipt(
+        other_receipt,
+        StagedArtifact(
+            reservation=reservation(staging_id=SECOND_STAGE_ID),
+            archive_size_bytes=first.archive_size_bytes,
+            archive_sha256=first.archive_sha256,
+        ),
+    )
+
+    with pytest.raises(FtpsStagingError):
+        value.stage(reservation(staging_id=THIRD_STAGE_ID), [b"archive"])
+
+    assert value.inspect(reservation()) == first
+    assert (directory / f"{SECOND_STAGE_ID}.source").exists()
+    assert other_receipt.exists()
+    assert not (directory / f"{THIRD_STAGE_ID}.source").exists()
+
+
+def test_matching_transitional_stage_denies_new_commit_without_removing_it(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    original = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    updating = directory / f"{STAGE_ID}.updating"
+    staging._write_receipt(updating, replace(original, consumed=True))
+
+    with pytest.raises(FtpsStagingError):
+        value.stage(reservation(staging_id=SECOND_STAGE_ID), [b"archive"])
+
+    assert value.inspect(reservation()) == original
+    assert updating.exists()
+    assert not (directory / f"{SECOND_STAGE_ID}.source").exists()
+
+
+def test_repeat_scan_uncertainty_denies_new_commit_and_retains_prior_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = store(tmp_path)
+    original = value.stage(reservation(), [b"archive"])
+    writer = value.begin(reservation(staging_id=SECOND_STAGE_ID))
+    writer.write(b"archive")
+    monkeypatch.setattr(
+        value,
+        "_reconciliation_actions",
+        lambda: (_ for _ in ()).throw(OSError()),
+    )
+
+    with pytest.raises(FtpsStagingError):
+        writer.commit()
+
+    assert value.inspect(reservation()) == original
+    assert not (tmp_path / "ftps-staging" / f"{SECOND_STAGE_ID}.source").exists()
+
+
+def test_restart_replays_exact_original_receipt(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    original = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    restarted = FtpsStagingStore(
+        directory,
+        limits=ArtifactLimits(max_archive_compressed_bytes=512),
+        capacity=8,
+    )
+    restarted.initialize()
+    restarted.reconcile()
+
+    assert restarted.stage(reservation(staging_id=SECOND_STAGE_ID), [b"archive"]) == original
+
+
+def test_concurrent_same_key_commits_have_one_canonical_winner(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    first_writer = value.begin(reservation())
+    second_writer = value.begin(reservation(staging_id=SECOND_STAGE_ID))
+    first_writer.write(b"archive")
+    second_writer.write(b"archive")
+    results: list[StagedArtifact] = []
+    failures: list[BaseException] = []
+    start = Event()
+
+    def commit(writer: staging.FtpsStagingWriter) -> None:
+        assert start.wait(2)
+        try:
+            results.append(writer.commit())
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = Thread(target=commit, args=(first_writer,))
+    second = Thread(target=commit, args=(second_writer,))
+    first.start()
+    second.start()
+    start.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not failures
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert results[0].reservation.staging_id in {STAGE_ID, SECOND_STAGE_ID}
+
+
+def test_concurrent_same_key_conflict_preserves_one_winner(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    first_writer = value.begin(reservation())
+    second_writer = value.begin(reservation(staging_id=SECOND_STAGE_ID))
+    first_writer.write(b"archive")
+    second_writer.write(b"changed")
+    results: list[StagedArtifact] = []
+    failures: list[BaseException] = []
+    start = Event()
+
+    def commit(writer: staging.FtpsStagingWriter) -> None:
+        assert start.wait(2)
+        try:
+            results.append(writer.commit())
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = Thread(target=commit, args=(first_writer,))
+    second = Thread(target=commit, args=(second_writer,))
+    first.start()
+    second.start()
+    start.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(results) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], FtpsStagingError)
+    assert value.inspect(results[0].reservation) == results[0]
+
+
+def test_repeat_rejects_a_mismatched_current_stage_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = store(tmp_path)
+    candidate = StagedArtifact(
+        reservation=reservation(),
+        archive_size_bytes=7,
+        archive_sha256="sha256:" + hashlib.sha256(b"archive").hexdigest(),
+    )
+    paths = value._paths(reservation())
+    monkeypatch.setattr(value, "_reconciliation_actions", lambda: [("stable", paths, candidate)])
+
+    with pytest.raises(FtpsStagingError):
+        value._repeat_match(reservation(), candidate, paths)
+
+
+def test_repeat_state_reservation_handles_removing_and_unknown_action(tmp_path: Path) -> None:
+    value = store(tmp_path)
+    value.stage(reservation(), [b"archive"])
+    value.consume(reservation())
+    paths = value._paths(reservation())
+    os.replace(paths.receipt, paths.removing)
+
+    assert staging._stage_reservation("finish_removing_source", paths, None) == reservation()
+    paths.source.unlink()
+    assert staging._stage_reservation("finish_removing_marker", paths, None) == reservation()
+    with pytest.raises(FtpsStagingError):
+        staging._stage_reservation("unknown", paths, None)
