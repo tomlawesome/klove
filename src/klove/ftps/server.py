@@ -155,6 +155,8 @@ class FtpsTlsServer:
             raise ValueError("complete TLS configuration required")
         if config.ftps_advertised_ipv4 is None:
             raise ValueError("FTPS advertised address required")
+        if not config.has_supported_ftps_topology():
+            raise ValueError("supported private FTPS topology required")
         self._config = config
         self._certificate = config.tls_certificate_file
         self._private_key = config.tls_private_key_file
