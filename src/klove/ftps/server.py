@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import socket
 import ssl
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TypeVar, cast
 
@@ -21,6 +24,140 @@ _MAX_LINE_BYTES = 512
 _DATA_CHUNK_BYTES = 64 * 1024
 _T = TypeVar("_T")
 _DataConnection = tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]
+_RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+
+
+class FtpsBindDiagnosticCode(StrEnum):
+    """Fixed, non-secret dispositions for FTPS bind diagnostics."""
+
+    CONTROL_PORT_UNAVAILABLE = "ftps_control_port_unavailable"
+    PASSIVE_PORT_UNAVAILABLE = "ftps_passive_port_unavailable"
+    PROBE_RELEASE_FAILED = "ftps_bind_probe_release_failed"
+    UNSUPPORTED_PRIVATE_TOPOLOGY = "ftps_unsupported_private_topology"
+
+
+@dataclass(frozen=True, slots=True)
+class FtpsBindDiagnosticResult:
+    """The bounded result of checking the configured FTPS bind set.
+
+    A probe-release failure makes no availability or successful-release claim.
+    """
+
+    available: bool
+    code: FtpsBindDiagnosticCode | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.available) is not bool:
+            raise ValueError("FTPS diagnostic availability must be boolean")
+        if self.available and self.code is not None:
+            raise ValueError("available FTPS diagnostic cannot carry a code")
+        if not self.available and type(self.code) is not FtpsBindDiagnosticCode:
+            raise ValueError("unavailable FTPS diagnostic requires one exact code")
+
+
+class FtpsBindSetDiagnostic:
+    """Check the exact non-actuating FTPS socket set once.
+
+    This is diagnostic-only: it does not create a TLS context, accept a
+    connection, authenticate a client, expose a listener, or make any later
+    listener-ready claim. Every acquired socket close is attempted before return.
+    """
+
+    def __init__(self, config: GroveBridgeConfig) -> None:
+        if type(config) is not GroveBridgeConfig or not config.enabled:
+            raise ValueError("enabled Grove bridge configuration required")
+        self._config = config
+
+    def check(self) -> FtpsBindDiagnosticResult:
+        """Bind the exact port set and attempt to release every acquired probe."""
+        if not _supported_private_topology(self._config):
+            return FtpsBindDiagnosticResult(
+                False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
+            )
+        probes: list[socket.socket] = []
+        result: FtpsBindDiagnosticResult
+        pending: BaseException | None = None
+        try:
+            probes.append(
+                _open_probe_socket(self._config.listen_host, self._config.ftps_control_port)
+            )
+        except OSError:
+            result = FtpsBindDiagnosticResult(
+                False, FtpsBindDiagnosticCode.CONTROL_PORT_UNAVAILABLE
+            )
+        else:
+            try:
+                for port in range(
+                    self._config.ftps_passive_port_min,
+                    self._config.ftps_passive_port_max + 1,
+                ):
+                    probes.append(_open_probe_socket(self._config.listen_host, port))
+            except OSError:
+                result = FtpsBindDiagnosticResult(
+                    False, FtpsBindDiagnosticCode.PASSIVE_PORT_UNAVAILABLE
+                )
+            except BaseException as exc:
+                pending = exc
+            else:
+                result = FtpsBindDiagnosticResult(True)
+        release_failed, release_interruption = _release_probes(probes)
+        if pending is not None:
+            if release_interruption is not None:
+                raise pending from release_interruption
+            raise pending
+        if release_interruption is not None:
+            raise release_interruption
+        if release_failed:
+            return FtpsBindDiagnosticResult(False, FtpsBindDiagnosticCode.PROBE_RELEASE_FAILED)
+        return result
+
+
+def _supported_private_topology(config: GroveBridgeConfig) -> bool:
+    """Accept only the configured direct private-network deployment shape."""
+    advertised = config.ftps_advertised_ipv4
+    if advertised is None:
+        return False
+    try:
+        bound = ipaddress.ip_address(config.listen_host)
+        published = ipaddress.ip_address(advertised)
+    except ValueError:
+        return False
+    return (
+        isinstance(bound, ipaddress.IPv4Address)
+        and isinstance(published, ipaddress.IPv4Address)
+        and (bound == published or bound.is_unspecified)
+        and (published.is_loopback or any(published in network for network in _RFC1918_NETWORKS))
+    )
+
+
+def _open_probe_socket(host: str, port: int) -> socket.socket:
+    """Bind one exact TCP port without creating an accepting listener."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+    except BaseException:
+        probe.close()
+        raise
+    return probe
+
+
+def _release_probes(probes: list[socket.socket]) -> tuple[bool, BaseException | None]:
+    """Attempt every close, preserving only fixed ordinary failures."""
+    ordinary_failure = False
+    interruption: BaseException | None = None
+    while probes:
+        try:
+            probes.pop().close()
+        except Exception:
+            ordinary_failure = True
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
+    return ordinary_failure, interruption
 
 
 class FtpsTlsServer:
