@@ -17,6 +17,8 @@ When the owner grants autonomous delivery across Klove, treat the roadmap as
 the work queue rather than stopping at the current task's boundary. A local
 blocker means selecting another safe, unblocked roadmap item; stop only when the
 overall authorised scope has no useful work that does not require the owner.
+Continue background work when the owner sends a new message unless that message
+explicitly tells you to stop or replaces the authorised delivery scope.
 
 ## Product boundary
 
