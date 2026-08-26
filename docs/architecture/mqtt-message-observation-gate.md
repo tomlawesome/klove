@@ -22,3 +22,15 @@ public pause, resume, and stop endpoints each returned `200`, but the bounded
 wildcard recorder saw no request-topic publish. Thus no outbound request schema
 or minimum accepted idle/printing/paused report is retained; a success HTTP
 status alone is not transport evidence.
+
+`mqtt-initial-request-schema` separately retains the complete initial outbound
+request sequence from one bounded TLS MQTT session: `pushall`, `get_version`,
+then `extrusion_cali_get`. Each request is QoS 1 on
+`device/{serial}/request`, has its observed structural member schema and byte
+count, and retains the observed first-PUBACK ordering. It contains neither
+payload values nor packet identifiers, credentials, endpoint data, certificates,
+or raw trace material.
+
+This is non-runtime evidence only. It grants no MQTT listener, request handler,
+credential lookup, control, upload, or print authority. Any runtime use needs a
+separate accepted decision, bounded implementation, and its own negative tests.
