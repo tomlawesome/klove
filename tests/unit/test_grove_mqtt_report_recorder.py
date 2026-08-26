@@ -169,7 +169,10 @@ def test_two_session_observation_binds_project_result_and_non_idle_statuses(
 
     observed = candidate["observed"]
     assert observed["project_file_result"]["matches_generated_request_sequence"] is True
-    assert [entry["state"] for entry in observed["non_idle_push_status"]] == ["PREPARE", "FINISH"]
+    statuses = observed["non_idle_push_status"]
+    assert statuses["shared_report"]["command"] == "push_status"
+    assert statuses["states"] == ["PREPARE", "FINISH"]
+    assert statuses["finish_matches_shared_report"] is True
     assert observed[recorder.BOUNDED_CHAIN_EVIDENCE] is True
     assert probe.closed and persistent.closed
     serialized = json.dumps(candidate, sort_keys=True)
@@ -189,6 +192,28 @@ def test_two_session_observation_rejects_qos0_replay(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(recorder, "_open_session", lambda *_arguments: (next(sessions), set(), []))
 
     with pytest.raises(recorder.ObservationFailure, match="report_replay"):
+        recorder.observe_two_sessions("grove", SERIAL)
+
+
+def test_two_session_observation_rejects_finish_profile_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _recorder()
+    changed_finish = _status("FINISH")
+    changed_finish["print"]["unexpected"] = True
+    sessions = iter(
+        (
+            _Connection(),
+            _Connection(
+                _report(_acknowledgement())
+                + _report(_status("PREPARE"))
+                + _report(changed_finish)
+            ),
+        )
+    )
+    monkeypatch.setattr(recorder, "_open_session", lambda *_arguments: (next(sessions), set(), []))
+
+    with pytest.raises(recorder.ObservationFailure, match="post_prepare_finish_profile_invalid"):
         recorder.observe_two_sessions("grove", SERIAL)
 
 
@@ -364,7 +389,7 @@ def test_candidate_validation_rejects_unproven_result_or_replay_claim(
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
     candidate["observed"][recorder.BOUNDED_CHAIN_EVIDENCE] = True
-    candidate["observed"]["non_idle_push_status"].reverse()
+    candidate["observed"]["non_idle_push_status"]["states"].reverse()
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
 

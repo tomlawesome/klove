@@ -33,6 +33,7 @@ _PROTOCOL_CODES = frozenset(
         "payload_type_invalid",
         "post_ack_prepare_invalid",
         "post_prepare_finish_invalid",
+        "post_prepare_finish_profile_invalid",
         "post_suback_report_invalid",
         "post_suback_report_limit",
         "pre_suback_report_limit",

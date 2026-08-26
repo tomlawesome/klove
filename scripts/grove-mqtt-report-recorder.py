@@ -60,6 +60,7 @@ PROTOCOL_CODES = frozenset(
         "payload_type_invalid",
         "post_ack_prepare_invalid",
         "post_prepare_finish_invalid",
+        "post_prepare_finish_profile_invalid",
         "post_suback_report_invalid",
         "post_suback_report_limit",
         "pre_suback_report_limit",
@@ -426,6 +427,9 @@ def observe_two_sessions(host: str, serial: bytes) -> dict[str, object]:
                 if command != "push_status" or state != "FINISH":
                     raise ObservationFailure("post_prepare_finish_invalid")
                 finish = _report(profile, command="push_status", state="FINISH")
+                shared_report = {key: value for key, value in prepare.items() if key != "state"}
+                if {key: value for key, value in finish.items() if key != "state"} != shared_report:
+                    raise ObservationFailure("post_prepare_finish_profile_invalid")
                 return {
                     "profile_version": 1,
                     "transport": "mqtt-over-tls",
@@ -442,7 +446,11 @@ def observe_two_sessions(host: str, serial: bytes) -> dict[str, object]:
                             "generated_sequence_marker": True,
                         },
                         "project_file_result": acknowledgement,
-                        "non_idle_push_status": [prepare, finish],
+                        "non_idle_push_status": {
+                            "shared_report": shared_report,
+                            "states": ["PREPARE", "FINISH"],
+                            "finish_matches_shared_report": True,
+                        },
                         BOUNDED_CHAIN_EVIDENCE: True,
                     },
                 }
@@ -563,12 +571,20 @@ def validate_candidate(candidate: object) -> None:
         or result["matches_generated_request_sequence"] is not True
     ):
         raise ObservationFailure("candidate_result_invalid")
-    statuses = observed["non_idle_push_status"]
+    statuses = _exact_mapping(
+        observed["non_idle_push_status"],
+        frozenset({"shared_report", "states", "finish_matches_shared_report"}),
+    )
+    shared_report = _exact_mapping(
+        statuses["shared_report"],
+        frozenset({"topic", "qos", "dup", "retain", "members", "command"}),
+    )
     if (
-        type(statuses) is not list
-        or len(statuses) != 2
-        or not _valid_report(statuses[0], command="push_status", state="PREPARE")
-        or not _valid_report(statuses[1], command="push_status", state="FINISH")
+        not _valid_report(
+            {**shared_report, "state": "PREPARE"}, command="push_status", state="PREPARE"
+        )
+        or statuses["states"] != ["PREPARE", "FINISH"]
+        or statuses["finish_matches_shared_report"] is not True
         or observed[BOUNDED_CHAIN_EVIDENCE] is not True
     ):
         raise ObservationFailure("candidate_reports_invalid")
