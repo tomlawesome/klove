@@ -35,6 +35,13 @@ class _Monitor(Protocol):
         """Run until stopped or failed."""
 
 
+class CommittedRecordObserver(Protocol):
+    """Apply one already-verified durable lifecycle result synchronously."""
+
+    def reconcile_committed(self, record: RegisteredPrinter) -> None:
+        """Observe the exact canonical record while its admission gate is held."""
+
+
 MonitorFactory = Callable[
     [MoonrakerMonitorConfig, str, PrinterRegistry, aiohttp.ClientSession],
     _Monitor,
@@ -79,6 +86,7 @@ class RegistryRuntimeSupervisor:
         monitor_factory: MonitorFactory = MoonrakerMonitor,
         controls: ControlService | None = None,
         control_transport_factory: ControlTransportFactory | None = None,
+        committed_record_observer: CommittedRecordObserver | None = None,
     ) -> None:
         if (controls is None) is not (control_transport_factory is None):
             raise ValueError("control routes and their factory must be configured together")
@@ -89,6 +97,7 @@ class RegistryRuntimeSupervisor:
         self._monitor_factory = monitor_factory
         self._controls = controls
         self._control_transport_factory = control_transport_factory
+        self._committed_record_observer = committed_record_observer
         self._admissions = admissions
         self._active: dict[str, _ActiveMonitor] = {}
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
@@ -124,6 +133,7 @@ class RegistryRuntimeSupervisor:
             await self._deactivate_all()
             await self._remove_unmanaged_routes()
             raise RegistryRuntimeError from exc
+        await self._observe_committed_records(records)
         desired = self._desired(records)
         for printer_id in tuple(self._active):
             async with self._admissions.hold(printer_id):
@@ -151,6 +161,28 @@ class RegistryRuntimeSupervisor:
                     await self._withdraw(printer_id)
                     raise RegistryRuntimeError
         return tuple(sorted(self._active))
+
+    async def _observe_committed_records(self, records: tuple[RegisteredPrinter, ...]) -> None:
+        observer = self._committed_record_observer
+        if observer is None:
+            return
+        seen: set[str] = set()
+        for record in records:
+            if type(record) is not RegisteredPrinter:
+                continue
+            printer_id = record.printer_uuid
+            async with self._admissions.hold(printer_id):
+                try:
+                    if printer_id in seen or self._store.get(printer_id) != record:
+                        raise RegistryRuntimeError
+                    seen.add(printer_id)
+                    observer.reconcile_committed(record)
+                except Exception as exc:
+                    with suppress(Exception):
+                        await self._withdraw(printer_id)
+                    if isinstance(exc, RegistryRuntimeError):
+                        raise
+                    raise RegistryRuntimeError from exc
 
     async def _shutdown(self) -> None:
         async with self._lock:
@@ -188,6 +220,8 @@ class RegistryRuntimeSupervisor:
             records = self._store.list(include_removed=True)
             if self._store.get(printer_id) != record:
                 raise RegistryRuntimeError
+            if self._committed_record_observer is not None:
+                self._committed_record_observer.reconcile_committed(record)
             if record.lifecycle is not PrinterLifecycle.ACTIVE:
                 await self._withdraw(printer_id)
                 return

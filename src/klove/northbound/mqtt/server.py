@@ -29,6 +29,7 @@ from klove.northbound.mqtt.codec import (
 )
 from klove.orchestration.mqtt_control import MqttControlIngress
 from klove.security.compatibility import CompatibilityAuthenticator, CompatibilityPrincipal
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
 
 
 class MqttReportProvider(Protocol):
@@ -49,6 +50,8 @@ class MqttTlsServer:
         authenticator: CompatibilityAuthenticator,
         ingress: MqttControlIngress,
         reports: MqttReportProvider,
+        *,
+        session_registry: CompatibilitySessionRegistry | None = None,
     ) -> None:
         if type(config) is not GroveBridgeConfig or not config.enabled:
             raise ValueError("enabled Grove bridge configuration required")
@@ -62,6 +65,7 @@ class MqttTlsServer:
         self._authenticator = authenticator
         self._ingress = ingress
         self._reports = reports
+        self._session_registry = session_registry
         self._server: asyncio.Server | None = None
         self._sessions: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
@@ -150,6 +154,8 @@ class MqttTlsServer:
         subscribed = False
         commands = 0
         admitted_printer: str | None = None
+        registered_session = False
+        session_task: asyncio.Task[None] | None = None
         try:
             while not self._closing:
                 chunk = await self._bounded(reader.read(MAX_WIRE_BYTES))
@@ -164,6 +170,16 @@ class MqttTlsServer:
                         if principal is None or not self._admit_printer(principal.printer_uuid):
                             return
                         admitted_printer = principal.printer_uuid
+                        if self._session_registry is not None:
+                            current = asyncio.current_task()
+                            if current is None or not self._session_registry.register(
+                                principal,
+                                current,
+                                writer,
+                            ):
+                                return
+                            session_task = current
+                            registered_session = True
                         await self._write(writer, encode_connack())
                         continue
 
@@ -193,6 +209,14 @@ class MqttTlsServer:
                     else:
                         return
         finally:
+            registry = self._session_registry
+            if (
+                registered_session
+                and principal is not None
+                and session_task is not None
+                and registry is not None
+            ):
+                registry.unregister(principal, session_task, writer)
             if admitted_printer is not None:
                 remaining = self._printer_sessions.get(admitted_printer, 1) - 1
                 if remaining > 0:

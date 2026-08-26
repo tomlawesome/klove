@@ -8,6 +8,7 @@ import ipaddress
 import ssl
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
 
@@ -16,6 +17,7 @@ from klove.ftps.protocol import FtpsAction, FtpsProtocolError, FtpsProtocolSessi
 from klove.ftps.staging import FtpsStagingStore
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.security.compatibility import CompatibilityAuthenticator, CompatibilityPrincipal
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
 
 _MAX_LINE_BYTES = 512
 _DATA_CHUNK_BYTES = 64 * 1024
@@ -23,10 +25,41 @@ _T = TypeVar("_T")
 _DataConnection = tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]
 
 
+@dataclass(slots=True)
+class _DataConnectionSlot:
+    """Own an accepted data writer until the control task claims it."""
+
+    future: asyncio.Future[_DataConnection]
+    writer: asyncio.StreamWriter | None = None
+    closed: bool = False
+
+    def accept(self, connection: _DataConnection) -> bool:
+        """Publish one accepted connection only after retaining its writer."""
+        if self.closed:
+            return False
+        if self.future.done():
+            return False
+        self.writer = connection[1]
+        self.future.set_result(connection)
+        return True
+
+    def claim(self) -> _DataConnection:
+        """Transfer writer ownership to the resumed control task."""
+        connection = self.future.result()
+        self.writer = None
+        return connection
+
+    def close(self) -> asyncio.StreamWriter | None:
+        """Close admission and return any writer still owned by this slot."""
+        self.closed = True
+        writer, self.writer = self.writer, None
+        return writer
+
+
 class FtpsTlsServer:
     """Serve one exact cleanup or protected passive upload per TLS session."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- explicit listener and revocation dependencies.
         self,
         config: GroveBridgeConfig,
         authenticator: CompatibilityAuthenticator,
@@ -34,6 +67,7 @@ class FtpsTlsServer:
         admissions: PrinterAdmissionGates,
         *,
         clock_ms: Callable[[], int] | None = None,
+        session_registry: CompatibilitySessionRegistry | None = None,
     ) -> None:
         if type(config) is not GroveBridgeConfig or not config.enabled:
             raise ValueError("enabled Grove bridge configuration required")
@@ -49,6 +83,7 @@ class FtpsTlsServer:
         self._staging = staging
         self._admissions = admissions
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+        self._session_registry = session_registry
         self._server: asyncio.Server | None = None
         self._sessions: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
@@ -136,8 +171,10 @@ class FtpsTlsServer:
         protocol = FtpsProtocolSession(lambda _path: True)
         principal: CompatibilityPrincipal | None = None
         admitted: str | None = None
+        registered_session = False
+        session_task: asyncio.Task[None] | None = None
         passive: asyncio.Server | None = None
-        data_future: asyncio.Future[_DataConnection] | None = None
+        data_slot: _DataConnectionSlot | None = None
         data_writer: asyncio.StreamWriter | None = None
         transfer_slot = False
         commands = 0
@@ -159,6 +196,16 @@ class FtpsTlsServer:
                         await self._reply(writer, 530, "Authentication failed")
                         return
                     admitted = principal.printer_uuid
+                    if self._session_registry is not None:
+                        current = asyncio.current_task()
+                        if current is None or not self._session_registry.register(
+                            principal,
+                            current,
+                            writer,
+                        ):
+                            return
+                        session_task = current
+                        registered_session = True
                     await self._reply(writer, 230, "Authenticated")
                 elif principal is None or not await self._bounded(
                     self._authenticator.revalidate(principal)
@@ -176,17 +223,18 @@ class FtpsTlsServer:
                         return
                     await self._transfers.acquire()
                     transfer_slot = True
-                    data_future = asyncio.get_running_loop().create_future()
-                    passive = await self._open_passive(peer, data_future)
+                    data_slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+                    passive = await self._open_passive(peer, data_slot)
                     port = _bound_port(passive)
                     await self._reply(writer, 227, _pasv_reply(self._advertised_ipv4, port))
                 elif event.action is FtpsAction.UPLOAD_REQUESTED:
                     passive = cast(asyncio.Server, passive)
-                    data_future = cast(asyncio.Future[_DataConnection], data_future)
+                    data_slot = cast(_DataConnectionSlot, data_slot)
                     client_path = cast(str, event.argument)
                     await self._reply(writer, 150, "Opening protected data connection")
                     async with asyncio.timeout(self._config.transfer_timeout_seconds):
-                        data_reader, data_writer, data_peer, protected = await data_future
+                        await data_slot.future
+                        data_reader, data_writer, data_peer, protected = data_slot.claim()
                         passive.close()
                         await passive.wait_closed()
                         self._passive_servers.discard(passive)
@@ -212,24 +260,39 @@ class FtpsTlsServer:
             if data_writer is not None:
                 data_writer.close()
                 await _wait_closed(data_writer, self._config.shutdown_timeout_seconds)
+            accepted_writer = data_slot.close() if data_slot is not None else None
+            if accepted_writer is not None:
+                accepted_writer.close()
+                await _wait_closed(accepted_writer, self._config.shutdown_timeout_seconds)
             if transfer_slot:
                 self._transfers.release()
+            registry = self._session_registry
+            if (
+                registered_session
+                and principal is not None
+                and session_task is not None
+                and registry is not None
+            ):
+                registry.unregister(principal, session_task, writer)
             if admitted is not None:
                 self._release_printer(admitted)
 
     async def _open_passive(
         self,
         control_peer: str,
-        future: asyncio.Future[_DataConnection],
+        slot: _DataConnectionSlot,
     ) -> asyncio.Server:
         async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             data_peer = _ipv4(writer.get_extra_info("peername"))
             protected = writer.get_extra_info("ssl_object") is not None
-            if future.done() or self._closing or data_peer != control_peer or not protected:
+            if self._closing or data_peer != control_peer or not protected:
                 writer.close()
                 await _wait_closed(writer, self._config.shutdown_timeout_seconds)
                 return
-            future.set_result((reader, writer, data_peer, protected))
+            if not slot.accept((reader, writer, data_peer, protected)):
+                writer.close()
+                await _wait_closed(writer, self._config.shutdown_timeout_seconds)
+                return
 
         context = _tls_context(self._certificate, self._private_key)
         for port in range(
