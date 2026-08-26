@@ -11,6 +11,15 @@
 If the user asks you to look at the handoff, it is located at
 `/home/codex/projects/klove/.agents/handoffs/current.md`.
 
+## Autonomous delivery
+
+When the owner grants autonomous delivery across Klove, treat the roadmap as
+the work queue rather than stopping at the current task's boundary. A local
+blocker means selecting another safe, unblocked roadmap item; stop only when the
+overall authorised scope has no useful work that does not require the owner.
+Continue background work when the owner sends a new message unless that message
+explicitly tells you to stop or replaces the authorised delivery scope.
+
 ## Product boundary
 
 Klove is a headless, automation-first security and translation layer. Grove
@@ -29,8 +38,10 @@ versioned completion handoff into Grove's existing printer-create flow, and
 feature gates that hide unsupported Bambu behavior. Grove must never receive
 Moonraker credentials or implement Klipper semantics. Do not revive the retired
 native-provider programme or create a persistent Grove fork without a new
-accepted decision. Any Grove contribution is developed in a fork and proposed
-upstream normally.
+accepted decision. Keep Grove changes local as a compatibility test harness
+until Klove is feature-complete and the owner has completed real-printer and
+real-print acceptance. Only then may a Grove contribution be developed in a
+fork and proposed upstream normally.
 
 The registry and onboarding core implemented by issues #62–#63 are the only
 canonical product printer store and lifecycle boundary. Keep secret values
