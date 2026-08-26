@@ -6,6 +6,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import platform
+import re
 import socket
 import ssl
 import time
@@ -18,6 +20,14 @@ MAX_TOPIC_BYTES = 512
 MAX_JSON_DEPTH = 12
 MAX_JSON_MEMBERS = 64
 EXPECTED_COMMANDS = ("pushall", "get_version", "extrusion_cali_get")
+EXPECTED_REQUEST_MEMBERS = {
+    "pushall": ("pushing", ("command",)),
+    "get_version": ("info", ("sequence_id", "command")),
+    "extrusion_cali_get": (
+        "print",
+        ("command", "filament_id", "nozzle_diameter", "sequence_id"),
+    ),
+}
 EXPECTED_PAYLOAD_BYTES = (35, 56, 109)
 REQUEST_TOPIC_PREFIX = b"device/"
 REQUEST_TOPIC_SUFFIX = b"/request"
@@ -28,6 +38,7 @@ CONNECT_KEEPALIVE_SECONDS = 30
 CONNECT_USERNAME = b"bblp"
 OBSERVATION_ACCESS_CODE = b"TEST0000"
 EVIDENCE_PATH = Path("/evidence/mqtt-initial-request-schema")
+PROVENANCE_PATH = Path("/evidence/mqtt-initial-request-recorder-provenance")
 STATUS_PATH = Path("/evidence/mqtt-initial-request-status")
 READY_PATH = Path("/evidence/mqtt-initial-request-ready")
 FAILURE_CODES = frozenset(
@@ -37,6 +48,8 @@ POST_CAPTURE_TIMEOUT_SECONDS = 10.0
 MAX_POST_CAPTURE_PACKETS = 32
 CERTIFICATE_PATH = "/tmp/observation-cert.pem"  # noqa: S108 -- private container tmpfs only.
 PRIVATE_KEY_PATH = "/tmp/observation-key.pem"  # noqa: S108 -- private container tmpfs only.
+PYTHON_VERSION = re.compile(r"3\.13\.(?:0|[1-9][0-9]{0,2})\Z")
+OPENSSL_VERSION = re.compile(r"OpenSSL (3\.[0-9]+\.[0-9]+)(?: [0-9]{1,2} [A-Za-z]{3} [0-9]{4})?\Z")
 
 
 class ObservationFailure(Exception):
@@ -213,22 +226,6 @@ def _reject_json_constant(_value: str) -> object:
     raise ObservationFailure("payload_json_constant")
 
 
-def _json_type(value: object) -> str:
-    if value is None:
-        return "null"
-    if type(value) is bool:
-        return "boolean"
-    if type(value) is str:
-        return "string"
-    if type(value) in (int, float):
-        return "number"
-    if type(value) is list:
-        return "array"
-    if type(value) is dict:
-        return "object"
-    raise ObservationFailure("json_value_invalid")
-
-
 def sanitize_payload(payload: bytes) -> tuple[dict[str, object], str, bool]:
     """Return schema-only facts; values are never retained in candidate evidence."""
     try:
@@ -242,38 +239,44 @@ def sanitize_payload(payload: bytes) -> tuple[dict[str, object], str, bool]:
         raise ObservationFailure("payload_json_invalid") from error
     if type(document) is not dict:
         raise ObservationFailure("payload_root_invalid")
-
-    command_values: list[str] = []
-    generated_sequence = False
-
-    def schema(value: object, depth: int) -> dict[str, object]:
-        nonlocal generated_sequence
-        if depth > MAX_JSON_DEPTH:
-            raise ObservationFailure("payload_too_deep")
-        kind = _json_type(value)
-        if type(value) is dict:
-            if len(value) > MAX_JSON_MEMBERS:
-                raise ObservationFailure("payload_too_wide")
-            members: list[dict[str, object]] = []
-            for name, member in value.items():
-                if name == "command":
-                    if type(member) is not str or member not in EXPECTED_COMMANDS:
-                        raise ObservationFailure("command_invalid")
-                    command_values.append(member)
-                if name == "sequence_id" and type(member) is str and member.isdecimal():
-                    generated_sequence = True
-                members.append({"name": name, "present": True, "schema": schema(member, depth + 1)})
-            return {"type": kind, "members": members}
-        if type(value) is list:
-            if len(value) > MAX_JSON_MEMBERS:
-                raise ObservationFailure("payload_too_wide")
-            return {"type": kind, "items": [schema(item, depth + 1) for item in value]}
-        return {"type": kind}
-
-    result = schema(document, 0)
-    if len(command_values) != 1:
+    if len(document) != 1:
+        raise ObservationFailure("payload_root_members_invalid")
+    container, body = next(iter(document.items()))
+    if type(body) is not dict or type(body.get("command")) is not str:
         raise ObservationFailure("command_missing_or_ambiguous")
-    return result, command_values[0], generated_sequence
+    command = body["command"]
+    expected = EXPECTED_REQUEST_MEMBERS.get(command)
+    if expected is None:
+        raise ObservationFailure("command_invalid")
+    expected_container, expected_members = expected
+    if container != expected_container or set(body) != set(expected_members):
+        raise ObservationFailure("payload_members_invalid")
+    if body["command"] != command:
+        raise ObservationFailure("command_invalid")
+    if any(type(body[name]) is not str for name in expected_members):
+        raise ObservationFailure("payload_value_type_invalid")
+    if "sequence_id" in expected_members and not body["sequence_id"].isdecimal():
+        raise ObservationFailure("sequence_marker_invalid")
+    return (
+        {
+            "type": "object",
+            "members": [
+                {
+                    "name": expected_container,
+                    "present": True,
+                    "schema": {
+                        "type": "object",
+                        "members": [
+                            {"name": name, "present": True, "schema": {"type": "string"}}
+                            for name in expected_members
+                        ],
+                    },
+                }
+            ],
+        },
+        command,
+        "sequence_id" in expected_members,
+    )
 
 
 def parse_publish(header: int, body: bytes, serial: bytes) -> tuple[dict[str, object], bytes]:
@@ -392,8 +395,12 @@ def observe_connection(connection: BinaryIO) -> dict[str, object]:
             if len(subscription_packet_ids) != 2:
                 raise ObservationFailure("publish_before_subscribe")
             request, packet_id = parse_publish(header, body, serial)
-            expected = EXPECTED_COMMANDS[len(requests)] if len(requests) < 3 else None
-            if request["command"] != expected:
+            request_index = len(requests)
+            expected = EXPECTED_COMMANDS[request_index] if request_index < 3 else None
+            if (
+                request["command"] != expected
+                or request["payload_bytes"] != EXPECTED_PAYLOAD_BYTES[request_index]
+            ):
                 raise ObservationFailure("publish_sequence_invalid")
             requests.append(request)
             first_packet_id = _ack_initial_publish(connection, requests, packet_id, first_packet_id)
@@ -456,6 +463,17 @@ def _write_ready_marker() -> None:
     _write_private_json(READY_PATH, {"status": "ready"})
 
 
+def _recorder_tool_versions() -> dict[str, str]:
+    python = platform.python_version()
+    openssl_match = OPENSSL_VERSION.fullmatch(ssl.OPENSSL_VERSION)
+    if PYTHON_VERSION.fullmatch(python) is None or openssl_match is None:
+        raise ObservationFailure("recorder_tool_version_invalid")
+    return {
+        "python": python,
+        "openssl": f"OpenSSL {openssl_match.group(1)}",
+    }
+
+
 def main() -> int:
     output = Path(os.environ.get("KLOVE_MQTT_EVIDENCE", EVIDENCE_PATH))
     context = _tls_context()
@@ -471,6 +489,7 @@ def main() -> int:
             protected.settimeout(10)
             candidate = observe_connection(protected)
     _write_private_json(output, candidate)
+    _write_private_json(PROVENANCE_PATH, _recorder_tool_versions())
     print("MQTT initial request observation completed", flush=True)
     return 0
 

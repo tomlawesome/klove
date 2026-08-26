@@ -32,20 +32,42 @@ def _mqtt_string(value: bytes) -> bytes:
     return len(value).to_bytes(2, "big") + value
 
 
-def _publish(command: str, *, topic: bytes = b"device/MQTTOBS0000001/request") -> tuple[int, bytes]:
-    print_payload = {"command": command, "secret": "must-not-retain"}
-    if command != "pushall":
-        print_payload["sequence_id"] = "1"
-    payload = json.dumps(
-        {"print": print_payload},
-        separators=(",", ":"),
-    ).encode()
+def _publish(
+    command: str,
+    *,
+    topic: bytes = b"device/MQTTOBS0000001/request",
+    extra_member: bool = False,
+) -> tuple[int, bytes]:
+    request_payloads = {
+        "pushall": {"pushing": {"command": command}},
+        "get_version": {"info": {"sequence_id": "1", "command": command}},
+        "extrusion_cali_get": {
+            "print": {
+                "command": command,
+                "filament_id": "",
+                "nozzle_diameter": "0.4",
+                "sequence_id": "1",
+            }
+        },
+    }
+    print_payload = request_payloads.get(command, {"print": {"command": command}})
+    if extra_member:
+        next(iter(print_payload.values()))["secret"] = "must-not-retain"  # noqa: S105 -- hostile test input.
+    payload = json.dumps(print_payload).encode()
     return 0x32, _mqtt_string(topic) + b"\x00\x01" + payload
 
 
 def _packet(header: int, body: bytes) -> bytes:
-    assert len(body) < 128
-    return bytes((header, len(body))) + body
+    remaining = len(body)
+    encoded = bytearray()
+    while True:
+        digit = remaining % 128
+        remaining //= 128
+        if remaining:
+            digit |= 128
+        encoded.append(digit)
+        if not remaining:
+            return bytes((header,)) + bytes(encoded) + body
 
 
 def _publish_packet(command: str, packet_id: bytes) -> bytes:
@@ -200,7 +222,19 @@ def test_publish_sanitizer_retains_schema_not_secret_values_or_packet_id() -> No
     assert "must-not-retain" not in serialized
     assert "0001" not in serialized
     assert "MQTTOBS0000001" not in serialized
-    assert '"name": "secret"' in serialized
+    assert request["members"] == {
+        "type": "object",
+        "members": [
+            {
+                "name": "pushing",
+                "present": True,
+                "schema": {
+                    "type": "object",
+                    "members": [{"name": "command", "present": True, "schema": {"type": "string"}}],
+                },
+            }
+        ],
+    }
 
 
 def test_publish_rejects_unsupported_command_topic_and_malformed_json() -> None:
@@ -213,6 +247,9 @@ def test_publish_rejects_unsupported_command_topic_and_malformed_json() -> None:
         recorder.parse_publish(header, body, b"MQTTOBS0000001")
     with pytest.raises(recorder.ObservationFailure):
         recorder.sanitize_payload(b'{"print":{"command":"pushall"')
+    header, body = _publish("pushall", extra_member=True)
+    with pytest.raises(recorder.ObservationFailure):
+        recorder.parse_publish(header, body, b"MQTTOBS0000001")
 
 
 @pytest.mark.parametrize("constant", [b"NaN", b"Infinity", b"-Infinity"])
@@ -236,6 +273,10 @@ def test_session_binds_connect_subscribe_and_publish_serial_and_proves_puback_or
         request["generated_sequence_marker"]
         for request in candidate["observed"]["initial_requests"]
     ] == [False, True, True]
+    assert [
+        request["members"]["members"][0]["name"]
+        for request in candidate["observed"]["initial_requests"]
+    ] == ["pushing", "info", "print"]
     assert connection.writes == [
         b"\x20\x02\x00\x00",
         b"\x90\x03\x00\x04\x00",
@@ -371,6 +412,38 @@ def test_failure_status_is_fixed_owner_private_and_contains_no_exception_text(
         recorder._write_failure_status("unbounded_value")
 
 
+def test_recorder_provenance_reports_exact_interpreter_and_openssl_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _recorder()
+    monkeypatch.setattr(recorder.platform, "python_version", lambda: "3.13.15")
+    monkeypatch.setattr(recorder.ssl, "OPENSSL_VERSION", "OpenSSL 3.5.6")
+
+    assert recorder._recorder_tool_versions() == {
+        "python": "3.13.15",
+        "openssl": "OpenSSL 3.5.6",
+    }
+
+
+@pytest.mark.parametrize(
+    ("python", "openssl"),
+    [
+        ("3.13.15 peer-value", "OpenSSL 3.5.6"),
+        ("3.13.15", "OpenSSL 3.5.6 peer-value"),
+        ("3.12.15", "OpenSSL 3.5.6"),
+    ],
+)
+def test_recorder_provenance_rejects_unrecognized_tool_versions(
+    monkeypatch: pytest.MonkeyPatch, python: str, openssl: str
+) -> None:
+    recorder = _recorder()
+    monkeypatch.setattr(recorder.platform, "python_version", lambda: python)
+    monkeypatch.setattr(recorder.ssl, "OPENSSL_VERSION", openssl)
+
+    with pytest.raises(recorder.ObservationFailure):
+        recorder._recorder_tool_versions()
+
+
 def test_session_rejects_publish_before_subscribe_and_serial_mismatch() -> None:
     recorder = _recorder()
     header, body = _publish("pushall")
@@ -455,12 +528,32 @@ def _mock_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     _write_executable(tools / "timeout", '#!/usr/bin/env sh\nshift\nexec "$@"\n')
     _write_executable(tools / "sleep", "#!/usr/bin/env sh\nexit 0\n")
     _write_executable(
+        tools / "date",
+        "#!/usr/bin/env sh\nprintf '%s\\n' '2026-08-26T09:10:11Z'\n",
+    )
+    _write_executable(
+        tools / "git",
+        """#!/usr/bin/env sh
+if [ "$1" = -C ]; then shift 2; fi
+case "$1" in
+  rev-parse) printf '%s\\n' df8a7ffa9e7809f797f1f247510127af9201eb8d ;;
+  status) if [ "${MOCK_CAPTURE_DIRTY:-}" = 1 ]; then printf '%s\\n' ' M scripts/grove-mqtt-initial-request-recorder.py'; fi ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+    _write_executable(
         tools / "docker",
         """#!/usr/bin/env sh
 printf '%s\\n' "$*" >> "$MOCK_DOCKER_LOG"
 if [ "$1" = context ]; then printf '%s\\n' mock-context; exit 0; fi
 if [ "$1" = info ]; then
   case "$*" in *'{{.ID}}'*) printf '%s\\n' mock-daemon ;; *) printf '%s\\n' '["name=rootless"]' ;; esac
+  exit 0
+fi
+if [ "$1" = version ]; then printf '%s\\n' '29.7.2|29.7.2'; exit 0; fi
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+  printf '%s\\n' "${MOCK_IMAGE_BINDING:-sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5|127.0.0.1:5302/grove-observer@sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5|cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4}"
   exit 0
 fi
 if [ "$1" = network ] && [ "$2" = create ]; then printf '%s\\n' mock-network; exit 0; fi
@@ -504,13 +597,22 @@ if [ "$1" = run ]; then
         fi
         chmod 600 "$evidence/mqtt-initial-request-status"
       else
-        candidate='{"profile_version":1,"transport":"mqtt-over-tls","observed":{"initial_requests":[{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"pushall","members":{"type":"object","members":[{"name":"print","present":true,"schema":{"type":"string"}}]},"generated_sequence_marker":false,"payload_bytes":35,"puback_order":"after_next_initial_publish"},{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"get_version","members":{"type":"object","members":[{"name":"print","present":true,"schema":{"type":"string"}}]},"generated_sequence_marker":true,"payload_bytes":56,"puback_order":"after_publish"},{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"extrusion_cali_get","members":{"type":"object","members":[{"name":"print","present":true,"schema":{"type":"string"}}]},"generated_sequence_marker":true,"payload_bytes":109,"puback_order":"after_publish"}],"first_puback_after_next_initial_publish":true}}'
+        candidate='{"profile_version":1,"transport":"mqtt-over-tls","observed":{"initial_requests":[{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"pushall","members":{"type":"object","members":[{"name":"pushing","present":true,"schema":{"type":"object","members":[{"name":"command","present":true,"schema":{"type":"string"}}]}}]},"generated_sequence_marker":false,"payload_bytes":35,"puback_order":"after_next_initial_publish"},{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"get_version","members":{"type":"object","members":[{"name":"info","present":true,"schema":{"type":"object","members":[{"name":"sequence_id","present":true,"schema":{"type":"string"}},{"name":"command","present":true,"schema":{"type":"string"}}]}}]},"generated_sequence_marker":true,"payload_bytes":56,"puback_order":"after_publish"},{"topic":"device/{serial}/request","qos":1,"dup":false,"retain":false,"command":"extrusion_cali_get","members":{"type":"object","members":[{"name":"print","present":true,"schema":{"type":"object","members":[{"name":"command","present":true,"schema":{"type":"string"}},{"name":"filament_id","present":true,"schema":{"type":"string"}},{"name":"nozzle_diameter","present":true,"schema":{"type":"string"}},{"name":"sequence_id","present":true,"schema":{"type":"string"}}]}}]},"generated_sequence_marker":true,"payload_bytes":109,"puback_order":"after_publish"}],"first_puback_after_next_initial_publish":true}}'
         case "${MOCK_CANDIDATE_MODE:-valid}" in
           secret) candidate='{"leak":"TEST0000"}' ;;
           extra) candidate=${candidate%?}',"extra":true}' ;;
+          unknown-member) candidate=$(printf '%s' "$candidate" | sed 's/"pushing"/"peer_key"/') ;;
         esac
         printf '%s\\n' "$candidate" > "$evidence/mqtt-initial-request-schema"
         chmod 600 "$evidence/mqtt-initial-request-schema"
+        provenance='{"python":"3.13.15","openssl":"OpenSSL 3.5.6"}'
+        case "${MOCK_PROVENANCE_MODE:-valid}" in
+          hostile) provenance='{"python":"TEST0000","openssl":"OpenSSL 3.5.6"}' ;;
+          extra) provenance='{"python":"3.13.15","openssl":"OpenSSL 3.5.6","extra":true}' ;;
+          version) provenance='{"python":"3.13.15 peer-value","openssl":"OpenSSL 3.5.6"}' ;;
+        esac
+        printf '%s\\n' "$provenance" > "$evidence/mqtt-initial-request-recorder-provenance"
+        chmod 600 "$evidence/mqtt-initial-request-recorder-provenance"
       fi
       printf '%s\\n' mock-recorder
       ;;
@@ -579,6 +681,7 @@ if [ "$1" = inspect ]; then
     *'grove-observation.role'*) printf '%s\\n' mqtt-initial-request-recorder ;;
     *'grove-observation.run-id'*) printf '%s\\n' mock-run ;;
     *'.Config.Image'*) printf '%s\\n' grove-observer:cdf6b829 ;;
+    *'.Image'*) printf '%s\\n' sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5 ;;
     *'.NetworkSettings.Networks'*) case "$resource" in *mqtt-initial-request*) printf '%s\\n' 172.30.0.3 ;; *) printf '%s\\n' 172.30.0.2 ;; esac ;;
     *'.Id'*) case "$resource" in *mqtt-initial-request*) printf '%s\\n' mock-recorder ;; *) printf '%s\\n' mock-grove ;; esac ;;
     *) printf '%s\\n' mock-grove ;;
@@ -616,6 +719,18 @@ def test_capture_lifecycle_is_isolated_and_cleanup_is_identity_bound(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert '"initial_requests"' in result.stdout
     assert '"generated_sequence_marker":false' in result.stdout
+    assert '"captured_at_utc":"2026-08-26T09:10:11Z"' in result.stdout
+    assert '"command":"scripts/capture-grove-mqtt-initial-requests.sh mock-run"' in result.stdout
+    assert '"harness_revision":"df8a7ffa9e7809f797f1f247510127af9201eb8d"' in result.stdout
+    assert (
+        '"digest":"sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5"'
+        in result.stdout
+    )
+    assert '"source_revision":"cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"' in result.stdout
+    assert '"docker_client":"29.7.2"' in result.stdout
+    assert '"docker_server":"29.7.2"' in result.stdout
+    assert '"openssl":"OpenSSL 3.5.6"' in result.stdout
+    assert '"python":"3.13.15"' in result.stdout
     assert not (root / ".klove-integration/grove-observation/mock-run").exists()
     commands = log.read_text(encoding="utf-8")
     assert "network create --internal" in commands
@@ -632,6 +747,84 @@ def test_capture_lifecycle_is_isolated_and_cleanup_is_identity_bound(tmp_path: P
     assert "rm --force klove-mqtt-initial-request-mock-run" in commands
     assert "rm --force klove-grove-observation-mock-run" in commands
     assert "network rm klove-grove-observation-mock-run" in commands
+
+
+@pytest.mark.parametrize("mode", ["hostile", "extra", "version"])
+def test_capture_rejects_invalid_recorder_provenance_without_leaking_it(
+    tmp_path: Path, mode: str
+) -> None:
+    root = _copy_capture_tree(tmp_path)
+    environment, _log = _mock_environment(tmp_path)
+    environment["MOCK_PROVENANCE_MODE"] = mode
+
+    result = subprocess.run(  # noqa: S603 -- copied repository script and safe literal run ID.
+        [str(root / "scripts/capture-grove-mqtt-initial-requests.sh"), "mock-run"],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == "MQTT recorder provenance is invalid\n"
+    assert "TEST0000" not in result.stdout + result.stderr
+    assert "OpenSSL 3.5.6" not in result.stdout + result.stderr
+    assert "peer-value" not in result.stdout + result.stderr
+    assert not (root / ".klove-integration/grove-observation/mock-run").exists()
+
+
+def test_capture_rejects_unknown_candidate_member_without_echoing_it(tmp_path: Path) -> None:
+    root = _copy_capture_tree(tmp_path)
+    environment, _log = _mock_environment(tmp_path)
+    environment["MOCK_CANDIDATE_MODE"] = "unknown-member"
+
+    result = subprocess.run(  # noqa: S603 -- copied repository script and safe literal run ID.
+        [str(root / "scripts/capture-grove-mqtt-initial-requests.sh"), "mock-run"],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == "MQTT recorder evidence shape is invalid\n"
+    assert "peer_key" not in result.stdout + result.stderr
+    assert not (root / ".klove-integration/grove-observation/mock-run").exists()
+
+
+@pytest.mark.parametrize(
+    ("environment_key", "environment_value", "expected_error"),
+    [
+        ("MOCK_CAPTURE_DIRTY", "1", "MQTT capture harness is not committed\n"),
+        (
+            "MOCK_IMAGE_BINDING",
+            "sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5|127.0.0.1:5302/grove-observer@sha256:53a06a0021b138510ca6941d08ab473976fa06a0dcc22905d800cf25085929f5|peer-value",
+            "MQTT capture image binding is invalid\n",
+        ),
+    ],
+)
+def test_capture_refuses_unbound_harness_or_image_before_starting_grove(
+    tmp_path: Path, environment_key: str, environment_value: str, expected_error: str
+) -> None:
+    root = _copy_capture_tree(tmp_path)
+    environment, log = _mock_environment(tmp_path)
+    environment[environment_key] = environment_value
+
+    result = subprocess.run(  # noqa: S603 -- copied repository script and safe literal run ID.
+        [str(root / "scripts/capture-grove-mqtt-initial-requests.sh"), "mock-run"],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == expected_error
+    assert "peer-value" not in result.stdout + result.stderr
+    assert not log.exists() or "network create" not in log.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

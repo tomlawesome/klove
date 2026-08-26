@@ -18,6 +18,7 @@ recorder_name="klove-mqtt-initial-request-$run_id"
 state_dir="$repo_root/.klove-integration/grove-observation/$run_id"
 recorder_origin="$state_dir/mqtt-initial-request-recorder-origin"
 image="grove-observer:cdf6b829"
+grove_source_revision="cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
 recorder_started=0
 grove_started=0
 evidence_dir=
@@ -78,6 +79,8 @@ cleanup() {
     if [ -n "$evidence_dir" ] && [ -d "$evidence_dir" ]; then
         rm -f -- "$evidence_dir/mqtt-initial-request-schema" \
             "$evidence_dir/mqtt-initial-request-schema.tmp" \
+            "$evidence_dir/mqtt-initial-request-recorder-provenance" \
+            "$evidence_dir/mqtt-initial-request-recorder-provenance.tmp" \
             "$evidence_dir/mqtt-initial-request-status" \
             "$evidence_dir/mqtt-initial-request-status.tmp" \
             "$evidence_dir/mqtt-initial-request-ready" \
@@ -94,6 +97,73 @@ cleanup() {
     exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
+
+if ! harness_revision=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null); then
+    echo "MQTT capture harness revision is unavailable" >&2
+    exit 1
+fi
+if ! capture_dirty=$(git -C "$repo_root" status --porcelain --untracked-files=all -- \
+    scripts/capture-grove-mqtt-initial-requests.sh \
+    scripts/grove-mqtt-initial-request-recorder.py \
+    scripts/grove-mqtt-initial-request-drive.py \
+    scripts/grove-observation-lib.sh \
+    scripts/grove-observation-up.sh \
+    scripts/grove-observation-down.sh 2>/dev/null); then
+    echo "MQTT capture harness state is unavailable" >&2
+    exit 1
+fi
+if [ -n "$capture_dirty" ]; then
+    echo "MQTT capture harness is not committed" >&2
+    exit 1
+fi
+if ! docker_versions=$(timeout 15 docker version --format '{{.Client.Version}}|{{.Server.Version}}' \
+    2>/dev/null); then
+    echo "MQTT capture Docker version is unavailable" >&2
+    exit 1
+fi
+if ! image_binding=$(timeout 15 docker image inspect \
+    --format '{{.Id}}|{{index .RepoDigests 0}}|{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+    "$image" 2>/dev/null); then
+    echo "MQTT capture image binding is unavailable" >&2
+    exit 1
+fi
+IFS='|' read -r grove_image_id grove_image_digest grove_image_source_revision <<EOF
+$image_binding
+EOF
+if [ -z "$grove_image_id" ] || [ -z "$grove_image_digest" ] \
+    || [ "$grove_image_source_revision" != "$grove_source_revision" ]; then
+    echo "MQTT capture image binding is invalid" >&2
+    exit 1
+fi
+if ! python3 - "$harness_revision" "$docker_versions" "$grove_image_id" \
+    "$grove_image_digest" "$grove_image_source_revision" <<'PY'
+import re
+import sys
+
+revision = re.compile(r"[0-9a-f]{40}\Z")
+version = re.compile(r"(?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3})\Z")
+image_id = re.compile(r"sha256:[0-9a-f]{64}\Z")
+image_digest = re.compile(r"127\.0\.0\.1:5302/grove-observer@sha256:[0-9a-f]{64}\Z")
+
+try:
+    client, server = sys.argv[2].split("|", 1)
+except ValueError:
+    raise SystemExit(1) from None
+raise SystemExit(
+    0
+    if revision.fullmatch(sys.argv[1])
+    and version.fullmatch(client)
+    and version.fullmatch(server)
+    and image_id.fullmatch(sys.argv[3])
+    and image_digest.fullmatch(sys.argv[4])
+    and sys.argv[5] == "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+    else 1
+)
+PY
+then
+    echo "MQTT capture binding is invalid" >&2
+    exit 1
+fi
 
 surface_recorder_failure() {
     status_path="$evidence_dir/mqtt-initial-request-status"
@@ -246,6 +316,11 @@ wait_for_recorder_ready() {
 
 "$script_dir/grove-observation-up.sh" "$run_id"
 grove_started=1
+if ! actual_grove_image_id=$(timeout 15 docker inspect --format '{{.Image}}' "$grove_name" 2>/dev/null) \
+    || [ "$actual_grove_image_id" != "$grove_image_id" ]; then
+    echo "MQTT capture image identity changed" >&2
+    exit 1
+fi
 grove_observation_require_origin "$state_dir/origin"
 grove_observation_require_name "$run_id"
 evidence_dir=$(mktemp -d "$state_dir/mqtt-initial-request.XXXXXX")
@@ -286,6 +361,12 @@ if [ -z "$recorder_id" ]; then
 fi
 write_recorder_origin "$recorder_id"
 
+if ! actual_recorder_image_id=$(timeout 15 docker inspect --format '{{.Image}}' "$recorder_name" \
+    2>/dev/null) || [ "$actual_recorder_image_id" != "$grove_image_id" ]; then
+    echo "MQTT capture image identity changed" >&2
+    exit 1
+fi
+
 if ! recorder_ip=$(timeout 15 docker inspect \
     --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
     "$recorder_name" 2>/dev/null); then
@@ -314,12 +395,25 @@ if [ "$driver_status" -ne 0 ] || [ "$recorder_wait_ok" -ne 1 ] \
     surface_recorder_failure || true
     exit 1
 fi
+if ! captured_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); then
+    echo "MQTT initial request capture timestamp is unavailable" >&2
+    exit 1
+fi
 if [ ! -f "$evidence_dir/mqtt-initial-request-schema" ] \
     || [ -L "$evidence_dir/mqtt-initial-request-schema" ]; then
     echo "MQTT recorder evidence is unavailable" >&2
     exit 1
 fi
-python3 - "$evidence_dir/mqtt-initial-request-schema" "$recorder_ip" <<'PY'
+if [ ! -f "$evidence_dir/mqtt-initial-request-recorder-provenance" ] \
+    || [ -L "$evidence_dir/mqtt-initial-request-recorder-provenance" ]; then
+    echo "MQTT recorder provenance is unavailable" >&2
+    exit 1
+fi
+python3 - "$evidence_dir/mqtt-initial-request-schema" \
+    "$evidence_dir/mqtt-initial-request-recorder-provenance" "$captured_at_utc" \
+    "$recorder_ip" "$run_id" "$harness_revision" "$docker_versions" "$grove_image_digest" \
+    "$grove_image_source_revision" <<'PY'
+import datetime
 import json
 import pathlib
 import re
@@ -330,6 +424,14 @@ MAX_DEPTH = 12
 MAX_MEMBERS = 64
 MAX_SCHEMA_NODES = 256
 MEMBER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z")
+PYTHON_VERSION = re.compile(r"3\.13\.(?:0|[1-9][0-9]{0,2})\Z")
+OPENSSL_VERSION = re.compile(r"OpenSSL 3\.[0-9]+\.[0-9]+\Z")
+DOCKER_VERSION = re.compile(r"(?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3})\Z")
+HEX_REVISION = re.compile(r"[0-9a-f]{40}\Z")
+IMAGE_DIGEST = re.compile(
+    r"127\.0\.0\.1:5302/grove-observer@(sha256:[0-9a-f]{64})\Z"
+)
+RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 
 def unique_object(pairs):
@@ -351,6 +453,34 @@ def require_keys(value, expected):
 
 
 schema_nodes = 0
+
+
+def schema_for(container, names):
+    return {
+        "type": "object",
+        "members": [
+            {
+                "name": container,
+                "present": True,
+                "schema": {
+                    "type": "object",
+                    "members": [
+                        {"name": name, "present": True, "schema": {"type": "string"}}
+                        for name in names
+                    ],
+                },
+            }
+        ],
+    }
+
+
+EXPECTED_SCHEMAS = {
+    "pushall": schema_for("pushing", ("command",)),
+    "get_version": schema_for("info", ("sequence_id", "command")),
+    "extrusion_cali_get": schema_for(
+        "print", ("command", "filament_id", "nozzle_diameter", "sequence_id")
+    ),
+}
 
 
 def validate_schema(value, depth=0):
@@ -398,7 +528,7 @@ serialized = path.read_text(encoding="ascii")
 for forbidden in (
     "MQTTOBS0000001",
     "TEST0000",
-    sys.argv[2],
+    sys.argv[4],
     "BEGIN CERTIFICATE",
     "PRIVATE KEY",
     "packet_id",
@@ -453,7 +583,87 @@ try:
         if type(request["payload_bytes"]) is not int or request["payload_bytes"] != length:
             raise ValueError("candidate payload length invalid")
         validate_schema(request["members"])
+        if request["members"] != EXPECTED_SCHEMAS[command]:
+            raise ValueError("candidate member schema invalid")
 except (KeyError, TypeError, ValueError):
     raise SystemExit("MQTT recorder evidence shape is invalid") from None
+
+provenance_path = pathlib.Path(sys.argv[2])
+try:
+    provenance_metadata = provenance_path.stat()
+    if (
+        not provenance_path.is_file()
+        or provenance_path.is_symlink()
+        or not 0 < provenance_metadata.st_size <= 512
+        or stat.S_IMODE(provenance_metadata.st_mode) != 0o600
+    ):
+        raise ValueError
+    provenance_serialized = provenance_path.read_text(encoding="ascii")
+    for forbidden in (
+        "MQTTOBS0000001",
+        "TEST0000",
+        sys.argv[4],
+        "BEGIN CERTIFICATE",
+        "PRIVATE KEY",
+        "packet_id",
+    ):
+        if forbidden in provenance_serialized:
+            raise ValueError
+    provenance = json.loads(
+        provenance_serialized,
+        object_pairs_hook=unique_object,
+        parse_constant=reject_constant,
+    )
+    require_keys(provenance, {"python", "openssl"})
+    if (
+        type(provenance["python"]) is not str
+        or PYTHON_VERSION.fullmatch(provenance["python"]) is None
+        or type(provenance["openssl"]) is not str
+        or OPENSSL_VERSION.fullmatch(provenance["openssl"]) is None
+    ):
+        raise ValueError
+    captured_at_utc = sys.argv[3]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", captured_at_utc) is None:
+        raise ValueError
+    datetime.datetime.strptime(captured_at_utc, "%Y-%m-%dT%H:%M:%SZ")
+    run_id = sys.argv[5]
+    harness_revision = sys.argv[6]
+    docker_client, docker_server = sys.argv[7].split("|", 1)
+    image_digest = IMAGE_DIGEST.fullmatch(sys.argv[8])
+    image_source_revision = sys.argv[9]
+    if (
+        RUN_ID.fullmatch(run_id) is None
+        or HEX_REVISION.fullmatch(harness_revision) is None
+        or DOCKER_VERSION.fullmatch(docker_client) is None
+        or DOCKER_VERSION.fullmatch(docker_server) is None
+        or image_digest is None
+        or image_source_revision != "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+    ):
+        raise ValueError
+except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit("MQTT recorder provenance is invalid") from None
+
+print(
+    json.dumps(
+        {
+            "captured_at_utc": captured_at_utc,
+            "command": f"scripts/capture-grove-mqtt-initial-requests.sh {run_id}",
+            "grove_image": {
+                "digest": image_digest.group(1),
+                "source_revision": image_source_revision,
+            },
+            "harness_revision": harness_revision,
+            "run_id": run_id,
+            "tool_versions": {
+                "docker_client": docker_client,
+                "docker_server": docker_server,
+                "openssl": provenance["openssl"],
+                "python": provenance["python"],
+            },
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+)
 PY
 cat -- "$evidence_dir/mqtt-initial-request-schema"
