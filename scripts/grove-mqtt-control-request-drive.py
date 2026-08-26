@@ -72,6 +72,11 @@ def _await_connected(printer_id: int) -> bool:
     return False
 
 
+def _failed(stage: str) -> int:
+    print(f"driver failed: {stage}")
+    return 1
+
+
 def main(arguments: list[str]) -> int:  # noqa: PLR0911 -- fixed non-reflecting failure exits.
     if len(arguments) != 1:
         return 2
@@ -89,28 +94,23 @@ def main(arguments: list[str]) -> int:  # noqa: PLR0911 -- fixed non-reflecting 
         ).encode("ascii"),
     )
     if status != 200:
-        print("drive failed: printer_create")
-        return 1
+        return _failed("printer_create")
     try:
         document = json.loads(body)
     except (TypeError, ValueError):
-        print("drive failed: printer_create_response")
-        return 1
+        return _failed("printer_create_response")
     printer_id = document.get("id") if isinstance(document, dict) else None
     if type(printer_id) is not int or printer_id < 1:
-        print("drive failed: printer_create_response")
-        return 1
+        return _failed("printer_create_response")
     if not _await_connected(printer_id):
-        print("drive failed: connected_printer_barrier")
-        return 1
-    for operation in ("pause", "resume", "stop", "pause"):
+        return _failed("connected_printer_barrier")
+    for index, operation in enumerate(("pause", "resume", "stop", "pause"), start=1):
         operation_status, _operation_body = _request(
             f"/api/v1/printers/{printer_id}/print/{operation}"
         )
         if operation_status != 200:
-            print("drive failed: control_endpoint")
-            return 1
-    print("public control endpoints invoked")
+            return _failed("control_pause_repeat" if index == 4 else f"control_{operation}")
+    print("driver complete: controls")
     return 0
 
 

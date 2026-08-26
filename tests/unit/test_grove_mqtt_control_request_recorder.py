@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,16 @@ def _module(name: str, filename: str) -> Any:
 
 def _recorder() -> Any:
     return _module("grove_mqtt_control_request_recorder", "grove-mqtt-control-request-recorder.py")
+
+
+def _diagnostics() -> Any:
+    return _module(
+        "grove_mqtt_control_request_diagnostics", "grove-mqtt-control-request-diagnostics.py"
+    )
+
+
+def _host_runner() -> Any:
+    return _module("run_grove_mqtt_control_driver", "run-grove-mqtt-control-driver.py")
 
 
 def _string(value: bytes) -> bytes:
@@ -281,6 +293,146 @@ def test_recorder_rejects_cross_operation_packet_id_reuse(
                 ]
             )
         )
+
+
+def _private_status(path: Path, contents: str, mode: int = 0o600) -> Path:
+    path.write_text(contents, encoding="ascii")
+    path.chmod(mode)
+    return path
+
+
+def test_private_diagnostics_accept_only_exact_positive_statuses(tmp_path: Path) -> None:
+    diagnostics = _diagnostics()
+    driver = _private_status(tmp_path / "driver", "driver complete: controls\n")
+    recorder = _private_status(
+        tmp_path / "recorder",
+        '{"status":"failure","code":"protocol_failure"}',
+    )
+
+    assert diagnostics.validate_driver_status(driver, 0) == diagnostics.DRIVER_SUCCESS
+    assert (
+        diagnostics.validate_recorder_status(recorder, 1)
+        == "MQTT_CONTROL_CAPTURE_RECORDER_PROTOCOL_FAILURE"
+    )
+
+
+@pytest.mark.parametrize(
+    ("contents", "mode"),
+    [
+        ("driver failed: control_pause_repeat\n", 0o600),
+        ("hostile output\n", 0o600),
+        ("driver complete: controls\n", 0o644),
+        ("x" * 257, 0o600),
+    ],
+)
+def test_private_driver_diagnostics_reject_or_map_only_allowlisted_output(
+    tmp_path: Path,
+    contents: str,
+    mode: int,
+) -> None:
+    diagnostics = _diagnostics()
+    path = _private_status(tmp_path / "driver", contents, mode)
+    expected = (
+        "MQTT_CONTROL_CAPTURE_DRIVER_PAUSE_REPEAT"
+        if contents == "driver failed: control_pause_repeat\n"
+        else diagnostics.DRIVER_INVALID
+    )
+
+    assert diagnostics.validate_driver_status(path, 1) == expected
+
+
+def test_private_diagnostics_reject_missing_and_hostile_recorder_status(tmp_path: Path) -> None:
+    diagnostics = _diagnostics()
+    missing = tmp_path / "missing"
+    duplicate = _private_status(
+        tmp_path / "duplicate",
+        '{"status":"failure","status":"failure","code":"timeout"}',
+    )
+    oversized = _private_status(tmp_path / "oversized", "x" * 257)
+
+    assert diagnostics.validate_recorder_status(missing, 1) == diagnostics.RECORDER_MISSING
+    assert diagnostics.validate_recorder_status(duplicate, 1) == diagnostics.RECORDER_INVALID
+    assert diagnostics.validate_recorder_status(oversized, 1) == diagnostics.RECORDER_INVALID
+
+
+def test_host_runner_atomically_retains_bounded_driver_status(tmp_path: Path) -> None:
+    runner = _host_runner()
+    tmp_path.chmod(0o700)
+    output = tmp_path / "driver-status"
+
+    status = runner.capture_driver(
+        [sys.executable, "-c", "import sys; sys.stdout.write('driver complete: controls\\n')"],
+        io.BytesIO(),
+        output,
+    )
+
+    assert status == 0
+    assert output.read_text(encoding="ascii") == "driver complete: controls\n"
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert not output.with_suffix(".tmp").exists()
+
+
+def test_host_runner_rejects_preexisting_and_symlink_outputs(tmp_path: Path) -> None:
+    runner = _host_runner()
+    tmp_path.chmod(0o700)
+    output = _private_status(tmp_path / "driver-status", "preserve\n")
+    command = [sys.executable, "-c", "import sys; sys.stdout.write('ignored')"]
+
+    assert (
+        runner.capture_driver(command, io.BytesIO(), output) == runner.OUTCOME_PRIVATE_PATH_INVALID
+    )
+    assert output.read_text(encoding="ascii") == "preserve\n"
+    output.unlink()
+    output.symlink_to(tmp_path / "outside")
+    assert (
+        runner.capture_driver(command, io.BytesIO(), output) == runner.OUTCOME_PRIVATE_PATH_INVALID
+    )
+
+
+def test_host_runner_rejects_oversize_and_timeout_without_publishing(tmp_path: Path) -> None:
+    runner = _host_runner()
+    tmp_path.chmod(0o700)
+    oversized = tmp_path / "oversized"
+    timeout = tmp_path / "timeout"
+
+    assert (
+        runner.capture_driver(
+            [sys.executable, "-c", "import sys; sys.stdout.write('x' * 257)"],
+            io.BytesIO(),
+            oversized,
+        )
+        == runner.OUTCOME_OVERSIZE
+    )
+    assert not oversized.exists()
+    assert (
+        runner.capture_driver(
+            [sys.executable, "-c", "import time; time.sleep(1)"],
+            io.BytesIO(),
+            timeout,
+            timeout_seconds=0.01,
+        )
+        == runner.OUTCOME_TIMEOUT
+    )
+    assert not timeout.exists()
+
+
+def test_host_runner_preserves_driver_exit_status(tmp_path: Path) -> None:
+    runner = _host_runner()
+    tmp_path.chmod(0o700)
+    output = tmp_path / "driver-status"
+
+    status = runner.capture_driver(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('driver failed: control_pause\\n'); sys.exit(7)",
+        ],
+        io.BytesIO(),
+        output,
+    )
+
+    assert status == 7
+    assert output.read_text(encoding="ascii") == "driver failed: control_pause\n"
 
 
 @pytest.mark.parametrize(

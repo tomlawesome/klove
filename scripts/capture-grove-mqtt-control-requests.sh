@@ -21,6 +21,7 @@ grove_source_revision="cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
 recorder_started=0
 grove_started=0
 evidence_dir=
+host_diagnostics_dir=
 
 write_recorder_origin() {
     temporary_origin="$recorder_origin.tmp"
@@ -56,6 +57,16 @@ cleanup() {
     trap - EXIT HUP INT TERM
     cleanup_ok=1
     cleanup_recorder || cleanup_ok=0
+    if [ -n "$host_diagnostics_dir" ] && [ -d "$host_diagnostics_dir" ]; then
+        if grove_observation_require_origin "$state_dir/origin" \
+            && grove_observation_require_name "$run_id"; then
+            rm -f -- "$host_diagnostics_dir/driver-status" \
+                "$host_diagnostics_dir/driver-status.tmp"
+            rmdir -- "$host_diagnostics_dir" 2>/dev/null || cleanup_ok=0
+        else
+            cleanup_ok=0
+        fi
+    fi
     if [ -n "$evidence_dir" ] && [ -d "$evidence_dir" ]; then
         rm -f -- "$evidence_dir/mqtt-control-request-schema" \
             "$evidence_dir/mqtt-control-request-schema.tmp" \
@@ -63,6 +74,8 @@ cleanup() {
             "$evidence_dir/mqtt-control-request-recorder-provenance.tmp" \
             "$evidence_dir/mqtt-control-request-status" \
             "$evidence_dir/mqtt-control-request-status.tmp" \
+            "$evidence_dir/mqtt-control-request-driver-status" \
+            "$evidence_dir/mqtt-control-request-driver-status.tmp" \
             "$evidence_dir/mqtt-control-request-ready" \
             "$evidence_dir/mqtt-control-request-ready.tmp"
         rmdir -- "$evidence_dir" 2>/dev/null || cleanup_ok=0
@@ -85,6 +98,8 @@ if ! capture_dirty=$(git -C "$repo_root" status --porcelain --untracked-files=al
     scripts/capture-grove-mqtt-control-requests.sh \
     scripts/grove-mqtt-control-request-recorder.py \
     scripts/grove-mqtt-control-request-drive.py \
+    scripts/grove-mqtt-control-request-diagnostics.py \
+    scripts/run-grove-mqtt-control-driver.py \
     scripts/grove-mqtt-initial-request-recorder.py \
     scripts/grove-observation-lib.sh scripts/grove-observation-up.sh \
     scripts/grove-observation-down.sh 2>/dev/null); then
@@ -185,12 +200,35 @@ if [ ! -f "$ready_path" ] || [ -L "$ready_path" ]; then
     echo "MQTT control recorder readiness timed out" >&2; exit 1
 fi
 
+host_diagnostics_dir=$(mktemp -d "$state_dir/mqtt-control-host.XXXXXX")
+chmod 700 "$host_diagnostics_dir"
+driver_status_path="$host_diagnostics_dir/driver-status"
 driver_status=0
-if timeout 30 docker exec --interactive "$grove_name" python - "$recorder_ip" \
-    < "$script_dir/grove-mqtt-control-request-drive.py" >/dev/null 2>&1; then :; else driver_status=$?; fi
+if python3 "$script_dir/run-grove-mqtt-control-driver.py" \
+    "$driver_status_path" "$grove_name" "$recorder_ip" \
+    "$script_dir/grove-mqtt-control-request-drive.py"; then :; else driver_status=$?; fi
 recorder_status=$(timeout 60 docker wait "$recorder_name" 2>/dev/null) || recorder_status=
-if [ "$driver_status" -ne 0 ] || [ "$recorder_status" != 0 ]; then
-    echo "MQTT control request observation failed" >&2; exit 1
+case "$driver_status" in
+    124) echo "MQTT_CONTROL_CAPTURE_DRIVER_TIMEOUT" >&2; exit 1;;
+    125) echo "MQTT_CONTROL_CAPTURE_DRIVER_STATUS_OVERSIZE" >&2; exit 1;;
+    126) echo "MQTT_CONTROL_CAPTURE_DRIVER_STATUS_INVALID" >&2; exit 1;;
+esac
+driver_code=$(python3 "$script_dir/grove-mqtt-control-request-diagnostics.py" \
+    driver "$driver_status_path" "$driver_status") || {
+    echo "MQTT_CONTROL_CAPTURE_DRIVER_STATUS_INVALID" >&2; exit 1;
+}
+if [ "$driver_code" != "MQTT_CONTROL_CAPTURE_DRIVER_COMPLETE" ]; then
+    echo "$driver_code" >&2; exit 1
+fi
+case "$recorder_status" in
+    '' | *[!0-9]*) echo "MQTT_CONTROL_CAPTURE_RECORDER_WAIT_INVALID" >&2; exit 1;;
+esac
+if [ "$recorder_status" -ne 0 ]; then
+    recorder_code=$(python3 "$script_dir/grove-mqtt-control-request-diagnostics.py" \
+        recorder "$evidence_dir/mqtt-control-request-status" "$recorder_status") || {
+        echo "MQTT_CONTROL_CAPTURE_RECORDER_STATUS_INVALID" >&2; exit 1;
+    }
+    echo "$recorder_code" >&2; exit 1
 fi
 captured_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
     echo "MQTT control capture timestamp is unavailable" >&2; exit 1;
