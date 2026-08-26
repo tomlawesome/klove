@@ -200,14 +200,14 @@ def test_two_session_observation_rejects_finish_profile_change(
 ) -> None:
     recorder = _recorder()
     changed_finish = _status("FINISH")
-    changed_finish["print"]["unexpected"] = True
+    changed_print = changed_finish["print"]
+    assert isinstance(changed_print, dict)
+    changed_print["unexpected"] = True
     sessions = iter(
         (
             _Connection(),
             _Connection(
-                _report(_acknowledgement())
-                + _report(_status("PREPARE"))
-                + _report(changed_finish)
+                _report(_acknowledgement()) + _report(_status("PREPARE")) + _report(changed_finish)
             ),
         )
     )
