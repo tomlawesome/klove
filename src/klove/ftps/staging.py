@@ -158,7 +158,7 @@ class FtpsStagingWriter:
                 archive_size_bytes=self._byte_count,
                 archive_sha256=f"sha256:{self._digest.hexdigest()}",
             )
-            self._store._commit(self._reservation, artifact)
+            artifact = self._store._commit(self._reservation, artifact)
             self._active = False
             return artifact
         except BaseException as exc:
@@ -444,28 +444,77 @@ class FtpsStagingStore:
         except (OSError, PrivateFileError, ValueError, json.JSONDecodeError) as exc:
             raise FtpsStagingError from exc
 
-    def _commit(self, reservation: FtpsStageReservation, artifact: StagedArtifact) -> None:
+    def _commit(
+        self, reservation: FtpsStageReservation, artifact: StagedArtifact
+    ) -> StagedArtifact:
         paths = self._paths(reservation)
-        try:
-            _require_unlinked_private_file(paths.reservation)
-            if _read_reservation(paths.reservation) != reservation:
+        with self._capacity_lock:
+            try:
+                _require_unlinked_private_file(paths.reservation)
+                if _read_reservation(paths.reservation) != reservation:
+                    raise FtpsStagingError
+                _require_unlinked_private_file(paths.receiving)
+                os.link(paths.receiving, paths.source, follow_symlinks=False)
+                paths.receiving.unlink()
+                fsync_directory(self._directory)
+                existing = self._repeat_match(reservation, artifact, paths)
+                if existing is not None:
+                    paths.source.unlink()
+                    paths.reservation.unlink()
+                    fsync_directory(self._directory)
+                    return existing
+                _write_receipt(paths.receipt, artifact)
+                paths.reservation.unlink()
+                fsync_directory(self._directory)
+                return artifact
+            except Exception as exc:
+                paths.receipt.unlink(missing_ok=True)
+                paths.source.unlink(missing_ok=True)
+                paths.receiving.unlink(missing_ok=True)
+                paths.reservation.unlink(missing_ok=True)
+                fsync_directory(self._directory)
+                if isinstance(exc, FtpsStagingError):
+                    raise
+                raise FtpsStagingError from exc
+
+    def _repeat_match(
+        self,
+        reservation: FtpsStageReservation,
+        artifact: StagedArtifact,
+        paths: _StagePaths,
+    ) -> StagedArtifact | None:
+        current_found = False
+        matches: list[StagedArtifact] = []
+        for action, stage_paths, candidate in self._reconciliation_actions():
+            stage_reservation = _stage_reservation(action, stage_paths, candidate)
+            if stage_reservation.staging_id == reservation.staging_id:
+                if action != "write_receipt" or stage_paths != paths or candidate != artifact:
+                    raise FtpsStagingError
+                current_found = True
+                continue
+            if (
+                stage_reservation.printer_uuid != reservation.printer_uuid
+                or stage_reservation.client_path != reservation.client_path
+            ):
+                continue
+            if action == "discard_incomplete":
+                # A receiving reservation has no immutable bytes yet. Its later commit
+                # rechecks under this lock and therefore observes this canonical result.
+                continue
+            if action != "stable" or candidate is None:
                 raise FtpsStagingError
-            _require_unlinked_private_file(paths.receiving)
-            os.link(paths.receiving, paths.source, follow_symlinks=False)
-            paths.receiving.unlink()
-            fsync_directory(self._directory)
-            _write_receipt(paths.receipt, artifact)
-            paths.reservation.unlink()
-            fsync_directory(self._directory)
-        except Exception as exc:
-            paths.receipt.unlink(missing_ok=True)
-            paths.source.unlink(missing_ok=True)
-            paths.receiving.unlink(missing_ok=True)
-            paths.reservation.unlink(missing_ok=True)
-            fsync_directory(self._directory)
-            if isinstance(exc, FtpsStagingError):
-                raise
-            raise FtpsStagingError from exc
+            matches.append(candidate)
+        if not current_found or len(matches) > 1:
+            raise FtpsStagingError
+        if not matches:
+            return None
+        existing = matches[0]
+        if (
+            existing.archive_size_bytes != artifact.archive_size_bytes
+            or existing.archive_sha256 != artifact.archive_sha256
+        ):
+            raise FtpsStagingError
+        return existing
 
     def _abort(self, reservation: FtpsStageReservation) -> None:
         paths = self._paths(reservation)
@@ -563,6 +612,25 @@ def _require_stage_receipt(path: Path, stage_id: str) -> StagedArtifact:
     if artifact.reservation.staging_id != stage_id:
         raise FtpsStagingError
     return artifact
+
+
+def _stage_reservation(
+    action: str, paths: _StagePaths, artifact: StagedArtifact | None
+) -> FtpsStageReservation:
+    if action in {"stable", "write_receipt"}:
+        return cast(StagedArtifact, artifact).reservation
+    if action in {
+        "discard_reservation",
+        "discard_partial_receipt",
+        "discard_incomplete",
+        "remove_reservation",
+    }:
+        return _require_stage_reservation(paths.reservation, paths.reservation.stem)
+    if action == "finish_consuming":
+        return _require_stage_receipt(paths.receipt, paths.receipt.stem).reservation
+    if action in {"finish_removing_source", "finish_removing_marker"}:
+        return _require_stage_receipt(paths.removing, paths.removing.stem).reservation
+    raise FtpsStagingError
 
 
 def _require_canonical_uuid4(value: object) -> None:
