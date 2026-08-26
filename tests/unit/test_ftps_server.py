@@ -21,6 +21,7 @@ from klove.ftps.server import (
     FtpsTlsServer,
     _blocking,
     _bound_port,
+    _DataConnectionSlot,
     _ipv4,
     _pasv_reply,
     _tls_context,
@@ -29,7 +30,10 @@ from klove.ftps.server import (
 from klove.ftps.staging import FtpsStagingStore
 from klove.orchestration.admission import PrinterAdmissionGates
 from klove.security.compatibility import CompatibilityAuthenticator, CompatibilityPrincipal
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
 from tests.support.ftps_conformance_client import FtpsConformanceClient
+
+from ..onboarding_helpers import printer, safety_profile
 
 ACCESS_CODE = "X" * 20
 PRINTER_UUID = "01234567-89ab-4def-8123-456789abcdef"
@@ -452,9 +456,9 @@ async def test_session_upload_closes_passive_and_stages_exact_bytes(
 
     async def open_passive(
         _peer: str,
-        future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]],
+        slot: _DataConnectionSlot,
     ) -> PassiveServer:
-        future.set_result((data_reader, cast(asyncio.StreamWriter, data_writer), "127.0.0.1", True))
+        slot.accept((data_reader, cast(asyncio.StreamWriter, data_writer), "127.0.0.1", True))
         return passive
 
     monkeypatch.setattr(server, "_open_passive", open_passive)
@@ -482,6 +486,171 @@ async def test_session_upload_closes_passive_and_stages_exact_bytes(
     assert bytes(writer.output).endswith(b"226 Transfer complete\r\n221 Goodbye\r\n")
     assert auth.revalidate_calls == [PRINCIPAL] * 7
     assert len(auth.admission_leases) == 1
+    assert server._printer_sessions == {}
+
+
+async def test_lifecycle_revocation_cancels_passive_transfer_and_runs_session_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(record)
+    staging = Staging()
+    auth = Authenticator()
+    auth.principal = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, auth),
+        cast(FtpsStagingStore, staging),
+        ADMISSIONS,
+        session_registry=sessions,
+    )
+    passive = PassiveServer()
+    opened = asyncio.Event()
+
+    async def open_passive(
+        _peer: str,
+        _slot: _DataConnectionSlot,
+    ) -> PassiveServer:
+        opened.set()
+        return passive
+
+    monkeypatch.setattr(server, "_open_passive", open_passive)
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"USER bblp\r\n"
+        + f"PASS {ACCESS_CODE}\r\n".encode()
+        + b"PBSZ 0\r\nPROT P\r\nPASV\r\nSTOR /observation.3mf\r\n"
+    )
+    writer = Writer()
+    task = asyncio.create_task(server._session(reader, cast(asyncio.StreamWriter, writer)))
+    await opened.wait()
+    sessions.reconcile_committed(
+        record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert passive.closed and passive.waited
+    assert writer.closed and server._printer_sessions == {}
+    assert staging.reservations == []
+    assert not server._transfers.locked()
+
+
+async def test_lifecycle_revocation_closes_data_accepted_before_session_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(record)
+    auth = Authenticator()
+    auth.principal = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, auth),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+        session_registry=sessions,
+    )
+    passive = PassiveServer()
+    opened = asyncio.Event()
+    accepted: _DataConnectionSlot | None = None
+
+    async def open_passive(
+        _peer: str,
+        slot: _DataConnectionSlot,
+    ) -> PassiveServer:
+        nonlocal accepted
+        accepted = slot
+        opened.set()
+        return passive
+
+    monkeypatch.setattr(server, "_open_passive", open_passive)
+    control_reader = asyncio.StreamReader()
+    control_reader.feed_data(
+        b"USER bblp\r\n"
+        + f"PASS {ACCESS_CODE}\r\n".encode()
+        + b"PBSZ 0\r\nPROT P\r\nPASV\r\nSTOR /observation.3mf\r\n"
+    )
+    control_writer = Writer()
+    task = asyncio.create_task(
+        server._session(control_reader, cast(asyncio.StreamWriter, control_writer))
+    )
+    await opened.wait()
+    await asyncio.sleep(0)
+    data_writer = Writer(peer=("127.0.0.1", 2222), ssl_object=object())
+    cast(_DataConnectionSlot, accepted).accept(
+        (
+            asyncio.StreamReader(),
+            cast(asyncio.StreamWriter, data_writer),
+            "127.0.0.1",
+            True,
+        )
+    )
+    sessions.reconcile_committed(
+        record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert data_writer.closed
+
+
+async def test_late_stale_ftps_registration_cancels_before_authentication_response(
+    tmp_path: Path,
+) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(
+        record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    )
+    auth = Authenticator()
+    auth.principal = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server = FtpsTlsServer(
+        config(tmp_path),
+        cast(CompatibilityAuthenticator, auth),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+        session_registry=sessions,
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"USER bblp\r\n" + f"PASS {ACCESS_CODE}\r\n".encode())
+    writer = Writer()
+    task = asyncio.create_task(server._session(reader, cast(asyncio.StreamWriter, writer)))
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert writer.closed and b"230 Authenticated" not in writer.output
     assert server._printer_sessions == {}
 
 
@@ -514,9 +683,9 @@ async def test_session_fail_closed_before_stage_for_data_and_resource_limits(
 
     async def mismatched_peer(
         _peer: str,
-        future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]],
+        slot: _DataConnectionSlot,
     ) -> PassiveServer:
-        future.set_result(
+        slot.accept(
             (
                 asyncio.StreamReader(),
                 cast(asyncio.StreamWriter, Writer(peer=("127.0.0.2", 3))),
@@ -539,9 +708,9 @@ async def test_session_fail_closed_before_stage_for_data_and_resource_limits(
 
     async def unprotected_data(
         _peer: str,
-        future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]],
+        slot: _DataConnectionSlot,
     ) -> PassiveServer:
-        future.set_result(
+        slot.accept(
             (
                 asyncio.StreamReader(),
                 cast(asyncio.StreamWriter, Writer(peer=("127.0.0.1", 3))),
@@ -656,31 +825,33 @@ async def test_open_passive_checks_all_ports_and_refuses_unprotected_or_wrong_pe
 
     monkeypatch.setattr(asyncio, "start_server", start_server)
     monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _private_key: object())
-    future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]] = (
-        asyncio.get_running_loop().create_future()
-    )
-    passive = await server._open_passive("127.0.0.1", future)
+    slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
+    passive = await server._open_passive("127.0.0.1", slot)
     assert attempts == [40000, 40001]
     assert passive in server._passive_servers
 
     wrong = Writer(peer=("127.0.0.2", 4))
     await callbacks[-1](asyncio.StreamReader(), wrong)
-    assert wrong.closed and not future.done()
+    assert wrong.closed and not slot.future.done()
     unprotected = Writer(peer=("127.0.0.1", 4))
     await callbacks[-1](asyncio.StreamReader(), unprotected)
-    assert unprotected.closed and not future.done()
+    assert unprotected.closed and not slot.future.done()
     protected = Writer(peer=("127.0.0.1", 4), ssl_object=object())
     data_reader = asyncio.StreamReader()
     await callbacks[-1](data_reader, protected)
-    assert future.result() == (
+    assert slot.future.result() == (
         data_reader,
         cast(asyncio.StreamWriter, protected),
         "127.0.0.1",
         True,
     )
-    duplicate = Writer(peer=("127.0.0.1", 4))
+    duplicate = Writer(peer=("127.0.0.1", 4), ssl_object=object())
     await callbacks[-1](asyncio.StreamReader(), duplicate)
     assert duplicate.closed
+    slot.close()
+    late = Writer(peer=("127.0.0.1", 4), ssl_object=object())
+    await callbacks[-1](asyncio.StreamReader(), late)
+    assert late.closed
 
 
 async def test_open_passive_reports_exhaustion_and_stage_aborts_on_failure(
@@ -698,11 +869,9 @@ async def test_open_passive_reports_exhaustion_and_stage_aborts_on_failure(
 
     monkeypatch.setattr(asyncio, "start_server", unavailable)
     monkeypatch.setattr(server_module, "_tls_context", lambda _certificate, _private_key: object())
-    future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]] = (
-        asyncio.get_running_loop().create_future()
-    )
+    slot = _DataConnectionSlot(asyncio.get_running_loop().create_future())
     with pytest.raises(OSError, match="no configured"):
-        await server._open_passive("127.0.0.1", future)
+        await server._open_passive("127.0.0.1", slot)
 
     stage = Stage(write_error=OSError("full"))
     staging = Staging(stage)
