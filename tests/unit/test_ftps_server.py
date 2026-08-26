@@ -336,11 +336,14 @@ def test_bind_diagnostic_result_rejects_nonexact_state(available: object, code: 
         FtpsBindDiagnosticResult(cast(bool, available), cast(FtpsBindDiagnosticCode, code))
 
 
-def test_bind_diagnostic_accepts_wildcard_private_network_binding(
+def test_bind_diagnostic_accepts_wildcard_rfc1918_network_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = readiness_config(tmp_path).model_copy(
-        update={"listen_host": "0.0.0.0"}  # noqa: S104 -- accepted container bridge bind.
+        update={
+            "listen_host": "0.0.0.0",  # noqa: S104 -- accepted container bridge bind.
+            "ftps_advertised_ipv4": "192.168.1.20",
+        }
     )
     diagnostic = FtpsBindSetDiagnostic(settings)
     probes: list[ProbeSocket] = []
@@ -400,10 +403,12 @@ def test_bind_diagnostic_rejects_broadcast_or_mismatched_topology(
         {"ftps_advertised_ipv4": None},
         {"listen_host": "not-an-ip-address"},
         {"ftps_advertised_ipv4": "not-an-ip-address"},
+        {"listen_host": 1},
+        {"ftps_advertised_ipv4": 1},
     ],
 )
 def test_bind_diagnostic_rejects_defensively_invalid_topology_without_binding(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: dict[str, str | None]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: dict[str, object]
 ) -> None:
     settings = readiness_config(tmp_path).model_copy(update=update)
     monkeypatch.setattr(
