@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import socket
 import ssl
 import subprocess
 import threading
@@ -18,6 +19,9 @@ from klove.domain.artifacts import ArtifactLimits
 from klove.ftps import server as server_module
 from klove.ftps.protocol import FtpsAction, FtpsEvent, FtpsProtocolError
 from klove.ftps.server import (
+    FtpsBindDiagnosticCode,
+    FtpsBindDiagnosticResult,
+    FtpsBindSetDiagnostic,
     FtpsTlsServer,
     _blocking,
     _bound_port,
@@ -113,6 +117,301 @@ def config(tmp_path: Path) -> GroveBridgeConfig:
         ingress_capacity=4,
         staging_ttl_seconds=60,
     )
+
+
+def readiness_config(tmp_path: Path) -> GroveBridgeConfig:
+    return config(tmp_path).model_copy(
+        update={
+            "listen_host": "127.0.0.1",
+            "ftps_advertised_ipv4": "127.0.0.1",
+            "ftps_control_port": 49000,
+            "ftps_passive_port_min": 49001,
+            "ftps_passive_port_max": 49003,
+        }
+    )
+
+
+class ProbeSocket:
+    def __init__(self, port: int, close_error: BaseException | None = None) -> None:
+        self.port = port
+        self.closed = False
+        self.close_attempts = 0
+        self.close_error = close_error
+
+    def close(self) -> None:
+        self.closed = True
+        self.close_attempts += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def test_bind_diagnostic_checks_every_configured_port_and_releases_on_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    diagnostic = FtpsBindSetDiagnostic(settings)
+    probes: list[ProbeSocket] = []
+
+    def open_probe(_host: str, port: int) -> ProbeSocket:
+        probe = ProbeSocket(port)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    assert diagnostic.check() == FtpsBindDiagnosticResult(True)
+    assert [probe.port for probe in probes] == [49000, 49001, 49002, 49003]
+    assert all(probe.closed for probe in probes)
+
+
+def test_bind_diagnostic_returns_fixed_control_conflict_without_leaking_passive_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    calls: list[int] = []
+
+    def open_probe(_host: str, port: int) -> ProbeSocket:
+        calls.append(port)
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+    diagnostic = FtpsBindSetDiagnostic(settings)
+    result = diagnostic.check()
+
+    assert result == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.CONTROL_PORT_UNAVAILABLE
+    )
+    assert calls == [settings.ftps_control_port]
+
+
+def test_bind_diagnostic_releases_control_port_after_passive_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    control = ProbeSocket(settings.ftps_control_port)
+
+    def open_probe(_host: str, port: int) -> ProbeSocket:
+        if port == settings.ftps_control_port:
+            return control
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+    diagnostic = FtpsBindSetDiagnostic(settings)
+    result = diagnostic.check()
+
+    assert result == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.PASSIVE_PORT_UNAVAILABLE
+    )
+    assert control.closed is True
+
+
+def test_bind_diagnostic_releases_control_port_on_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    control = ProbeSocket(settings.ftps_control_port)
+
+    def open_probe(_host: str, port: int) -> ProbeSocket:
+        if port == settings.ftps_control_port:
+            return control
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    with pytest.raises(KeyboardInterrupt):
+        FtpsBindSetDiagnostic(settings).check()
+
+    assert control.closed is True
+
+
+def test_bind_diagnostic_attempts_every_close_and_returns_fixed_release_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    original = [
+        ProbeSocket(settings.ftps_control_port, OSError("close failed")),
+        ProbeSocket(settings.ftps_passive_port_min),
+        ProbeSocket(settings.ftps_passive_port_min + 1, OSError("close failed")),
+        ProbeSocket(settings.ftps_passive_port_max),
+    ]
+    probes = list(original)
+
+    def open_probe(_host: str, _port: int) -> ProbeSocket:
+        return probes.pop(0)
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    assert FtpsBindSetDiagnostic(settings).check() == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.PROBE_RELEASE_FAILED
+    )
+    assert all(probe.close_attempts == 1 for probe in original)
+
+
+def test_bind_diagnostic_attempts_every_close_before_reraising_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path)
+    original = [
+        ProbeSocket(settings.ftps_control_port, KeyboardInterrupt()),
+        ProbeSocket(settings.ftps_passive_port_min),
+        ProbeSocket(settings.ftps_passive_port_min + 1),
+        ProbeSocket(settings.ftps_passive_port_max),
+    ]
+    probes = list(original)
+
+    def open_probe(_host: str, _port: int) -> ProbeSocket:
+        return probes.pop(0)
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    with pytest.raises(KeyboardInterrupt):
+        FtpsBindSetDiagnostic(settings).check()
+
+    assert all(probe.close_attempts == 1 for probe in original)
+
+
+@pytest.mark.parametrize(
+    ("available", "code"),
+    [
+        (True, FtpsBindDiagnosticCode.CONTROL_PORT_UNAVAILABLE),
+        (False, None),
+        (False, "ftps_control_port_unavailable"),
+        (1, None),
+    ],
+)
+def test_bind_diagnostic_result_rejects_nonexact_state(available: object, code: object) -> None:
+    with pytest.raises(ValueError):
+        FtpsBindDiagnosticResult(cast(bool, available), cast(FtpsBindDiagnosticCode, code))
+
+
+def test_bind_diagnostic_accepts_wildcard_private_network_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(
+        update={"listen_host": "0.0.0.0"}  # noqa: S104 -- accepted container bridge bind.
+    )
+    diagnostic = FtpsBindSetDiagnostic(settings)
+    probes: list[ProbeSocket] = []
+    calls: list[tuple[str, int]] = []
+
+    def open_probe(host: str, port: int) -> ProbeSocket:
+        calls.append((host, port))
+        probe = ProbeSocket(port)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(server_module, "_open_probe_socket", open_probe)
+
+    assert diagnostic.check() == FtpsBindDiagnosticResult(True)
+    assert {host for host, _port in calls} == {"0.0.0.0"}  # noqa: S104 -- asserted bridge bind.
+    assert all(probe.closed for probe in probes)
+
+
+def test_bind_diagnostic_rejects_nonprivate_advertised_topology_without_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = readiness_config(tmp_path).model_copy(update={"ftps_advertised_ipv4": "8.8.8.8"})
+    diagnostic = FtpsBindSetDiagnostic(settings)
+
+    monkeypatch.setattr(
+        server_module,
+        "_open_probe_socket",
+        lambda _host, _port: pytest.fail("unsupported topology must not bind"),
+    )
+
+    assert diagnostic.check() == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
+    )
+
+
+def test_bind_diagnostic_rejects_broadcast_or_mismatched_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        server_module,
+        "_open_probe_socket",
+        lambda _host, _port: pytest.fail("unsupported topology must not bind"),
+    )
+    for update in (
+        {"ftps_advertised_ipv4": "255.255.255.255"},
+        {"listen_host": "192.168.1.2", "ftps_advertised_ipv4": "192.168.1.3"},
+    ):
+        settings = readiness_config(tmp_path).model_copy(update=update)
+        assert FtpsBindSetDiagnostic(settings).check() == FtpsBindDiagnosticResult(
+            False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
+        )
+
+
+def real_socket_or_skip() -> socket.socket:
+    try:
+        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except PermissionError:
+        pytest.skip("raw loopback sockets are unavailable in this sandbox")
+
+
+def real_bind_or_skip(port: int) -> socket.socket:
+    probe = real_socket_or_skip()
+    try:
+        probe.bind(("127.0.0.1", port))
+    except BaseException:
+        probe.close()
+        raise
+    return probe
+
+
+def real_readiness_config_or_skip(tmp_path: Path) -> GroveBridgeConfig:
+    control = real_bind_or_skip(0)
+    passive = real_bind_or_skip(0)
+    try:
+        control_port = cast(int, control.getsockname()[1])
+        passive_port = cast(int, passive.getsockname()[1])
+    finally:
+        control.close()
+        passive.close()
+    return readiness_config(tmp_path).model_copy(
+        update={
+            "ftps_control_port": control_port,
+            "ftps_passive_port_min": passive_port,
+            "ftps_passive_port_max": passive_port,
+        }
+    )
+
+
+def test_bind_diagnostic_real_loopback_success_releases_every_port(tmp_path: Path) -> None:
+    settings = real_readiness_config_or_skip(tmp_path)
+
+    assert FtpsBindSetDiagnostic(settings).check() == FtpsBindDiagnosticResult(True)
+    for port in (settings.ftps_control_port, settings.ftps_passive_port_min):
+        probe = real_bind_or_skip(port)
+        probe.close()
+
+
+def test_bind_diagnostic_real_loopback_control_conflict(tmp_path: Path) -> None:
+    settings = real_readiness_config_or_skip(tmp_path)
+    blocker = real_bind_or_skip(settings.ftps_control_port)
+    try:
+        result = FtpsBindSetDiagnostic(settings).check()
+    finally:
+        blocker.close()
+
+    assert result == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.CONTROL_PORT_UNAVAILABLE
+    )
+
+
+def test_bind_diagnostic_real_loopback_passive_conflict_releases_control(tmp_path: Path) -> None:
+    settings = real_readiness_config_or_skip(tmp_path)
+    blocker = real_bind_or_skip(settings.ftps_passive_port_min)
+    try:
+        result = FtpsBindSetDiagnostic(settings).check()
+    finally:
+        blocker.close()
+
+    assert result == FtpsBindDiagnosticResult(
+        False, FtpsBindDiagnosticCode.PASSIVE_PORT_UNAVAILABLE
+    )
+    released_control = real_bind_or_skip(settings.ftps_control_port)
+    released_control.close()
 
 
 async def test_real_conformance_cleanup_and_upload_create_only_private_stage(
