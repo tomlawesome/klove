@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -315,11 +316,33 @@ def test_candidate_validation_rejects_unproven_result_or_replay_claim(
         recorder.validate_candidate(candidate)
 
 
+def test_observation_failures_are_closed_static_codes_without_value_reflection() -> None:
+    recorder = _recorder()
+    tree = ast.parse((SCRIPTS / "grove-mqtt-report-recorder.py").read_text(encoding="utf-8"))
+    raise_codes = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ObservationFailure"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    assert raise_codes == recorder.PROTOCOL_CODES
+    for code in recorder.PROTOCOL_CODES:
+        failure = recorder.ObservationFailure(code)
+        assert failure.code == code
+        assert recorder._failure_status(failure) == {"status": "failure", "code": code}
+    with pytest.raises(ValueError) as captured:
+        recorder.ObservationFailure("peer-controlled-value")
+    assert "peer-controlled-value" not in str(captured.value)
+
+
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
         ("internal_failure", "MQTT_REPORT_CAPTURE_RECORDER_INTERNAL_FAILURE"),
-        ("protocol_failure", "MQTT_REPORT_CAPTURE_RECORDER_PROTOCOL_FAILURE"),
         ("timeout", "MQTT_REPORT_CAPTURE_RECORDER_TIMEOUT"),
         ("tls_failure", "MQTT_REPORT_CAPTURE_RECORDER_TLS_FAILURE"),
         ("transport_failure", "MQTT_REPORT_CAPTURE_RECORDER_TRANSPORT_FAILURE"),
@@ -337,10 +360,28 @@ def test_report_diagnostics_allow_only_fixed_owner_private_statuses(
     assert diagnostics.validate_recorder_status(path, 1) == expected
 
 
+def test_report_diagnostics_maps_only_closed_protocol_codes(tmp_path: Path) -> None:
+    diagnostics = _diagnostics()
+    recorder = _recorder()
+    assert diagnostics._PROTOCOL_CODES == recorder.PROTOCOL_CODES
+    tmp_path.chmod(0o700)
+    path = tmp_path / "status"
+    for code in recorder.PROTOCOL_CODES:
+        path.write_text(json.dumps({"status": "failure", "code": code}), encoding="ascii")
+        path.chmod(0o600)
+        assert (
+            diagnostics.validate_recorder_status(path, 1)
+            == f"MQTT_REPORT_CAPTURE_PROTOCOL_{code.upper()}"
+        )
+    path.write_text('{"status":"failure","code":"peer-controlled-value"}', encoding="ascii")
+    path.chmod(0o600)
+    assert diagnostics.validate_recorder_status(path, 1) == diagnostics.STATUS_INVALID
+
+
 @pytest.mark.parametrize(
     "contents",
     [
-        '{"status":"failure","code":"protocol_failure","code":"timeout"}',
+        '{"status":"failure","code":"report_replay","code":"timeout"}',
         '{"status":"failure","code":NaN}',
         '{"status":"success","code":"timeout"}',
         '{"status":"failure","code":"peer controlled"}',

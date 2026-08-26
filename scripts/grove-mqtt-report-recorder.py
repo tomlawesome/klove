@@ -37,13 +37,58 @@ STATUS_PATH = Path("/evidence/mqtt-report-status")
 READY_PATH = Path("/evidence/mqtt-report-ready")
 PYTHON_VERSION = re.compile(r"3\.13\.(?:0|[1-9][0-9]{0,2})\Z")
 OPENSSL_VERSION = re.compile(r"OpenSSL (3\.[0-9]+\.[0-9]+)(?: [0-9]{1,2} [A-Za-z]{3} [0-9]{4})?\Z")
-FAILURE_CODES = frozenset(
-    {"internal_failure", "protocol_failure", "timeout", "tls_failure", "transport_failure"}
+FAILURE_CODES = frozenset({"internal_failure", "timeout", "tls_failure", "transport_failure"})
+PROTOCOL_CODES = frozenset(
+    {
+        "candidate_header_invalid",
+        "candidate_lifecycle_invalid",
+        "candidate_reports_invalid",
+        "candidate_request_invalid",
+        "candidate_result_invalid",
+        "candidate_shape_invalid",
+        "connack_invalid",
+        "evidence_directory_not_owner_private",
+        "evidence_path_already_exists",
+        "initial_observer_unavailable",
+        "json_member_invalid",
+        "mqtt_string_invalid",
+        "packet_invalid",
+        "payload_depth_invalid",
+        "payload_json_constant",
+        "payload_members_invalid",
+        "payload_type_invalid",
+        "post_ack_prepare_invalid",
+        "post_finish_packet_invalid",
+        "post_finish_packet_limit",
+        "post_finish_report",
+        "post_prepare_finish_invalid",
+        "pre_suback_report_limit",
+        "project_result_invalid",
+        "recorder_tool_version_invalid",
+        "report_command_invalid",
+        "report_envelope_invalid",
+        "report_json_invalid",
+        "report_publish_flags_invalid",
+        "report_replay",
+        "report_sequence_incomplete",
+        "report_topic_invalid",
+        "serial_invalid",
+        "session_invalid",
+        "stale_pre_ack_report",
+        "subscribe_invalid",
+        "subscribe_response_invalid",
+    }
 )
 
 
 class ObservationFailure(Exception):
     """A fixed-code failure which deliberately excludes peer-controlled text."""
+
+    def __init__(self, code: str) -> None:
+        if code not in PROTOCOL_CODES:
+            raise ValueError("observation_failure_code_invalid")
+        self.code = code
+        super().__init__(code)
 
 
 def _initial() -> ModuleType:
@@ -565,11 +610,16 @@ def _failure_code(error: Exception) -> str:
         return "timeout"
     if isinstance(error, ssl.SSLError):
         return "tls_failure"
-    if isinstance(error, ObservationFailure):
-        return "protocol_failure"
     if isinstance(error, OSError):
         return "transport_failure"
     return "internal_failure"
+
+
+def _failure_status(error: Exception) -> dict[str, str]:
+    if isinstance(error, ObservationFailure):
+        return {"status": "failure", "code": error.code}
+    code = _failure_code(error)
+    return {"status": "failure", "code": code if code in FAILURE_CODES else "internal_failure"}
 
 
 def main(arguments: list[str]) -> int:
@@ -590,7 +640,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
     except Exception as error:
+        status = _failure_status(error)
         with contextlib.suppress(Exception):
-            _private_json(STATUS_PATH, {"status": "failure", "code": _failure_code(error)})
-        print(f"observation failed: {_failure_code(error)}", flush=True)
+            _private_json(STATUS_PATH, status)
+        print(f"observation failed: {status['code']}", flush=True)
         raise SystemExit(1) from None

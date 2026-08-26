@@ -211,10 +211,10 @@ if [ "$recorder_status" -ne 0 ]; then
         "$evidence_dir/mqtt-report-status" "$recorder_status" 2>/dev/null) || recorder_code=
     case "$recorder_code" in
         MQTT_REPORT_CAPTURE_RECORDER_INTERNAL_FAILURE \
-        | MQTT_REPORT_CAPTURE_RECORDER_PROTOCOL_FAILURE \
         | MQTT_REPORT_CAPTURE_RECORDER_TIMEOUT \
         | MQTT_REPORT_CAPTURE_RECORDER_TLS_FAILURE \
-        | MQTT_REPORT_CAPTURE_RECORDER_TRANSPORT_FAILURE)
+        | MQTT_REPORT_CAPTURE_RECORDER_TRANSPORT_FAILURE \
+        | MQTT_REPORT_CAPTURE_PROTOCOL_*)
             echo "$recorder_code" >&2; exit 1;;
         *) echo "MQTT_REPORT_CAPTURE_RECORDER_STATUS_INVALID" >&2; exit 1;;
     esac

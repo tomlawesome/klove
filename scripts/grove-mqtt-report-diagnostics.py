@@ -11,8 +11,47 @@ from pathlib import Path
 
 MAX_STATUS_BYTES = 256
 STATUS_INVALID = "MQTT_REPORT_CAPTURE_RECORDER_STATUS_INVALID"
-_FAILURE_CODES = frozenset(
-    {"internal_failure", "protocol_failure", "timeout", "tls_failure", "transport_failure"}
+_FAILURE_CODES = frozenset({"internal_failure", "timeout", "tls_failure", "transport_failure"})
+_PROTOCOL_CODES = frozenset(
+    {
+        "candidate_header_invalid",
+        "candidate_lifecycle_invalid",
+        "candidate_reports_invalid",
+        "candidate_request_invalid",
+        "candidate_result_invalid",
+        "candidate_shape_invalid",
+        "connack_invalid",
+        "evidence_directory_not_owner_private",
+        "evidence_path_already_exists",
+        "initial_observer_unavailable",
+        "json_member_invalid",
+        "mqtt_string_invalid",
+        "packet_invalid",
+        "payload_depth_invalid",
+        "payload_json_constant",
+        "payload_members_invalid",
+        "payload_type_invalid",
+        "post_ack_prepare_invalid",
+        "post_finish_packet_invalid",
+        "post_finish_packet_limit",
+        "post_finish_report",
+        "post_prepare_finish_invalid",
+        "pre_suback_report_limit",
+        "project_result_invalid",
+        "recorder_tool_version_invalid",
+        "report_command_invalid",
+        "report_envelope_invalid",
+        "report_json_invalid",
+        "report_publish_flags_invalid",
+        "report_replay",
+        "report_sequence_incomplete",
+        "report_topic_invalid",
+        "serial_invalid",
+        "session_invalid",
+        "stale_pre_ack_report",
+        "subscribe_invalid",
+        "subscribe_response_invalid",
+    }
 )
 
 
@@ -70,9 +109,11 @@ def validate_recorder_status(path: Path, exit_status: int) -> str:
         or set(document) != {"status", "code"}
         or document.get("status") != "failure"
         or type(document.get("code")) is not str
-        or document["code"] not in _FAILURE_CODES
+        or (document["code"] not in _FAILURE_CODES and document["code"] not in _PROTOCOL_CODES)
     ):
         return STATUS_INVALID
+    if document["code"] in _PROTOCOL_CODES:
+        return f"MQTT_REPORT_CAPTURE_PROTOCOL_{document['code'].upper()}"
     return f"MQTT_REPORT_CAPTURE_RECORDER_{document['code'].upper()}"
 
 
