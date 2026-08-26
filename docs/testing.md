@@ -124,6 +124,13 @@ every clean-room run is exactly reproducible; production code and configuration
 must never accept it. This harness is observation infrastructure, not an MQTT
 or FTPS runtime implementation.
 
+For the #10 initial-request evidence slice, run
+`scripts/capture-grove-mqtt-initial-requests.sh RUN_ID`. It starts the same
+identity-bound rootless lifecycle and a one-session TLS 1.3 MQTT 3.1.1
+recorder. On success it prints a bounded sanitized candidate only; it never
+creates or replaces an observation fixture. Review a real independent capture
+and its ADR-0008 manifest separately before committing any evidence.
+
 Only the private fixture prepares its harmless virtual-SD dwell job. That
 preparation is not the production upload or ADR-0005 durable start path and
 does not authorize generic G-code in `src/klove`. The start adapter and journal
