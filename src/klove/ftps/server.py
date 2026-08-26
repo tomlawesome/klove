@@ -58,6 +58,133 @@ class _DataConnectionSlot:
         return writer
 
 
+@dataclass(slots=True)
+class _PassiveEndpoint:
+    """One continuously owned passive listener and its current exact lease."""
+
+    port: int
+    server: asyncio.Server | None = None
+    lease: _PassiveLease | None = None
+
+
+@dataclass(slots=True)
+class _PassiveLease:
+    """Temporarily route one owned passive listener to one control session."""
+
+    endpoint: _PassiveEndpoint
+    control_peer: str
+    slot: _DataConnectionSlot
+    released: bool = False
+
+    @property
+    def sockets(self) -> tuple[object, ...]:
+        server = self.endpoint.server
+        if server is None or server.sockets is None:
+            return ()
+        return tuple(server.sockets)
+
+    def release(self) -> None:
+        """Release only this exact lease; stale cleanup cannot release its successor."""
+        if self.released:
+            return
+        self.released = True
+        if self.endpoint.lease is self:
+            self.endpoint.lease = None
+
+
+class _RejectPassiveProtocol(asyncio.Protocol):
+    """Close one excess or unleased passive connection before TLS begins."""
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        transport.close()
+
+
+class _PassiveTlsProtocol(asyncio.Protocol):
+    """Own one raw passive transport through a bounded server-side TLS upgrade."""
+
+    def __init__(
+        self,
+        owner: FtpsTlsServer,
+        endpoint: _PassiveEndpoint,
+        accepted_lease: _PassiveLease,
+        context: ssl.SSLContext,
+    ) -> None:
+        self._owner = owner
+        self._endpoint = endpoint
+        self._accepted_lease = accepted_lease
+        self._context = context
+        self._transport: asyncio.Transport | None = None
+        self._upgrade_task: asyncio.Task[None] | None = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        if not isinstance(transport, asyncio.Transport):
+            transport.close()
+            self._owner._release_passive_protocol(self)
+            return
+        self._transport = transport
+        transport.pause_reading()
+        task = asyncio.create_task(self._upgrade())
+        self._upgrade_task = task
+
+    async def _upgrade(self) -> None:
+        owner = self._owner
+        loop = asyncio.get_running_loop()
+        raw_transport = self._transport
+        reader = asyncio.StreamReader(loop=loop)
+
+        def connected(
+            connected_reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            owner._schedule_passive_client(
+                self._endpoint,
+                self._accepted_lease,
+                connected_reader,
+                writer,
+            )
+
+        stream_protocol = asyncio.StreamReaderProtocol(reader, connected, loop=loop)
+        transferred = False
+        try:
+            if raw_transport is None or owner._closing or not owner._ready:
+                return
+            tls_transport = await loop.start_tls(
+                raw_transport,
+                stream_protocol,
+                self._context,
+                server_side=True,
+                ssl_handshake_timeout=owner._config.transfer_timeout_seconds,
+                ssl_shutdown_timeout=owner._config.shutdown_timeout_seconds,
+            )
+            if tls_transport is None:
+                raise ConnectionError("FTPS passive TLS upgrade did not return a transport")
+            stream_protocol.connection_made(tls_transport)
+            self._transport = None
+            transferred = True
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, TimeoutError, ssl.SSLError):
+            pass
+        finally:
+            if transferred:
+                self._upgrade_task = None
+                owner._release_passive_protocol(self)
+            else:
+                self.close()
+
+    def close(self) -> asyncio.Task[None] | None:
+        """Close the current raw/TLS transport and release its global permit once."""
+        transport, self._transport = self._transport, None
+        if transport is not None:
+            transport.close()
+        task, self._upgrade_task = self._upgrade_task, None
+        current = asyncio.current_task()
+        if task is not None and task is not current and not task.done():
+            task.cancel()
+        self._owner._release_passive_protocol(self)
+        return task if task is not current else None
+
+
 class FtpsBindDiagnosticCode(StrEnum):
     """Fixed, non-secret dispositions for FTPS bind diagnostics."""
 
@@ -154,6 +281,75 @@ def _open_probe_socket(host: str, port: int) -> socket.socket:
     return probe
 
 
+def _open_owned_socket(host: str, port: int) -> socket.socket:
+    """Exclusively bind one exact listener socket for runtime ownership."""
+    owned = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        owned.setblocking(False)
+        owned.bind((host, port))
+        bound = owned.getsockname()
+        if (
+            not isinstance(bound, tuple)
+            or len(bound) < 2
+            or _ipv4(bound) != host
+            or type(bound[1]) is not int
+            or bound[1] != port
+        ):
+            raise OSError("FTPS owned socket did not bind the exact configured address")
+    except BaseException:
+        owned.close()
+        raise
+    return owned
+
+
+def _valid_owned_socket_config(config: GroveBridgeConfig) -> bool:
+    """Defensively revalidate the exact runtime-owned IPv4 socket set."""
+    if type(config) is not GroveBridgeConfig:
+        return False
+    try:
+        values = (
+            config.ftps_control_port,
+            config.ftps_passive_port_min,
+            config.ftps_passive_port_max,
+        )
+        passive = range(config.ftps_passive_port_min, config.ftps_passive_port_max + 1)
+        fields_are_exact = (
+            config.enabled
+            and all(type(port) is int and 1 <= port <= 65535 for port in values)
+            and type(config.mqtt_port) is int
+            and 1 <= config.mqtt_port <= 65535
+            and config.ftps_passive_port_max >= config.ftps_passive_port_min
+            and len(passive) <= 64
+            and config.ftps_control_port not in passive
+            and config.mqtt_port != config.ftps_control_port
+            and config.mqtt_port not in passive
+            and type(config.listen_host) is str
+            and type(config.ftps_advertised_ipv4) is str
+            and isinstance(config.tls_certificate_file, Path)
+            and isinstance(config.tls_private_key_file, Path)
+            and config.tls_certificate_file != config.tls_private_key_file
+        )
+        return fields_are_exact and config.has_supported_ftps_topology()
+    except (TypeError, ValueError):
+        return False
+
+
+def _close_owned_sockets(owned_sockets: set[socket.socket]) -> BaseException | None:
+    """Attempt every raw close; retain any handle whose release is ambiguous."""
+    interruption: BaseException | None = None
+    for owned in tuple(owned_sockets):
+        try:
+            owned.close()
+        except Exception:  # noqa: S110 -- retain the ambiguous socket for explicit retry.
+            pass
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
+        else:
+            owned_sockets.discard(owned)
+    return interruption
+
+
 def _release_probes(probes: list[socket.socket]) -> tuple[bool, BaseException | None]:
     """Attempt every close, preserving only fixed ordinary failures."""
     ordinary_failure = False
@@ -200,12 +396,21 @@ class FtpsTlsServer:
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self._session_registry = session_registry
         self._server: asyncio.Server | None = None
+        self._owned_servers: set[asyncio.Server] = set()
+        self._owned_sockets: set[socket.socket] = set()
+        self._passive_endpoints: dict[int, _PassiveEndpoint] = {}
+        self._passive_client_tasks: set[asyncio.Task[None]] = set()
+        self._passive_client_writers: set[asyncio.StreamWriter] = set()
+        self._passive_protocols: set[_PassiveTlsProtocol] = set()
+        self._tls_server_context: ssl.SSLContext | None = None
         self._sessions: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
         self._printer_sessions: dict[str, int] = {}
         self._passive_servers: set[asyncio.Server] = set()
         self._transfers = asyncio.Semaphore(config.max_concurrent_transfers)
         self._closing = False
+        self._ready = False
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def sockets(self) -> tuple[object, ...]:
@@ -214,65 +419,299 @@ class FtpsTlsServer:
         return tuple(self._server.sockets)
 
     async def start(self) -> None:
-        """Bind the implicit TLS 1.3 control listener."""
-        if self._server is not None or self._closing:
+        """Atomically own the exact control and complete passive listener set."""
+        async with self._lifecycle_lock:
+            await self._start_locked()
+
+    async def _start_locked(self) -> None:  # noqa: PLR0912, PLR0915 -- explicit transaction.
+        """Create every dormant listener before activating the owned set."""
+        if self._server is not None or self._owned_servers or self._owned_sockets or self._closing:
             raise RuntimeError("FTPS server is already started or closing")
-        self._server = await asyncio.start_server(
-            self._accept,
-            self._config.listen_host,
+        if not _valid_owned_socket_config(self._config):
+            raise ValueError("supported private FTPS topology required")
+        ports = (
             self._config.ftps_control_port,
-            ssl=_tls_context(self._certificate, self._private_key),
-            ssl_handshake_timeout=self._config.session_idle_seconds,
-            ssl_shutdown_timeout=self._config.shutdown_timeout_seconds,
-            limit=_MAX_LINE_BYTES + 1,
+            *range(
+                self._config.ftps_passive_port_min,
+                self._config.ftps_passive_port_max + 1,
+            ),
         )
+        acquired: dict[int, socket.socket] = {}
+        try:
+            for port in ports:
+                owned = _open_owned_socket(self._config.listen_host, port)
+                acquired[port] = owned
+                self._owned_sockets.add(owned)
+        except BaseException as exc:
+            interruption = _close_owned_sockets(self._owned_sockets)
+            self._closing = bool(self._owned_sockets)
+            if interruption is not None:
+                raise exc from interruption
+            raise
+        endpoints: dict[int, _PassiveEndpoint] = {}
+        try:
+            context = _tls_context(self._certificate, self._private_key)
+            self._tls_server_context = context
+            loop = asyncio.get_running_loop()
+            for port in ports[1:]:
+                endpoint = _PassiveEndpoint(port)
+
+                def protocol_factory(
+                    *,
+                    owned_endpoint: _PassiveEndpoint = endpoint,
+                ) -> asyncio.Protocol:
+                    accepted_lease = owned_endpoint.lease
+                    if (
+                        not self._ready
+                        or self._closing
+                        or accepted_lease is None
+                        or accepted_lease.released
+                        or len(self._passive_protocols) >= self._config.max_concurrent_transfers
+                    ):
+                        return _RejectPassiveProtocol()
+                    protocol = _PassiveTlsProtocol(
+                        self,
+                        owned_endpoint,
+                        accepted_lease,
+                        context,
+                    )
+                    self._passive_protocols.add(protocol)
+                    return protocol
+
+                passive = await loop.create_server(
+                    protocol_factory,
+                    sock=acquired[port],
+                    start_serving=False,
+                )
+                self._owned_sockets.discard(acquired[port])
+                endpoint.server = passive
+                endpoints[port] = endpoint
+                self._owned_servers.add(passive)
+                self._passive_servers.add(passive)
+            control = await asyncio.start_server(
+                self._accept,
+                sock=acquired[ports[0]],
+                ssl=context,
+                ssl_handshake_timeout=self._config.session_idle_seconds,
+                ssl_shutdown_timeout=self._config.shutdown_timeout_seconds,
+                limit=_MAX_LINE_BYTES + 1,
+                start_serving=False,
+            )
+            self._owned_sockets.discard(acquired[ports[0]])
+            self._owned_servers.add(control)
+        except BaseException:
+            self._ready = False
+            cleanup = asyncio.create_task(self._close_owned_listeners())
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+            self._closing = bool(self._owned_servers or self._owned_sockets)
+            if not self._closing:
+                self._tls_server_context = None
+            raise
+        self._passive_endpoints = endpoints
+        self._server = control
+        try:
+            for endpoint_item in endpoints.values():
+                if endpoint_item.server is None:
+                    raise RuntimeError("FTPS passive listener construction was incomplete")
+                await endpoint_item.server.start_serving()
+            await control.start_serving()
+        except BaseException:
+            self._ready = False
+            cleanup = asyncio.create_task(self._close_owned_listeners())
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+            self._server = None
+            self._closing = bool(self._owned_servers or self._owned_sockets)
+            if not self._closing:
+                self._passive_endpoints = {}
+                self._tls_server_context = None
+            raise
+        self._ready = True
 
     async def close(self) -> None:
         """Stop admission and bound shutdown of control and passive sockets."""
-        if self._closing:
-            await self._close_passive_servers()
-            return
+        async with self._lifecycle_lock:
+            cleanup = asyncio.create_task(self._close_locked())
+            try:
+                interruption = await asyncio.shield(cleanup)
+            except asyncio.CancelledError as cancellation:
+                interruption = await cleanup
+                if interruption is not None:
+                    raise cancellation from interruption
+                raise
+            if interruption is not None:
+                raise interruption
+
+    async def _close_locked(  # noqa: PLR0912, PLR0915 -- explicit independent phases.
+        self,
+    ) -> BaseException | None:
+        """Attempt every shutdown phase and return the first interruption afterward."""
         self._closing = True
-        server, self._server = self._server, None
-        if server is not None:
-            server.close()
-        await self._close_passive_servers()
-        for writer in tuple(self._writers):
-            writer.close()
+        self._ready = False
+        self._server = None
+        interruption: BaseException | None = None
+        for endpoint in self._passive_endpoints.values():
+            if endpoint.lease is not None:
+                try:
+                    endpoint.lease.release()
+                except BaseException as exc:
+                    if interruption is None:
+                        interruption = exc
+        try:
+            await self._close_owned_listeners()
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
+        protocol_tasks: set[asyncio.Task[None]] = set()
+        for protocol in tuple(self._passive_protocols):
+            try:
+                task = protocol.close()
+                if task is not None:
+                    protocol_tasks.add(task)
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
+        writers = tuple(self._writers | self._passive_client_writers)
+        for writer in writers:
+            try:
+                writer.close()
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
         timeout = self._config.shutdown_timeout_seconds
-        waiters: list[Awaitable[None]] = []
-        if server is not None:
-            waiters.append(server.wait_closed())
-        if waiters:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(asyncio.gather(*waiters), timeout=timeout / 3)
+        writer_tasks = [asyncio.create_task(_settle_writer_closed(writer)) for writer in writers]
+        writer_done: set[asyncio.Task[BaseException | None]] = set()
+        writer_pending: set[asyncio.Task[BaseException | None]] = set(writer_tasks)
+        try:
+            if writer_pending:
+                writer_done, writer_pending = await asyncio.wait(
+                    writer_pending,
+                    timeout=timeout,
+                )
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
+        for writer_task in writer_pending:
+            writer_task.cancel()
+            writer_task.add_done_callback(_consume_settle_task)
+        for writer_task in writer_tasks:
+            if writer_task not in writer_done:
+                continue
+            try:
+                writer_interruption = writer_task.result()
+            except BaseException as exc:
+                writer_interruption = exc
+            if writer_interruption is not None and interruption is None:
+                interruption = writer_interruption
         current = asyncio.current_task()
-        pending = {task for task in self._sessions if task is not current and not task.done()}
-        if pending:
-            _, pending = await asyncio.wait(pending, timeout=timeout / 3)
+        pending = {
+            task
+            for task in self._sessions | self._passive_client_tasks | protocol_tasks
+            if task is not current and not task.done()
+        }
+        try:
+            if pending:
+                _, pending = await asyncio.wait(pending, timeout=timeout / 3)
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
         for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.wait(pending, timeout=timeout / 3)
+            try:
+                task.cancel()
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
+        try:
+            if pending:
+                await asyncio.wait(pending, timeout=timeout / 3)
+        except BaseException as exc:
+            if interruption is None:
+                interruption = exc
+        if not self._owned_servers and not self._owned_sockets:
+            self._passive_endpoints = {}
+            self._tls_server_context = None
+        return interruption
+
+    async def _close_owned_listeners(self) -> None:
+        """Settle every listener/raw close despite caller cancellation."""
+        cleanup = asyncio.create_task(self._close_owned_listeners_settle())
+        try:
+            interruption = await asyncio.shield(cleanup)
+        except asyncio.CancelledError as cancellation:
+            interruption = await cleanup
+            if interruption is not None:
+                raise cancellation from interruption
+            raise
+        if interruption is not None:
+            raise interruption
+
+    async def _close_owned_listeners_settle(  # noqa: PLR0912 -- independent closes.
+        self,
+    ) -> BaseException | None:
+        """Attempt every owned close and retain ambiguous handles for a later retry."""
+        servers = tuple(self._owned_servers | self._passive_servers)
+        interruption: BaseException | None = None
+        ambiguous: set[asyncio.Server] = set()
+        for server in servers:
+            try:
+                server.close()
+            except Exception:
+                ambiguous.add(server)
+            except BaseException as exc:
+                ambiguous.add(server)
+                if interruption is None:
+                    interruption = exc
+            close_clients = getattr(server, "close_clients", None)
+            if close_clients is not None:
+                try:
+                    close_clients()
+                except Exception:
+                    ambiguous.add(server)
+                except BaseException as exc:
+                    ambiguous.add(server)
+                    if interruption is None:
+                        interruption = exc
+
+        async def settle(server: asyncio.Server) -> tuple[bool, BaseException | None]:
+            try:
+                return (
+                    await _wait_server_closed(server, self._config.shutdown_timeout_seconds),
+                    None,
+                )
+            except BaseException as exc:
+                return False, exc
+
+        complete = await asyncio.gather(*(settle(server) for server in servers))
+        for server, (closed, wait_interruption) in zip(servers, complete, strict=True):
+            if wait_interruption is not None and interruption is None:
+                interruption = wait_interruption
+            if closed and server not in ambiguous:
+                self._owned_servers.discard(server)
+                self._passive_servers.discard(server)
+        socket_interruption = _close_owned_sockets(self._owned_sockets)
+        if interruption is not None:
+            if socket_interruption is not None:
+                interruption.__cause__ = socket_interruption
+            return interruption
+        return socket_interruption
 
     async def _close_passive_servers(self) -> None:
-        """Retry closing retained passive listeners and drop only confirmed closes."""
-        passive_servers = tuple(self._passive_servers)
-        for passive in passive_servers:
-            passive.close()
-        closed = await asyncio.gather(
-            *(
-                _wait_server_closed(passive, self._config.shutdown_timeout_seconds)
-                for passive in passive_servers
-            )
-        )
-        for passive, complete in zip(passive_servers, closed, strict=True):
-            if complete:
-                self._passive_servers.discard(passive)
+        """Compatibility wrapper for retrying all continuously owned listeners."""
+        await self._close_owned_listeners()
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
-        if task is None or self._closing or len(self._sessions) >= self._config.max_sessions:
+        if (
+            task is None
+            or not self._ready
+            or self._closing
+            or len(self._sessions) >= self._config.max_sessions
+        ):
             writer.close()
             await _wait_closed(writer, self._config.shutdown_timeout_seconds)
             return
@@ -303,7 +742,7 @@ class FtpsTlsServer:
         admitted: str | None = None
         registered_session = False
         session_task: asyncio.Task[None] | None = None
-        passive: asyncio.Server | None = None
+        passive: _PassiveLease | asyncio.Server | None = None
         data_slot: _DataConnectionSlot | None = None
         data_writer: asyncio.StreamWriter | None = None
         transfer_slot = False
@@ -365,18 +804,19 @@ class FtpsTlsServer:
                     async with asyncio.timeout(self._config.transfer_timeout_seconds):
                         await data_slot.future
                         data_reader, data_writer, data_peer, protected = data_slot.claim()
-                        passive.close()
-                        if await _wait_server_closed(
-                            passive, self._config.shutdown_timeout_seconds
-                        ):
-                            self._passive_servers.discard(passive)
-                        passive = None
                         same_peer = data_peer == peer
                         if not same_peer or not protected:
                             data_writer.close()
                             await _wait_closed(data_writer, self._config.shutdown_timeout_seconds)
                             return
                         await self._receive_stage(data_reader, data_writer, principal, client_path)
+                        data_writer.close()
+                        await _wait_closed(data_writer, self._config.shutdown_timeout_seconds)
+                        data_writer = None
+                        data_slot.close()
+                        await self._release_passive(passive)
+                        passive = None
+                        data_slot = None
                     protocol.complete_data_transfer(protected=True, same_peer=True)
                     await self._reply(writer, 226, "Transfer complete")
                 else:
@@ -385,10 +825,6 @@ class FtpsTlsServer:
                     await self._reply(writer, 221, "Goodbye")
                     return
         finally:
-            if passive is not None:
-                passive.close()
-                if await _wait_server_closed(passive, self._config.shutdown_timeout_seconds):
-                    self._passive_servers.discard(passive)
             if data_writer is not None:
                 data_writer.close()
                 await _wait_closed(data_writer, self._config.shutdown_timeout_seconds)
@@ -396,6 +832,8 @@ class FtpsTlsServer:
             if accepted_writer is not None:
                 accepted_writer.close()
                 await _wait_closed(accepted_writer, self._config.shutdown_timeout_seconds)
+            if passive is not None:
+                await self._release_passive(passive)
             if transfer_slot:
                 self._transfers.release()
             registry = self._session_registry
@@ -413,36 +851,86 @@ class FtpsTlsServer:
         self,
         control_peer: str,
         slot: _DataConnectionSlot,
-    ) -> asyncio.Server:
-        async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            data_peer = _ipv4(writer.get_extra_info("peername"))
-            protected = writer.get_extra_info("ssl_object") is not None
-            if self._closing or data_peer != control_peer or not protected:
-                writer.close()
-                await _wait_closed(writer, self._config.shutdown_timeout_seconds)
-                return
-            if not slot.accept((reader, writer, data_peer, protected)):
-                writer.close()
-                await _wait_closed(writer, self._config.shutdown_timeout_seconds)
-
-        context = _tls_context(self._certificate, self._private_key)
+    ) -> _PassiveLease:
+        if not self._ready or self._closing:
+            raise OSError("FTPS passive listener set is not owned")
         for port in range(
             self._config.ftps_passive_port_min, self._config.ftps_passive_port_max + 1
         ):
-            try:
-                server = await asyncio.start_server(
-                    accept,
-                    self._config.listen_host,
-                    port,
-                    ssl=context,
-                    ssl_handshake_timeout=self._config.transfer_timeout_seconds,
-                    ssl_shutdown_timeout=self._config.shutdown_timeout_seconds,
-                )
-            except OSError:
+            endpoint = self._passive_endpoints.get(port)
+            if endpoint is None or endpoint.server is None or endpoint.lease is not None:
                 continue
-            self._passive_servers.add(server)
-            return server
-        raise OSError("no configured FTPS passive port is available")
+            lease = _PassiveLease(endpoint, control_peer, slot)
+            endpoint.lease = lease
+            return lease
+        raise OSError("no configured FTPS passive listener lease is available")
+
+    def _schedule_passive_client(
+        self,
+        endpoint: _PassiveEndpoint,
+        accepted_lease: _PassiveLease | None,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Track a post-handshake client before its asynchronous checks begin."""
+        self._passive_client_writers.add(writer)
+        task = asyncio.create_task(self._accept_passive(endpoint, accepted_lease, reader, writer))
+        self._passive_client_tasks.add(task)
+        task.add_done_callback(self._passive_client_tasks.discard)
+
+    def _release_passive_protocol(self, protocol: _PassiveTlsProtocol) -> None:
+        self._passive_protocols.discard(protocol)
+
+    async def _accept_passive(
+        self,
+        endpoint: _PassiveEndpoint,
+        accepted_lease: _PassiveLease | None,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        lease = accepted_lease
+        data_peer = _ipv4(writer.get_extra_info("peername"))
+        transferred = False
+        try:
+            if (
+                not self._ready
+                or self._closing
+                or lease is None
+                or lease.released
+                or endpoint.lease is not lease
+                or data_peer != lease.control_peer
+            ):
+                return
+            protected = writer.get_extra_info("ssl_object") is not None
+            if (
+                not self._ready
+                or self._closing
+                or endpoint.lease is not lease
+                or lease.released
+                or not protected
+                or not lease.slot.accept((reader, writer, data_peer, protected))
+            ):
+                return
+            transferred = True
+            self._passive_client_writers.discard(writer)
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError, TimeoutError, ssl.SSLError):
+            pass
+        finally:
+            if not transferred:
+                self._passive_client_writers.discard(writer)
+                writer.close()
+                await _wait_closed(writer, self._config.shutdown_timeout_seconds)
+
+    async def _release_passive(self, passive: _PassiveLease | asyncio.Server) -> None:
+        """Release a runtime lease; close only legacy injected test listeners."""
+        if isinstance(passive, _PassiveLease):
+            passive.release()
+            return
+        passive.close()
+        if await _wait_server_closed(passive, self._config.shutdown_timeout_seconds):
+            self._passive_servers.discard(passive)
 
     async def _receive_stage(
         self,
@@ -516,10 +1004,10 @@ def _ipv4(sockname: object) -> str | None:
     return str(address) if isinstance(address, ipaddress.IPv4Address) else None
 
 
-def _bound_port(server: asyncio.Server) -> int:
+def _bound_port(server: asyncio.Server | _PassiveLease) -> int:
     if not server.sockets:
         raise OSError("passive listener has no socket")
-    value = server.sockets[0].getsockname()
+    value = cast(socket.socket, server.sockets[0]).getsockname()
     if not isinstance(value, tuple) or len(value) < 2 or type(value[1]) is not int:
         raise OSError("passive listener address is invalid")
     return value[1]
@@ -533,6 +1021,27 @@ def _pasv_reply(address: str, port: int) -> str:
 async def _wait_closed(writer: asyncio.StreamWriter, close_timeout: float) -> None:
     with contextlib.suppress(ConnectionError, OSError, TimeoutError):
         await asyncio.wait_for(writer.wait_closed(), timeout=close_timeout)
+
+
+async def _settle_writer_closed(
+    writer: asyncio.StreamWriter,
+) -> BaseException | None:
+    """Return one writer interruption while treating ordinary close failure as settled."""
+    try:
+        await writer.wait_closed()
+    except (ConnectionError, OSError, TimeoutError):
+        return None
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        return exc
+    return None
+
+
+def _consume_settle_task(task: asyncio.Task[BaseException | None]) -> None:
+    """Consume a bounded-phase task that settled after its caller moved on."""
+    with contextlib.suppress(BaseException):
+        task.result()
 
 
 async def _wait_server_closed(server: asyncio.Server, close_timeout: float) -> bool:

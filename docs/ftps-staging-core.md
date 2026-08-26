@@ -46,3 +46,16 @@ advertised wildcard address is locally usable, reserve a later listener, or make
 a readiness claim. It accepts no connection and performs no TLS, authentication,
 routing, staging, or dispatch work. It is not composed into application startup
 or `/health/ready`.
+
+`FtpsTlsServer.start` independently revalidates that exact private topology and
+atomically acquires the configured control port plus every configured passive
+port. It constructs all listeners dormant, activates the control listener only
+after every passive listener activates, and retains those exact sockets until a
+bounded, idempotent shutdown proves each close. Passive transfers lease one
+already-owned port; they never scan for or fall through to another port and
+never release the underlying listener between sessions. Each accepted passive
+connection is bound to the immutable lease present before its TLS 1.3
+handshake, so a delayed connection cannot enter a successor lease. Startup,
+transfer, cancellation, and shutdown ambiguity fail closed and retain uncertain
+handles for an explicit close retry. This socket ownership is not application
+composition, readiness, Grove acceptance, staging authority, or actuation.
