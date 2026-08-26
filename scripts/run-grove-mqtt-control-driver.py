@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import BinaryIO
 
 MAX_CAPTURE_BYTES = 256
-DRIVER_TIMEOUT_SECONDS = 30.0
+CONNECTION_BARRIER_SECONDS = 20.0
+DRIVER_HEADROOM_SECONDS = 25.0
+DRIVER_TIMEOUT_SECONDS = CONNECTION_BARRIER_SECONDS + DRIVER_HEADROOM_SECONDS
 OUTCOME_TIMEOUT = 124
 OUTCOME_OVERSIZE = 125
 OUTCOME_PRIVATE_PATH_INVALID = 126
@@ -143,18 +145,25 @@ def capture_driver(  # noqa: PLR0911, PLR0912 -- bounded capture paths have dist
 
 
 def main(arguments: list[str]) -> int:
-    if len(arguments) != 4:
+    if len(arguments) != 5:
         return 2
     output = Path(arguments[0])
-    container, recorder_ip, drive = arguments[1:]
+    container, recorder_ip, drive, timeout = arguments[1:]
+    try:
+        timeout_seconds = float(timeout)
+    except ValueError:
+        return 2
+    if timeout_seconds != DRIVER_TIMEOUT_SECONDS:
+        return 2
     try:
         with Path(drive).open("rb") as source:
             return capture_driver(
                 ["docker", "exec", "--interactive", container, "python", "-", recorder_ip],
                 source,
                 output,
+                timeout_seconds=timeout_seconds,
             )
-    except OSError:
+    except (OSError, ValueError):
         return OUTCOME_PRIVATE_PATH_INVALID
 
 

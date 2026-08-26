@@ -435,6 +435,34 @@ def test_host_runner_preserves_driver_exit_status(tmp_path: Path) -> None:
     assert output.read_text(encoding="ascii") == "driver failed: control_pause\n"
 
 
+def test_host_runner_accepts_only_the_aligned_bounded_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _host_runner()
+    drive = tmp_path / "drive.py"
+    drive.write_text("print('driver')\n", encoding="ascii")
+    observed: list[float] = []
+
+    def capture(
+        _command: list[str],
+        _source: Any,
+        _output: Path,
+        *,
+        timeout_seconds: float,
+    ) -> int:
+        observed.append(timeout_seconds)
+        return 0
+
+    monkeypatch.setattr(runner, "capture_driver", capture)
+    arguments = [str(tmp_path / "status"), "container", "192.0.2.1", str(drive)]
+
+    assert runner.main([*arguments, "45"]) == 0
+    assert observed == [runner.DRIVER_TIMEOUT_SECONDS]
+    assert runner.main([*arguments, "44"]) == 2
+    assert runner.main([*arguments, "not-a-timeout"]) == 2
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -468,9 +496,17 @@ def test_public_drive_uses_only_exact_control_endpoint_paths(
 ) -> None:
     drive = _module("grove_mqtt_control_request_drive", "grove-mqtt-control-request-drive.py")
     calls: list[tuple[str, str, bytes | None]] = []
+    timeouts: list[float] = []
 
-    def request(path: str, *, method: str = "POST", data: bytes | None = None) -> tuple[int, bytes]:
+    def request(
+        path: str,
+        *,
+        method: str = "POST",
+        data: bytes | None = None,
+        timeout_seconds: float = drive.REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[int, bytes]:
         calls.append((path, method, data))
+        timeouts.append(timeout_seconds)
         if path == "/api/v1/printers/":
             return 200, b'{"id":1}'
         if path == "/api/v1/printers/1/status":
@@ -500,24 +536,143 @@ def test_public_drive_uses_only_exact_control_endpoint_paths(
         "POST",
     ]
     assert all(data is None for _path, _method, data in calls[1:])
+    assert timeouts[0] == drive.REQUEST_TIMEOUT_SECONDS
+    assert timeouts[-4:] == [drive.REQUEST_TIMEOUT_SECONDS] * 4
 
 
-def test_public_drive_denies_control_until_two_connected_statuses(
+def test_public_drive_allows_two_fresh_connections_just_before_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drive = _module("grove_mqtt_control_request_drive", "grove-mqtt-control-request-drive.py")
+    now = 0.0
+    poll_times: list[float] = []
+    status_timeouts: list[float] = []
+    calls: list[str] = []
+
+    def request(
+        path: str,
+        *,
+        method: str = "POST",
+        data: bytes | None = None,
+        timeout_seconds: float = drive.REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[int, bytes]:
+        calls.append(path)
+        if path == "/api/v1/printers/":
+            return 200, b'{"id":1}'
+        if path == "/api/v1/printers/1/status":
+            poll_times.append(now)
+            status_timeouts.append(timeout_seconds)
+            if len(poll_times) in {77, 79, 80}:
+                return 200, b'{"id":1,"connected":true}'
+            return 200, b'{"id":1,"connected":false}'
+        return 200, b"{}"
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(drive, "_request", request)
+    monkeypatch.setattr(drive.time, "monotonic", clock)
+    monkeypatch.setattr(drive.time, "sleep", sleep)
+
+    assert drive.main(["192.0.2.1"]) == 0
+    assert poll_times[-2:] == [19.5, 19.75]
+    assert status_timeouts[-2:] == [0.5, 0.25]
+    assert len(poll_times) == 80
+    assert [path for path in calls if "/print/" in path] == [
+        "/api/v1/printers/1/print/pause",
+        "/api/v1/printers/1/print/resume",
+        "/api/v1/printers/1/print/stop",
+        "/api/v1/printers/1/print/pause",
+    ]
+
+
+def test_public_drive_times_out_without_control_until_two_connected_statuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     drive = _module("grove_mqtt_control_request_drive", "grove-mqtt-control-request-drive.py")
     calls: list[str] = []
+    poll_times: list[float] = []
+    now = 0.0
 
-    def request(path: str, *, method: str = "POST", data: bytes | None = None) -> tuple[int, bytes]:
+    def request(
+        path: str,
+        *,
+        method: str = "POST",
+        data: bytes | None = None,
+        timeout_seconds: float = drive.REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[int, bytes]:
         calls.append(path)
         if path == "/api/v1/printers/":
             return 200, b'{"id":1}'
+        poll_times.append(now)
         assert method == "GET"
         assert data is None
         return 200, b'{"id":1,"connected":false}'
 
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
     monkeypatch.setattr(drive, "_request", request)
-    monkeypatch.setattr(drive.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(drive.time, "monotonic", clock)
+    monkeypatch.setattr(drive.time, "sleep", sleep)
 
     assert drive.main(["192.0.2.1"]) == 1
+    assert len(poll_times) == 80
+    assert now == 20.0
+    assert all("/print/" not in path for path in calls)
+
+
+def test_public_drive_rejects_a_connected_response_arriving_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drive = _module("grove_mqtt_control_request_drive", "grove-mqtt-control-request-drive.py")
+    now = 0.0
+    poll_times: list[float] = []
+    status_timeouts: list[float] = []
+    calls: list[str] = []
+
+    def request(
+        path: str,
+        *,
+        method: str = "POST",
+        data: bytes | None = None,
+        timeout_seconds: float = drive.REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[int, bytes]:
+        nonlocal now
+        calls.append(path)
+        if path == "/api/v1/printers/":
+            return 200, b'{"id":1}'
+        if path == "/api/v1/printers/1/status":
+            poll_times.append(now)
+            status_timeouts.append(timeout_seconds)
+            if len(poll_times) == 79:
+                return 200, b'{"id":1,"connected":true}'
+            if len(poll_times) == 80:
+                now = 20.0
+                return 200, b'{"id":1,"connected":true}'
+            return 200, b'{"id":1,"connected":false}'
+        return 200, b"{}"
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(drive, "_request", request)
+    monkeypatch.setattr(drive.time, "monotonic", clock)
+    monkeypatch.setattr(drive.time, "sleep", sleep)
+
+    assert drive.main(["192.0.2.1"]) == 1
+    assert poll_times[-2:] == [19.5, 19.75]
+    assert status_timeouts[-2:] == [0.5, 0.25]
     assert all("/print/" not in path for path in calls)

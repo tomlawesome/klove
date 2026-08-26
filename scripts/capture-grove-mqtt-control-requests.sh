@@ -18,6 +18,11 @@ state_dir="$repo_root/.klove-integration/grove-observation/$run_id"
 recorder_origin="$state_dir/mqtt-control-request-recorder-origin"
 image="grove-observer:cdf6b829"
 grove_source_revision="cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+# The driver has a 20s connection barrier plus 25s bounded operation headroom.
+# The recorder wait retains a further fixed 15s finalization allowance.
+driver_timeout_seconds=45
+recorder_wait_headroom_seconds=15
+recorder_wait_seconds=$((driver_timeout_seconds + recorder_wait_headroom_seconds))
 recorder_started=0
 grove_started=0
 evidence_dir=
@@ -206,8 +211,8 @@ driver_status_path="$host_diagnostics_dir/driver-status"
 driver_status=0
 if python3 "$script_dir/run-grove-mqtt-control-driver.py" \
     "$driver_status_path" "$grove_name" "$recorder_ip" \
-    "$script_dir/grove-mqtt-control-request-drive.py"; then :; else driver_status=$?; fi
-recorder_status=$(timeout 60 docker wait "$recorder_name" 2>/dev/null) || recorder_status=
+    "$script_dir/grove-mqtt-control-request-drive.py" "$driver_timeout_seconds"; then :; else driver_status=$?; fi
+recorder_status=$(timeout "$recorder_wait_seconds" docker wait "$recorder_name" 2>/dev/null) || recorder_status=
 case "$driver_status" in
     124) echo "MQTT_CONTROL_CAPTURE_DRIVER_TIMEOUT" >&2; exit 1;;
     125) echo "MQTT_CONTROL_CAPTURE_DRIVER_STATUS_OVERSIZE" >&2; exit 1;;

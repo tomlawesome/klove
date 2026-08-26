@@ -8,15 +8,23 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 BASE_URL = "http://127.0.0.1:8000"
 
 
-MAX_READY_POLLS = 20
+CONNECTION_WINDOW_SECONDS = 20.0
 READY_POLL_SECONDS = 0.25
+REQUEST_TIMEOUT_SECONDS = 20.0
 
 
-def _request(path: str, *, method: str = "POST", data: bytes | None = None) -> tuple[int, bytes]:
+def _request(
+    path: str,
+    *,
+    method: str = "POST",
+    data: bytes | None = None,
+    timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+) -> tuple[int, bytes]:
     request = urllib.request.Request(  # noqa: S310 -- fixed loopback Grove public API.
         BASE_URL + path,
         data=data,
@@ -24,7 +32,7 @@ def _request(path: str, *, method: str = "POST", data: bytes | None = None) -> t
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
             return response.status, response.read(64 * 1024)
     except urllib.error.HTTPError as error:
         return error.code, error.read(64 * 1024)
@@ -57,18 +65,37 @@ def _connected_status(body: bytes, printer_id: int) -> bool:
     )
 
 
-def _await_connected(printer_id: int) -> bool:
+def _await_connected(
+    printer_id: int,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> bool:
     """Require two fresh matching public status observations before control."""
+    now = time.monotonic if clock is None else clock
+    sleep = time.sleep if sleeper is None else sleeper
     confirmations = 0
-    for _ in range(MAX_READY_POLLS):
-        status, body = _request(f"/api/v1/printers/{printer_id}/status", method="GET")
+    deadline = now() + CONNECTION_WINDOW_SECONDS
+    while now() < deadline:
+        remaining = min(REQUEST_TIMEOUT_SECONDS, deadline - now())
+        if remaining <= 0:
+            return False
+        status, body = _request(
+            f"/api/v1/printers/{printer_id}/status",
+            method="GET",
+            timeout_seconds=remaining,
+        )
+        if now() >= deadline:
+            return False
         if status == 200 and _connected_status(body, printer_id):
             confirmations += 1
             if confirmations == 2:
                 return True
         else:
             confirmations = 0
-        time.sleep(READY_POLL_SECONDS)
+        remaining = deadline - now()
+        if remaining > 0:
+            sleep(min(READY_POLL_SECONDS, remaining))
     return False
 
 
