@@ -36,6 +36,8 @@ _PROTOCOL_CODES = frozenset(
         "post_finish_packet_limit",
         "post_finish_report",
         "post_prepare_finish_invalid",
+        "post_suback_report_invalid",
+        "post_suback_report_limit",
         "pre_suback_report_limit",
         "project_result_invalid",
         "recorder_tool_version_invalid",

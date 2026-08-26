@@ -62,6 +62,8 @@ PROTOCOL_CODES = frozenset(
         "post_finish_packet_limit",
         "post_finish_report",
         "post_prepare_finish_invalid",
+        "post_suback_report_invalid",
+        "post_suback_report_limit",
         "pre_suback_report_limit",
         "project_result_invalid",
         "recorder_tool_version_invalid",
@@ -293,6 +295,16 @@ def _subscribe(  # noqa: PLR0913, PLR0917 -- exact MQTT subscribe binding.
     while True:
         header, body = _read_packet(connection, deadline)
         if header == 0x90 and body == packet_id.to_bytes(2, "big") + b"\0":
+            if reports >= report_budget:
+                raise ObservationFailure("post_suback_report_limit")
+            header, body = _read_packet(connection, deadline)
+            if header != 0x30:
+                raise ObservationFailure("post_suback_report_invalid")
+            profile, report = _remember_report(header, body, serial, seen_digests)
+            reports += 1
+            if report.get("command") != "push_status" or report.get("gcode_state") != "IDLE":
+                raise ObservationFailure("post_suback_report_invalid")
+            observed_reports.append((profile, report))
             return reports
         if header == 0x30:
             reports += 1

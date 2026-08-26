@@ -283,6 +283,61 @@ def test_subscribe_has_small_combined_pre_suback_report_cap() -> None:
         recorder._subscribe(connection, SERIAL, b"report", 1, time.monotonic() + 10, set(), 1, [])
 
 
+def test_subscribe_consumes_required_post_suback_idle_status() -> None:
+    recorder = _recorder()
+    suback = _packet(0x90, b"\0\x01\0")
+    connection = _Connection(suback + _report(_status("IDLE")))
+    observed: list[tuple[dict[str, object], dict[str, object]]] = []
+
+    reports = recorder._subscribe(
+        connection, SERIAL, b"report", 1, time.monotonic() + 10, set(), 2, observed
+    )
+
+    assert reports == 1
+    assert observed[0][1]["command"] == "push_status"
+    assert observed[0][1]["gcode_state"] == "IDLE"
+    assert not connection.incoming
+
+
+def test_subscribe_accounts_for_pre_and_post_suback_reports_together() -> None:
+    recorder = _recorder()
+    suback = _packet(0x90, b"\0\x01\0")
+    connection = _Connection(
+        _report(_status("IDLE", "pre-suback")) + suback + _report(_status("IDLE", "post-suback"))
+    )
+    observed: list[tuple[dict[str, object], dict[str, object]]] = []
+
+    reports = recorder._subscribe(
+        connection, SERIAL, b"report", 1, time.monotonic() + 10, set(), 2, observed
+    )
+
+    assert reports == 2
+    assert [report[1]["gcode_state"] for report in observed] == ["IDLE", "IDLE"]
+    assert not connection.incoming
+
+
+@pytest.mark.parametrize(
+    "post_suback",
+    [
+        _report(_status("PREPARE")),
+        _report(_acknowledgement()),
+        _packet(0xC0, b""),
+    ],
+)
+def test_subscribe_rejects_missing_or_nonidle_post_suback_status(post_suback: bytes) -> None:
+    recorder = _recorder()
+    connection = _Connection(_packet(0x90, b"\0\x01\0") + post_suback)
+    with pytest.raises(recorder.ObservationFailure, match="post_suback_report_invalid"):
+        recorder._subscribe(connection, SERIAL, b"report", 1, time.monotonic() + 10, set(), 2, [])
+
+
+def test_subscribe_reserves_report_budget_for_required_post_suback_status() -> None:
+    recorder = _recorder()
+    connection = _Connection(_packet(0x90, b"\0\x01\0"))
+    with pytest.raises(recorder.ObservationFailure, match="post_suback_report_limit"):
+        recorder._subscribe(connection, SERIAL, b"report", 1, time.monotonic() + 10, set(), 0, [])
+
+
 def test_candidate_validation_rejects_unproven_result_or_replay_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
