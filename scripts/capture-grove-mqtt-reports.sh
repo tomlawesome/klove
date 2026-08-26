@@ -84,6 +84,7 @@ fi
 if ! capture_dirty=$(git -C "$repo_root" status --porcelain --untracked-files=all -- \
     scripts/capture-grove-mqtt-reports.sh \
     scripts/grove-mqtt-report-recorder.py \
+    scripts/grove-mqtt-report-diagnostics.py \
     scripts/grove-mqtt-initial-request-recorder.py \
     scripts/grove-observation-lib.sh scripts/grove-observation-up.sh \
     scripts/grove-observation-down.sh 2>/dev/null); then
@@ -206,7 +207,17 @@ case "$recorder_status" in
     '' | *[!0-9]*) echo "MQTT_REPORT_CAPTURE_RECORDER_WAIT_INVALID" >&2; exit 1;;
 esac
 if [ "$recorder_status" -ne 0 ]; then
-    echo "MQTT_REPORT_CAPTURE_RECORDER_FAILED" >&2; exit 1
+    recorder_code=$(python3 "$script_dir/grove-mqtt-report-diagnostics.py" \
+        "$evidence_dir/mqtt-report-status" "$recorder_status" 2>/dev/null) || recorder_code=
+    case "$recorder_code" in
+        MQTT_REPORT_CAPTURE_RECORDER_INTERNAL_FAILURE \
+        | MQTT_REPORT_CAPTURE_RECORDER_PROTOCOL_FAILURE \
+        | MQTT_REPORT_CAPTURE_RECORDER_TIMEOUT \
+        | MQTT_REPORT_CAPTURE_RECORDER_TLS_FAILURE \
+        | MQTT_REPORT_CAPTURE_RECORDER_TRANSPORT_FAILURE)
+            echo "$recorder_code" >&2; exit 1;;
+        *) echo "MQTT_REPORT_CAPTURE_RECORDER_STATUS_INVALID" >&2; exit 1;;
+    esac
 fi
 captured_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
     echo "MQTT report capture timestamp is unavailable" >&2; exit 1;

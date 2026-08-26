@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,16 @@ SERIAL = b"01S00A391800001"
 def _recorder() -> Any:
     spec = importlib.util.spec_from_file_location(
         "grove_mqtt_report_recorder", SCRIPTS / "grove-mqtt-report-recorder.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _diagnostics() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "grove_mqtt_report_diagnostics", SCRIPTS / "grove-mqtt-report-diagnostics.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -302,3 +313,76 @@ def test_candidate_validation_rejects_unproven_result_or_replay_claim(
     candidate["observed"]["non_idle_push_status"].reverse()
     with pytest.raises(recorder.ObservationFailure):
         recorder.validate_candidate(candidate)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("internal_failure", "MQTT_REPORT_CAPTURE_RECORDER_INTERNAL_FAILURE"),
+        ("protocol_failure", "MQTT_REPORT_CAPTURE_RECORDER_PROTOCOL_FAILURE"),
+        ("timeout", "MQTT_REPORT_CAPTURE_RECORDER_TIMEOUT"),
+        ("tls_failure", "MQTT_REPORT_CAPTURE_RECORDER_TLS_FAILURE"),
+        ("transport_failure", "MQTT_REPORT_CAPTURE_RECORDER_TRANSPORT_FAILURE"),
+    ],
+)
+def test_report_diagnostics_allow_only_fixed_owner_private_statuses(
+    tmp_path: Path, code: str, expected: str
+) -> None:
+    diagnostics = _diagnostics()
+    tmp_path.chmod(0o700)
+    path = tmp_path / "status"
+    path.write_text(json.dumps({"status": "failure", "code": code}), encoding="ascii")
+    path.chmod(0o600)
+
+    assert diagnostics.validate_recorder_status(path, 1) == expected
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '{"status":"failure","code":"protocol_failure","code":"timeout"}',
+        '{"status":"failure","code":NaN}',
+        '{"status":"success","code":"timeout"}',
+        '{"status":"failure","code":"peer controlled"}',
+        "x" * 257,
+    ],
+)
+def test_report_diagnostics_reject_missing_hostile_or_nonprivate_statuses(
+    tmp_path: Path, contents: str
+) -> None:
+    diagnostics = _diagnostics()
+    tmp_path.chmod(0o700)
+    path = tmp_path / "status"
+    path.write_text(contents, encoding="ascii")
+    path.chmod(0o600)
+    assert diagnostics.validate_recorder_status(path, 1) == diagnostics.STATUS_INVALID
+
+    path.unlink()
+    assert diagnostics.validate_recorder_status(path, 1) == diagnostics.STATUS_INVALID
+    path.write_text('{"status":"failure","code":"timeout"}', encoding="ascii")
+    path.chmod(0o644)
+    assert diagnostics.validate_recorder_status(path, 1) == diagnostics.STATUS_INVALID
+
+
+def test_report_diagnostics_rejects_symlink_and_nonfailure_exit(tmp_path: Path) -> None:
+    diagnostics = _diagnostics()
+    tmp_path.chmod(0o700)
+    target = tmp_path / "target"
+    target.write_text('{"status":"failure","code":"timeout"}', encoding="ascii")
+    target.chmod(0o600)
+    link = tmp_path / "status"
+    link.symlink_to(target)
+
+    assert diagnostics.validate_recorder_status(link, 1) == diagnostics.STATUS_INVALID
+    assert diagnostics.validate_recorder_status(target, 0) == diagnostics.STATUS_INVALID
+
+
+def test_report_diagnostics_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    diagnostics = _diagnostics()
+    tmp_path.chmod(0o700)
+    fifo = tmp_path / "status"
+    os.mkfifo(fifo, 0o600)
+
+    started = time.monotonic()
+    assert diagnostics.validate_recorder_status(fifo, 1) == diagnostics.STATUS_INVALID
+    assert time.monotonic() - started < 1
