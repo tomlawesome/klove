@@ -19,6 +19,8 @@ from klove.orchestration.runtime_registry import (
 from klove.persistence.printer_registry import PrinterStore
 from klove.persistence.secret_store import SecretStore
 from klove.registry import PrinterRegistry
+from klove.security.compatibility import CompatibilityPrincipal
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
 
 from ..onboarding_helpers import (
     COMPATIBILITY_REF,
@@ -133,6 +135,40 @@ class BlockingRegistry(PrinterRegistry):
             self.unregister_entered.set()
             await self.release.wait()
         return await super().unregister(printer_id)
+
+
+class Observer:
+    def __init__(self) -> None:
+        self.records: list[RegisteredPrinter] = []
+        self.fenced = False
+
+    def reconcile_committed(self, record: RegisteredPrinter) -> None:
+        self.records.append(record)
+
+    def fence_all(self) -> None:
+        self.fenced = True
+
+
+class SessionWriter:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def compatibility_principal(record: RegisteredPrinter) -> CompatibilityPrincipal:
+    return CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+
+
+async def parked_session() -> None:
+    await asyncio.Event().wait()
 
 
 def other_printer(**updates: object) -> RegisteredPrinter:
@@ -991,3 +1027,285 @@ async def test_shutdown_finishes_safely_when_its_caller_is_cancelled() -> None:
     with pytest.raises(asyncio.CancelledError):
         await shutdown
     assert await registry.list() == ()
+
+
+async def test_observer_fences_sessions_on_uncertain_snapshot_and_shutdown() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    store = FakeStore((active,))
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    first_task = asyncio.create_task(parked_session())
+    first_writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), first_task, first_writer)
+
+    store.failure = RuntimeError()
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.refresh()
+    assert first_writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    store.failure = None
+    store.records = (active, active)
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.refresh()
+    late_task = asyncio.create_task(parked_session())
+    late_writer = SessionWriter()
+    assert not sessions.register(compatibility_principal(active), late_task, late_writer)
+    assert late_writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await late_task
+    await runtime.shutdown()
+
+
+async def test_observer_fences_on_missing_snapshot_record() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    store = FakeStore((active,))
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+
+    store.records = ()
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.refresh()
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+async def test_observer_fences_on_durable_revision_regression() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    replacement = active.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    store = FakeStore((replacement,))
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(replacement), task, writer)
+
+    store.records = (active,)
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.refresh()
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+@pytest.mark.parametrize("fault", ["malformed", "duplicate", "missing"])
+async def test_committed_handoff_fences_on_uncertain_full_snapshot(fault: str) -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    other = other_printer()
+    store = FakeStore((active, other))
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+    replacement = active.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    if fault == "malformed":
+        store.records = (replacement, object())
+    elif fault == "duplicate":
+        store.records = (replacement, other, other)
+    else:
+        store.records = (replacement,)
+
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.reconcile_committed(replacement)
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await runtime._registry.get(PRINTER_UUID) is None
+    await runtime.shutdown()
+
+
+async def test_handoff_observation_fences_when_first_refresh_lacks_it() -> None:
+    admissions = PrinterAdmissionGates()
+    active = printer()
+    store = FakeStore((active,))
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=admissions,
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.reconcile_committed(active)
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+
+    store.records = ()
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.refresh()
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+async def test_malformed_committed_handoff_fences_before_field_access() -> None:
+    active = printer()
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((active,))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=PrinterAdmissionGates(),
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.reconcile_committed(cast(RegisteredPrinter, object()))
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+async def test_malformed_inner_handoff_fences_without_a_safe_printer_id() -> None:
+    active = printer()
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((active,))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=PrinterAdmissionGates(),
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+
+    with pytest.raises(RegistryRuntimeError):
+        await runtime._reconcile_committed(cast(RegisteredPrinter, object()))
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+async def test_non_string_handoff_printer_id_fences_before_creating_work() -> None:
+    active = printer()
+    sessions = CompatibilitySessionRegistry()
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, FakeStore((active,))),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=PrinterAdmissionGates(),
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=sessions,
+    )
+    await runtime.refresh()
+    task = asyncio.create_task(parked_session())
+    writer = SessionWriter()
+    assert sessions.register(compatibility_principal(active), task, writer)
+    forged = active.model_copy(update={"printer_uuid": 1})
+
+    with pytest.raises(RegistryRuntimeError):
+        await runtime.reconcile_committed(forged)
+    assert writer.closed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.shutdown()
+
+
+def test_snapshot_validation_rejects_non_tuple_and_store_disagreement() -> None:
+    active = printer()
+    store = FakeStore(())
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, store),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=PrinterAdmissionGates(),
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=CompatibilitySessionRegistry(),
+    )
+
+    with pytest.raises(RegistryRuntimeError):
+        runtime._validated_snapshot_ids([])
+    with pytest.raises(RegistryRuntimeError):
+        runtime._validated_snapshot_ids((active,))
+
+
+async def test_observer_rechecks_store_while_admission_is_held() -> None:
+    active = printer()
+
+    class ChangingStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__((active,))
+            self.get_calls = 0
+
+        def get(self, printer_uuid: str) -> RegisteredPrinter | None:
+            self.get_calls += 1
+            return active if self.get_calls == 1 else None
+
+    runtime = RegistryRuntimeSupervisor(
+        cast(PrinterStore, ChangingStore()),
+        cast(SecretStore, FakeSecrets(secret_values())),
+        PrinterRegistry([]),
+        cast(aiohttp.ClientSession, object()),
+        admissions=PrinterAdmissionGates(),
+        monitor_factory=RecordingFactory(),
+        committed_record_observer=CompatibilitySessionRegistry(),
+    )
+
+    with pytest.raises(RegistryRuntimeError):
+        await runtime._observe_committed_records((active,))
