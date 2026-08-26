@@ -35,7 +35,10 @@ authority, or production readiness.
 `FtpsBindSetDiagnostic` is a non-actuating, diagnostic-only startup helper. It
 binds the configured control and passive set for direct loopback
 or RFC1918 IPv4 configuration: either the advertised address is the exact bind
-address, or the listener uses the accepted wildcard container bind. It returns
+address, or the listener uses the accepted wildcard container bind with an
+RFC1918 advertised address. Validated enabled bridge configuration rejects every
+other topology before the diagnostic runs; forged configuration objects are
+independently denied by the diagnostic. It returns
 fixed non-secret codes for unsupported topology, control-port conflict,
 passive-port conflict, or probe-release failure. It attempts every probe close;
 a release failure makes no release or availability claim. It does not prove that an

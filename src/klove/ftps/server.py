@@ -24,11 +24,6 @@ _MAX_LINE_BYTES = 512
 _DATA_CHUNK_BYTES = 64 * 1024
 _T = TypeVar("_T")
 _DataConnection = tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]
-_RFC1918_NETWORKS = (
-    ipaddress.IPv4Network("10.0.0.0/8"),
-    ipaddress.IPv4Network("172.16.0.0/12"),
-    ipaddress.IPv4Network("192.168.0.0/16"),
-)
 
 
 class FtpsBindDiagnosticCode(StrEnum):
@@ -74,7 +69,7 @@ class FtpsBindSetDiagnostic:
 
     def check(self) -> FtpsBindDiagnosticResult:
         """Bind the exact port set and attempt to release every acquired probe."""
-        if not _supported_private_topology(self._config):
+        if not self._config.has_supported_ftps_topology():
             return FtpsBindDiagnosticResult(
                 False, FtpsBindDiagnosticCode.UNSUPPORTED_PRIVATE_TOPOLOGY
             )
@@ -114,24 +109,6 @@ class FtpsBindSetDiagnostic:
         if release_failed:
             return FtpsBindDiagnosticResult(False, FtpsBindDiagnosticCode.PROBE_RELEASE_FAILED)
         return result
-
-
-def _supported_private_topology(config: GroveBridgeConfig) -> bool:
-    """Accept only the configured direct private-network deployment shape."""
-    advertised = config.ftps_advertised_ipv4
-    if advertised is None:
-        return False
-    try:
-        bound = ipaddress.ip_address(config.listen_host)
-        published = ipaddress.ip_address(advertised)
-    except ValueError:
-        return False
-    return (
-        isinstance(bound, ipaddress.IPv4Address)
-        and isinstance(published, ipaddress.IPv4Address)
-        and (bound == published or bound.is_unspecified)
-        and (published.is_loopback or any(published in network for network in _RFC1918_NETWORKS))
-    )
 
 
 def _open_probe_socket(host: str, port: int) -> socket.socket:
