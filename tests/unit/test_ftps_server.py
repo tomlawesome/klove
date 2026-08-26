@@ -678,6 +678,76 @@ def test_helpers_and_constructor_fail_closed(tmp_path: Path) -> None:
         _tls_context(tmp_path / "missing.crt", tmp_path / "missing.key")
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"ftps_advertised_ipv4": "8.8.8.8"},
+        {"ftps_advertised_ipv4": "255.255.255.255"},
+        {"ftps_advertised_ipv4": "169.254.1.1"},
+        {"ftps_advertised_ipv4": "100.64.0.1"},
+        {"ftps_advertised_ipv4": "192.0.2.1"},
+        {"ftps_advertised_ipv4": "240.0.0.1"},
+        {"listen_host": "192.168.1.20", "ftps_advertised_ipv4": "192.168.1.21"},
+        {
+            "listen_host": "0.0.0.0",  # noqa: S104 -- forged topology, never bound.
+            "ftps_advertised_ipv4": "127.0.0.1",
+        },
+    ],
+)
+def test_constructor_rejects_forged_unsupported_private_topology(
+    tmp_path: Path, update: dict[str, object]
+) -> None:
+    config_values = config(tmp_path).model_dump()
+    config_values.update(update)
+    forged = GroveBridgeConfig.model_construct(**config_values)
+
+    with pytest.raises(ValueError, match="supported private FTPS topology"):
+        FtpsTlsServer(
+            forged,
+            cast(CompatibilityAuthenticator, Authenticator()),
+            cast(FtpsStagingStore, Staging()),
+            ADMISSIONS,
+        )
+
+
+def test_constructor_rejects_forged_model_copy_unsupported_topology(tmp_path: Path) -> None:
+    forged = config(tmp_path).model_copy(update={"ftps_advertised_ipv4": "8.8.8.8"})
+
+    with pytest.raises(ValueError, match="supported private FTPS topology"):
+        FtpsTlsServer(
+            forged,
+            cast(CompatibilityAuthenticator, Authenticator()),
+            cast(FtpsStagingStore, Staging()),
+            ADMISSIONS,
+        )
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {},
+        {"listen_host": "10.20.30.40", "ftps_advertised_ipv4": "10.20.30.40"},
+        {
+            "listen_host": "0.0.0.0",  # noqa: S104 -- accepted topology, never bound.
+            "ftps_advertised_ipv4": "192.168.1.20",
+        },
+    ],
+)
+def test_constructor_accepts_supported_private_topology(
+    tmp_path: Path, update: dict[str, object]
+) -> None:
+    configured = config(tmp_path).model_copy(update=update)
+
+    server = FtpsTlsServer(
+        configured,
+        cast(CompatibilityAuthenticator, Authenticator()),
+        cast(FtpsStagingStore, Staging()),
+        ADMISSIONS,
+    )
+
+    assert server.sockets == ()
+
+
 async def test_plaintext_never_reaches_protocol(tmp_path: Path) -> None:
     generate_certificate(tmp_path)
     settings = config(tmp_path)
