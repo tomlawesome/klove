@@ -23,6 +23,9 @@ from klove.northbound.mqtt.codec import (
 )
 from klove.northbound.mqtt.server import MqttTlsServer, _tls_context
 from klove.security.compatibility import CompatibilityPrincipal
+from klove.security.compatibility_sessions import CompatibilitySessionRegistry
+
+from ..onboarding_helpers import printer, safety_profile
 
 SERIAL = "KLOVE-01234567-89AB-CDEF-0123-456789ABCDEF"
 OTHER_SERIAL = "KLOVE-FEDCBA98-7654-3210-FEDC-BA9876543210"
@@ -273,6 +276,39 @@ async def test_authentication_denial_and_rotation_close_without_identity_respons
     server, _auth, _ingress, _reports = make_server(tmp_path, auth=rotated)
     target = await run_session(server, connect() + subscribe())
     assert bytes(target.output) == encode_connack()
+
+
+async def test_stale_mqtt_session_is_closed_before_connack(tmp_path: Path) -> None:
+    record = printer(
+        printer_uuid=PRINCIPAL.printer_uuid,
+        safety_profiles=(safety_profile(printer_uuid=PRINCIPAL.printer_uuid),),
+    )
+    sessions = CompatibilitySessionRegistry()
+    sessions.reconcile_committed(
+        record.model_copy(update={"revision": 2, "updated_at_unix_ms": 1_100})
+    )
+    auth = Authenticator()
+    auth.authenticated = CompatibilityPrincipal(
+        printer_uuid=record.printer_uuid,
+        proxy_serial=record.proxy_serial,
+        record_revision=record.revision,
+        control_enabled=record.control_enabled,
+        dispatch_enabled=record.dispatch_enabled,
+    )
+    server, _auth, _ingress, _reports = make_server(tmp_path, auth=auth)
+    server._session_registry = sessions
+
+    target = Writer()
+    task = asyncio.create_task(
+        server._accept(
+            reader(connect(serial=record.proxy_serial)), cast(asyncio.StreamWriter, target)
+        )
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert target.closed and target.output == b""
+    assert server._printer_sessions == {}
 
 
 async def test_command_limit_closes_after_exact_bound(tmp_path: Path) -> None:

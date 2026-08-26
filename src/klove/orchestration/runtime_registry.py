@@ -35,6 +35,16 @@ class _Monitor(Protocol):
         """Run until stopped or failed."""
 
 
+class CommittedRecordObserver(Protocol):
+    """Apply one already-verified durable lifecycle result synchronously."""
+
+    def reconcile_committed(self, record: RegisteredPrinter) -> None:
+        """Observe the exact canonical record while its admission gate is held."""
+
+    def fence_all(self) -> None:
+        """Revoke all observer state when durable lifecycle evidence is uncertain."""
+
+
 MonitorFactory = Callable[
     [MoonrakerMonitorConfig, str, PrinterRegistry, aiohttp.ClientSession],
     _Monitor,
@@ -79,6 +89,7 @@ class RegistryRuntimeSupervisor:
         monitor_factory: MonitorFactory = MoonrakerMonitor,
         controls: ControlService | None = None,
         control_transport_factory: ControlTransportFactory | None = None,
+        committed_record_observer: CommittedRecordObserver | None = None,
     ) -> None:
         if (controls is None) is not (control_transport_factory is None):
             raise ValueError("control routes and their factory must be configured together")
@@ -89,6 +100,8 @@ class RegistryRuntimeSupervisor:
         self._monitor_factory = monitor_factory
         self._controls = controls
         self._control_transport_factory = control_transport_factory
+        self._committed_record_observer = committed_record_observer
+        self._observed_printer_ids: set[str] = set()
         self._admissions = admissions
         self._active: dict[str, _ActiveMonitor] = {}
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
@@ -121,8 +134,18 @@ class RegistryRuntimeSupervisor:
         try:
             records = self._store.list(include_removed=True)
         except Exception as exc:
+            self._fence_observer()
             await self._deactivate_all()
             await self._remove_unmanaged_routes()
+            raise RegistryRuntimeError from exc
+        try:
+            await self._observe_committed_records(records)
+        except Exception as exc:
+            self._fence_observer()
+            await self._deactivate_all()
+            await self._remove_unmanaged_routes()
+            if isinstance(exc, RegistryRuntimeError):
+                raise
             raise RegistryRuntimeError from exc
         desired = self._desired(records)
         for printer_id in tuple(self._active):
@@ -152,11 +175,51 @@ class RegistryRuntimeSupervisor:
                     raise RegistryRuntimeError
         return tuple(sorted(self._active))
 
+    async def _observe_committed_records(self, records: tuple[RegisteredPrinter, ...]) -> None:
+        observer = self._committed_record_observer
+        if observer is None:
+            return
+        seen = self._validated_snapshot_ids(records)
+        for record in records:
+            printer_id = record.printer_uuid
+            async with self._admissions.hold(printer_id):
+                if self._store.get(printer_id) != record:
+                    raise RegistryRuntimeError
+                observer.reconcile_committed(record)
+        self._observed_printer_ids = seen
+
+    def _validated_snapshot_ids(self, records: object) -> set[str]:
+        """Require one complete exact durable snapshot before observer use."""
+        if type(records) is not tuple:
+            raise RegistryRuntimeError
+        seen: set[str] = set()
+        for record in records:
+            if type(record) is not RegisteredPrinter:
+                raise RegistryRuntimeError
+            printer_id = record.printer_uuid
+            if type(printer_id) is not str or printer_id in seen:
+                raise RegistryRuntimeError
+            seen.add(printer_id)
+        if self._observed_printer_ids - seen:
+            raise RegistryRuntimeError
+        for record in records:
+            if self._store.get(record.printer_uuid) != record:
+                raise RegistryRuntimeError
+        return seen
+
+    def _fence_observer(self) -> None:
+        observer = self._committed_record_observer
+        self._observed_printer_ids.clear()
+        if observer is not None:
+            with suppress(Exception):
+                observer.fence_all()
+
     async def _shutdown(self) -> None:
         async with self._lock:
             if self._closed:
                 return
             self._closed = True
+        self._fence_observer()
         await self._deactivate_all()
         await self._remove_unmanaged_routes()
         if self._cleanup_tasks:
@@ -169,6 +232,12 @@ class RegistryRuntimeSupervisor:
         reporting uncertainty; a later durable-result lookup or restart can
         safely reconcile the same authoritative record again.
         """
+        if type(record) is not RegisteredPrinter:
+            self._fence_observer()
+            raise RegistryRuntimeError
+        if type(record.printer_uuid) is not str:
+            self._fence_observer()
+            raise RegistryRuntimeError
         operation = asyncio.create_task(
             self._reconcile_committed(record),
             name=f"registry-runtime-committed:{record.printer_uuid}",
@@ -180,14 +249,23 @@ class RegistryRuntimeSupervisor:
                 await operation
             raise
 
-    async def _reconcile_committed(self, record: RegisteredPrinter) -> None:
-        printer_id = record.printer_uuid
+    async def _reconcile_committed(  # noqa: PLR0912 -- explicit fail-closed handoff exits.
+        self, record: RegisteredPrinter
+    ) -> None:
+        printer_id: str | None = None
         try:
+            if type(record) is not RegisteredPrinter or type(record.printer_uuid) is not str:
+                raise RegistryRuntimeError
+            printer_id = record.printer_uuid
             if await self._is_closed():
                 raise RegistryRuntimeError
             records = self._store.list(include_removed=True)
-            if self._store.get(printer_id) != record:
+            snapshot_ids = self._validated_snapshot_ids(records)
+            if printer_id not in snapshot_ids or self._store.get(printer_id) != record:
                 raise RegistryRuntimeError
+            if self._committed_record_observer is not None:
+                self._committed_record_observer.reconcile_committed(record)
+                self._observed_printer_ids.add(printer_id)
             if record.lifecycle is not PrinterLifecycle.ACTIVE:
                 await self._withdraw(printer_id)
                 return
@@ -214,8 +292,10 @@ class RegistryRuntimeSupervisor:
                 await self._withdraw(printer_id)
                 raise RegistryRuntimeError
         except Exception as exc:
-            with suppress(Exception):
-                await self._withdraw(printer_id)
+            self._fence_observer()
+            if printer_id is not None:
+                with suppress(Exception):
+                    await self._withdraw(printer_id)
             if isinstance(exc, RegistryRuntimeError):
                 raise
             raise RegistryRuntimeError from exc
