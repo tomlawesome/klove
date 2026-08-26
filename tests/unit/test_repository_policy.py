@@ -171,6 +171,58 @@ def test_container_and_compose_preserve_runtime_confinement() -> None:
     assert "volumes:\n  klove-state:" in compose
 
 
+def test_ftps_container_fixture_is_private_bounded_and_opt_in() -> None:
+    fixture = ROOT / "tests" / "integration" / "ftps-container"
+    compose = (fixture / "compose.yml").read_text(encoding="utf-8")
+    script = (ROOT / "scripts" / "test-ftps-container.sh").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+
+    assert "external: true" in compose
+    assert "--internal --subnet" in script
+    assert "\n    ports:" not in compose
+    assert "network_mode:" not in compose
+    assert "pid:" not in compose
+    assert "ipc:" not in compose
+    assert "privileged:" not in compose
+    assert "container_name:" not in compose
+    assert "/var/run/docker.sock" not in compose
+    assert compose.count('cap_drop: ["ALL"]') == 3
+    assert compose.count('cap_add: ["SETGID", "SETUID"]') == 1
+    assert compose.count('security_opt: ["no-new-privileges:true"]') == 3
+    assert compose.count("pids_limit:") == 3
+    assert compose.count("mem_limit:") == 3
+    assert compose.count("cpus:") == 3
+    assert 'net.ipv4.ip_unprivileged_port_start: "0"' in compose
+    assert "${KLOVE_FTPS_NETWORK:?network required}" in compose
+    assert "${KLOVE_FTPS_SERVICE_IP:?service IP required}" in compose
+    assert "runtime-secrets:/run/klove-secrets:ro" in compose
+    assert "staging-state:/var/lib/klove/ftps-staging" in compose
+    assert "staging-state:/staging:ro" in compose
+    assert "contract-trust:/trust:ro" in compose
+    assert 'staging_volume="${project}_staging-state"' in script
+    assert 'trust_volume="${project}_contract-trust"' in script
+    assert "KLOVE_FTPS_ALLOW_ROOTFUL_CI" in script
+    assert "docker context show" in script
+    assert "docker --context \"$context\" info --format '{{.ID}}'" in script
+    assert "SOURCE_DIGEST=$source_digest" in script
+    assert "VCS_REF=$revision" in script
+    assert 'actual_project" != "$project"' in script
+    assert 'actual_role" != "$role"' in script
+    assert "could not atomically claim FTPS container run" in script
+    assert 'if ! mkdir "$state_dir"' in script
+    assert "command -v python3" in script
+    assert "command -v git" in script
+    assert "command -v ip" in script
+    assert 'if [ -n "$network_ids" ]' in script
+    assert "stat.S_ISREG" in script and "stat.S_ISDIR" in script
+    assert "stat.S_IMODE(metadata.st_mode).to_bytes" in script
+    assert 'if [ "$actual_project" != "$project" ]' in script
+    assert '[ "$actual_role" != "$role" ]' in script
+    assert "github.ref_name == 'preview'" in workflow
+    assert "contains(github.event.pull_request.labels.*.name, 'ci: acceptance')" in workflow
+    assert "run: sh scripts/test-ftps-container.sh" in workflow
+
+
 def test_native_moonraker_simulation_is_confined_and_test_only() -> None:  # noqa: PLR0915 -- explicit safety-policy assertions are auditable.
     fixture = ROOT / "tests" / "integration" / "moonraker-sim"
     compose = (fixture / "compose.yml").read_text(encoding="utf-8")

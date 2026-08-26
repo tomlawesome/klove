@@ -26,9 +26,11 @@ RUN addgroup --system --gid 10001 klove \
     && adduser --system --disabled-password --no-create-home --uid 10001 \
         --ingroup klove --shell /sbin/nologin klove \
     && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove \
-    && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove/registry-secrets
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove/registry-secrets \
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove/ftps-staging \
+    && install -d -o 10001 -g 10001 -m 0700 /run/klove-secrets
 COPY --from=build /install /usr/local
 USER 10001:10001
-EXPOSE 8080
+EXPOSE 8080/tcp 990/tcp 50000-50009/tcp
 ENTRYPOINT ["klove"]
 CMD ["--config", "/etc/klove/config.toml"]
