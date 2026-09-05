@@ -241,6 +241,7 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
         range(configured.ftps_passive_port_min, configured.ftps_passive_port_max + 1)
     ) == tuple(range(50000, 50010))
     assert configured.max_sessions_per_printer == 2
+    assert configured.staging_ttl_seconds == 3600
 
     for values in (
         {"enabled": True},
@@ -274,6 +275,15 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
         {"mqtt_port": 50000},
         {"ftps_control_port": 50009},
         {"max_sessions": 1, "max_sessions_per_printer": 2},
+        {
+            "enabled": True,
+            "ftps_advertised_ipv4": "192.0.2.20",
+            "tls_certificate_file": Path("/run/secrets/bridge.crt"),
+            "tls_private_key_file": Path("/run/secrets/bridge.key"),
+            "max_commands_per_session": 6,
+        },
+        {"staging_ttl_seconds": 59},
+        {"staging_ttl_seconds": 86_401},
         {
             "mqtt_journal_file": Path("/var/lib/klove/ftps-staging/ingress.sqlite3"),
         },
