@@ -128,6 +128,29 @@ its durable pre-dispatch reservation.
 Do not bypass required tests. Production approval may be self-reviewed and
 administrators may bypass protection when consciously handling an emergency.
 
+## Where development happens: GitLab, with GitHub as the mirror
+
+Owner decision, 2026-09-04, tracked on #171: Klove is developed on the
+self-hosted GitLab, project `ai/klove` (id 52), remote name `gitlab`. Branches,
+merge requests and the `dev` → `preview` → `main` promotions happen there;
+GitHub (`origin`) is the public mirror. Issues, the delivery board
+(`docs/board-views.md`) and decisions live on GitLab too; the GitHub tracker
+was imported keeping every issue and pull request number, and the GitHub
+Projects board is closed.
+
+The default branch is `dev`, so `Closes #N` on an ordinary merge closes its
+issue; check the issue after every merge anyway.
+
+Git access from the agent host: SSH to the instance is unreachable, so the
+`gitlab` remote is HTTPS and pushes hand git the calling assistant's own
+`glab` token through `~/.local/bin/gl-git-askpass`:
+
+    GIT_ASKPASS=gl-git-askpass GIT_TERMINAL_PROMPT=0 git push gitlab <branch>
+
+The helper reads `GLAB_CONFIG_DIR`, so each assistant pushes with its own
+credential (github-credentials skill). No other credential is specific to this
+project.
+
 ## Local checks
 
 Install `requirements-dev.lock` with `--require-hashes`, then run
