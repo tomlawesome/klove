@@ -25,6 +25,35 @@ Identifier = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"),
 ]
+_RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+
+
+def _supports_private_ftps_topology(listen_host: object, advertised_ipv4: object) -> bool:
+    """Accept only direct loopback or RFC1918 FTPS deployment topology."""
+    if type(listen_host) is not str or type(advertised_ipv4) is not str:
+        return False
+    try:
+        bound = ipaddress.ip_address(listen_host)
+        published = ipaddress.ip_address(advertised_ipv4)
+    except ValueError:
+        return False
+    return (
+        isinstance(bound, ipaddress.IPv4Address)
+        and isinstance(published, ipaddress.IPv4Address)
+        and (
+            bound == published
+            or (
+                bound.is_unspecified
+                and not published.is_loopback
+                and any(published in network for network in _RFC1918_NETWORKS)
+            )
+        )
+        and (published.is_loopback or any(published in network for network in _RFC1918_NETWORKS))
+    )
 
 
 class PrinterConfig(BaseModel):
@@ -375,6 +404,10 @@ class GroveBridgeConfig(BaseModel):
     max_concurrent_transfers: int = Field(default=4, ge=1, le=64)
     ingress_capacity: int = Field(default=4096, ge=1, le=100_000)
 
+    def has_supported_ftps_topology(self) -> bool:
+        """Return whether this bridge has the sole accepted FTPS deployment shape."""
+        return _supports_private_ftps_topology(self.listen_host, self.ftps_advertised_ipv4)
+
     @field_validator("listen_host")
     @classmethod
     def listen_host_is_canonical_ipv4(cls, value: str) -> str:
@@ -438,6 +471,8 @@ class GroveBridgeConfig(BaseModel):
             or self.ftps_advertised_ipv4 is None
         ):
             raise ValueError("enabled bridge requires distinct TLS files and FTPS address")
+        if self.enabled and not self.has_supported_ftps_topology():
+            raise ValueError("enabled bridge requires direct private FTPS topology")
         if not self.enabled and any(
             value is not None for value in (*tls_values, self.ftps_advertised_ipv4)
         ):

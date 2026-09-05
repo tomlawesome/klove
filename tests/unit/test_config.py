@@ -230,7 +230,7 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
     configured = GroveBridgeConfig(
         enabled=True,
         listen_host="0.0.0.0",  # noqa: S104 -- explicit container bridge bind under test.
-        ftps_advertised_ipv4="192.0.2.20",
+        ftps_advertised_ipv4="192.168.1.20",
         tls_certificate_file=Path("/run/secrets/bridge.crt"),
         tls_private_key_file=Path("/run/secrets/bridge.key"),
     )
@@ -247,7 +247,7 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
         {"enabled": True},
         {
             "enabled": True,
-            "ftps_advertised_ipv4": "192.0.2.20",
+            "ftps_advertised_ipv4": "192.168.1.20",
             "tls_certificate_file": Path("/run/secrets/shared"),
             "tls_private_key_file": Path("/run/secrets/shared"),
         },
@@ -255,6 +255,84 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
     ):
         with pytest.raises(ValidationError):
             GroveBridgeConfig.model_validate(values)
+
+
+def test_enabled_grove_bridge_reports_completeness_before_topology() -> None:
+    with pytest.raises(ValidationError, match="distinct TLS files and FTPS address"):
+        GroveBridgeConfig(enabled=True, ftps_advertised_ipv4="8.8.8.8")
+
+
+@pytest.mark.parametrize(
+    ("listen_host", "advertised_ipv4"),
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("10.20.30.40", "10.20.30.40"),
+        ("172.16.30.40", "172.16.30.40"),
+        ("192.168.1.20", "192.168.1.20"),
+        ("0.0.0.0", "192.168.1.20"),  # noqa: S104 -- explicit container bridge bind.
+    ],
+)
+def test_enabled_grove_bridge_accepts_only_direct_private_ftps_topology(
+    listen_host: str, advertised_ipv4: str
+) -> None:
+    configured = GroveBridgeConfig(
+        enabled=True,
+        listen_host=listen_host,
+        ftps_advertised_ipv4=advertised_ipv4,
+        tls_certificate_file=Path("/run/secrets/bridge.crt"),
+        tls_private_key_file=Path("/run/secrets/bridge.key"),
+    )
+
+    assert configured.listen_host == listen_host
+    assert configured.ftps_advertised_ipv4 == advertised_ipv4
+
+
+@pytest.mark.parametrize(
+    ("listen_host", "advertised_ipv4"),
+    [
+        ("0.0.0.0", "8.8.8.8"),  # noqa: S104 -- rejected public topology input.
+        ("0.0.0.0", "255.255.255.255"),  # noqa: S104 -- rejected broadcast input.
+        ("0.0.0.0", "169.254.1.1"),  # noqa: S104 -- rejected link-local input.
+        ("0.0.0.0", "240.0.0.1"),  # noqa: S104 -- rejected reserved input.
+        ("0.0.0.0", "192.0.2.1"),  # noqa: S104 -- rejected documentation input.
+        ("0.0.0.0", "100.64.0.1"),  # noqa: S104 -- rejected shared-space input.
+        ("0.0.0.0", "127.0.0.1"),  # noqa: S104 -- wildcard must not publish loopback.
+        ("172.15.255.255", "172.15.255.255"),
+        ("172.32.0.0", "172.32.0.0"),
+        ("192.168.1.20", "192.168.1.21"),
+    ],
+)
+def test_enabled_grove_bridge_rejects_unsupported_ftps_topology(
+    listen_host: str, advertised_ipv4: str
+) -> None:
+    with pytest.raises(ValidationError, match="direct private FTPS topology"):
+        GroveBridgeConfig(
+            enabled=True,
+            listen_host=listen_host,
+            ftps_advertised_ipv4=advertised_ipv4,
+            tls_certificate_file=Path("/run/secrets/bridge.crt"),
+            tls_private_key_file=Path("/run/secrets/bridge.key"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("listen_host", "advertised_ipv4"),
+    [
+        (1, "192.168.1.20"),
+        ("127.0.0.1", 1),
+        ("not-an-ip-address", "192.168.1.20"),
+        ("127.0.0.1", "not-an-ip-address"),
+    ],
+)
+def test_grove_bridge_topology_check_fails_closed_for_forged_values(
+    listen_host: object, advertised_ipv4: object
+) -> None:
+    bridge = GroveBridgeConfig.model_construct(
+        listen_host=listen_host,
+        ftps_advertised_ipv4=advertised_ipv4,
+    )
+
+    assert bridge.has_supported_ftps_topology() is False
 
 
 @pytest.mark.parametrize(
@@ -277,7 +355,8 @@ def test_grove_bridge_is_disabled_by_default_and_enabled_policy_is_complete() ->
         {"max_sessions": 1, "max_sessions_per_printer": 2},
         {
             "enabled": True,
-            "ftps_advertised_ipv4": "192.0.2.20",
+            "listen_host": "192.168.1.20",
+            "ftps_advertised_ipv4": "192.168.1.20",
             "tls_certificate_file": Path("/run/secrets/bridge.crt"),
             "tls_private_key_file": Path("/run/secrets/bridge.key"),
             "max_commands_per_session": 6,
