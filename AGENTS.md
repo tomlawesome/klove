@@ -120,7 +120,8 @@ its durable pre-dispatch reservation.
   after fast and integration checks pass.
 - A `preview` push builds, scans, attests, and publishes one uniquely identified
   container digest.
-- Protected `main` accepts only a PR from the exact tested `preview` revision.
+- Protected `main` accepts only a PR from the exact tested `preview` revision
+  (`verify:preview` in `.gitlab-ci.yml` proves it against the published digest).
 - Stable promotion re-tags the accepted digest; it never rebuilds it.
 - The repository has one maintainer. Pull requests and resolved conversations
   are required, but approving reviews are not.

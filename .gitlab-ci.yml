@@ -8,13 +8,15 @@
 # `promote.yml` stable-release path. #173 is the migration record; the
 # general model is in the gitlab-first-migration skill.
 #
-# Publishing, attestation and the registry deliberately stay on GitHub:
-# this file ports validate.yml's `fast`, `browser` and `moonraker-sim`
-# jobs only. `exact-container` (build, Trivy scan, SBOM, ghcr publish,
-# attestation) and `verify-preview` (attestation verification ahead of a
-# stable promotion) are not duplicated here -- they need the registry and
-# attestation identity that lives on GitHub, and running them twice would
-# let the two hosts disagree about which digest is the tested one.
+# Publishing, attestation and the registry deliberately stay on GitHub: this
+# file ports validate.yml's `fast`, `browser` and `moonraker-sim` jobs, plus
+# `verify:preview` (#173), which used to be GitHub's `verify-preview` job.
+# It moved here because the `preview` -> `main` promotion it gates is a
+# GitLab merge request now, so the GitHub copy never fired. `exact-container`
+# (build, Trivy scan, SBOM, ghcr publish, attestation) stays GitHub-only --
+# it needs the registry and attestation identity that lives there, and
+# running it twice would let the two hosts disagree about which digest is
+# the tested one.
 #
 # The `sync` stage is inert until the owner sets MIRROR_TO_GITHUB=true as
 # a project CI/CD variable (gitlab-first-migration skill, step 4/5).
@@ -69,6 +71,50 @@ policy:promotion-hop:
           fi
           ;;
       esac
+
+# ---------------------------------------------------------------------------
+# verify:preview -- ported from validate.yml's `verify-preview` job (#173).
+# GitHub's validate.yml builds, scans, publishes and attests the image when
+# the mirror job (sync stage, below) pushes `preview`; this job proves the
+# `:preview` tag in the public registry is exactly the revision this MR
+# would promote, before main accepts it. It never builds or publishes
+# anything itself, so it runs on plain alpine with no Docker socket.
+#
+# If it fails with a revision mismatch right after a dev -> preview merge,
+# GitHub's build for that push has probably not finished publishing yet --
+# re-run this job once it completes; never bypass it. `promote.yml` (the
+# `:latest` retag) still runs on GitHub, by workflow_dispatch.
+#
+# `gh attestation verify` refuses outright without a token, even against a
+# public repo and even with --bundle-from-oci (both tested unauthenticated
+# against the real registry: "gh auth login" / exit 4, identically). So this
+# reads GITHUB_READ_TOKEN, a CI/CD variable the owner must create: a
+# GitHub PAT scoped to read-only access on tomlawesome/klove, nothing more.
+# ---------------------------------------------------------------------------
+
+verify:preview:
+  stage: policy
+  image: alpine:3.22
+  needs: []
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+  script:
+    - apk add --no-cache github-cli skopeo jq >/dev/null
+    - test -n "$GITHUB_READ_TOKEN" || { echo "GITHUB_READ_TOKEN is not set -- create a read-only GitHub PAT as a CI/CD variable"; exit 1; }
+    - export GH_TOKEN="$GITHUB_READ_TOKEN"
+    - test "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" = preview || { echo "main only accepts a promotion from preview (got '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME')"; exit 1; }
+    - digest="$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/tomlawesome/klove:preview)"
+    - test -n "$digest" || { echo "could not resolve the digest of ghcr.io/tomlawesome/klove:preview"; exit 1; }
+    - echo "verifying ghcr.io/tomlawesome/klove@$digest"
+    - gh attestation verify "oci://ghcr.io/tomlawesome/klove@$digest" --repo tomlawesome/klove
+    - labels="$(skopeo inspect --config "docker://ghcr.io/tomlawesome/klove@$digest")"
+    - revision="$(printf '%s' "$labels" | jq -r '.config.Labels["org.opencontainers.image.revision"]')"
+    - source_branch="$(printf '%s' "$labels" | jq -r '.config.Labels["io.github.tomlawesome.klove.source-branch"]')"
+    - |
+      if [ "$revision" != "$CI_COMMIT_SHA" ] || [ "$source_branch" != "preview" ]; then
+        echo "published :preview image does not match this MR -- revision=$revision (expected $CI_COMMIT_SHA), source-branch=$source_branch (expected preview)"
+        exit 1
+      fi
 
 # ---------------------------------------------------------------------------
 # TEST -- ported from .github/workflows/validate.yml's `fast` and `browser`
