@@ -4,7 +4,8 @@
 `FtpsTlsServer` class now implements the accepted implicit-TLS listener
 profile: one authenticated cleanup or protected passive upload, with strict
 command order, bounded sessions and transfers, same-peer protected data, and
-private staging only. It is not composed into application startup or readiness.
+private staging only. The explicit Grove bridge gate composes this FTPS boundary
+into application startup and readiness.
 
 The retained Grove-client observation now proves two implicit-FTPS TLS 1.3
 sessions and one protected passive upload, including the generated access-code
@@ -26,11 +27,12 @@ re-verifies the retained bytes; it exposes no staged data.
 
 This is file-only and non-actuating. It neither validates an archive nor creates
 an artifact target approval, dispatch operation, Moonraker upload, print start,
-or control request. Production composition remains disabled pending startup
-reconciliation and expiry, lifecycle-driven session revocation, and every
-remaining ADR-0010 runtime gate. The listener class and its conformance tests
-do not make issue #14 complete or establish Grove acceptance, dispatch
-authority, or production readiness.
+or control request. Enabled startup first reconciles the owner-only staging
+store, seeds session revocation from the complete canonical registry snapshot,
+and only then starts the exact FTPS listener set and opens readiness. Shutdown
+closes FTPS admission twice before fencing sessions and withdrawing runtime
+routes, so ambiguous listener release receives one explicit retry. This does
+not establish Grove acceptance or grant dispatch authority.
 
 `FtpsBindSetDiagnostic` is a non-actuating, diagnostic-only startup helper. It
 binds the configured control and passive set for direct loopback
@@ -44,8 +46,8 @@ passive-port conflict, or probe-release failure. It attempts every probe close;
 a release failure makes no release or availability claim. It does not prove that an
 advertised wildcard address is locally usable, reserve a later listener, or make
 a readiness claim. It accepts no connection and performs no TLS, authentication,
-routing, staging, or dispatch work. It is not composed into application startup
-or `/health/ready`.
+routing, staging, or dispatch work. Application composition does not use this
+diagnostic as readiness evidence.
 
 `FtpsTlsServer.start` independently revalidates that exact private topology and
 atomically acquires the configured control port plus every configured passive
@@ -57,5 +59,5 @@ never release the underlying listener between sessions. Each accepted passive
 connection is bound to the immutable lease present before its TLS 1.3
 handshake, so a delayed connection cannot enter a successor lease. Startup,
 transfer, cancellation, and shutdown ambiguity fail closed and retain uncertain
-handles for an explicit close retry. This socket ownership is not application
-composition, readiness, Grove acceptance, staging authority, or actuation.
+handles for an explicit close retry. Grove acceptance and actuation remain
+separate boundaries.
