@@ -114,6 +114,32 @@ test:fast:
       - coverage.json
     expire_in: 14 days
 
+# Shipped-dependency licence gate (#172): checks only the distributions
+# requirements.lock installs into the runtime image against
+# supply-chain/licence-policy.yml. Replaces .github/dependency-review-config.yml's
+# licence check, which only ever compared a GitHub pull-request diff and went
+# inert once development moved to this GitLab merge-request flow (#171) --
+# there are no GitHub pull requests here to diff.
+test:licence-policy:
+  stage: test
+  # python:3.12-slim-bookworm, verified 2026-09-05
+  image: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+  <<: *gate
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files:
+        - requirements-dev.lock
+        - requirements.lock
+    paths:
+      - .cache/pip
+  script:
+    - pip install --require-hashes -r requirements-dev.lock
+    - python -m pytest tests/test_licence_policy.py -q
+    - pip install --require-hashes --no-deps --target /tmp/licence-site -r requirements.lock
+    - python scripts/licence_policy.py --site /tmp/licence-site
+
 # Microsoft's own Playwright image ships the exact browser build the
 # @playwright/test version in package-lock.json (1.62.1) expects, so
 # `npx playwright install --with-deps chromium` -- and the apt access it
