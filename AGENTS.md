@@ -153,6 +153,9 @@ project.
 
 ## Local checks
 
+`.gitlab-ci.yml` is the gate that runs on GitLab; container publishing,
+scanning and attestation still happen on GitHub from the mirrored `preview` push.
+
 Install `requirements-dev.lock` with `--require-hashes`, then run
 `scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere. Keep CI
 actions, base images, and scanner images pinned to reviewed immutable digests.

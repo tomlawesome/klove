@@ -1,0 +1,230 @@
+# ============================================================
+# GitLab is where Klove is developed: branches, merge requests and the
+# dev -> preview -> main promotions all happen here, and this file is the
+# gate that runs on them (AGENTS.md, "Where development happens"). GitHub
+# is the mirror -- the `sync` stage pushes each of the three branches after
+# a merge -- and keeps what already works there: CodeQL, dependency
+# review, the ghcr container registry, build/SBOM attestations and the
+# `promote.yml` stable-release path. #173 is the migration record; the
+# general model is in the gitlab-first-migration skill.
+#
+# Publishing, attestation and the registry deliberately stay on GitHub:
+# this file ports validate.yml's `fast`, `browser` and `moonraker-sim`
+# jobs only. `exact-container` (build, Trivy scan, SBOM, ghcr publish,
+# attestation) and `verify-preview` (attestation verification ahead of a
+# stable promotion) are not duplicated here -- they need the registry and
+# attestation identity that lives on GitHub, and running them twice would
+# let the two hosts disagree about which digest is the tested one.
+#
+# The `sync` stage is inert until the owner sets MIRROR_TO_GITHUB=true as
+# a project CI/CD variable (gitlab-first-migration skill, step 4/5).
+# Nothing in this file sets it.
+# ============================================================
+
+stages:
+  - policy
+  - test
+  - integration
+  - sync
+
+# Every real job runs on a merge request and on a push to one of the three
+# long-lived branches; never on a schedule (this project has none today,
+# but a future one -- e.g. a dependency-update bot -- must not pick these
+# jobs up by accident).
+.gate: &gate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "preview" || $CI_COMMIT_BRANCH == "main"'
+
+# ---------------------------------------------------------------------------
+# POLICY -- the three-lane promotion order, dev -> preview -> main, with no
+# shortcuts. Copied verbatim from mikroview's .gitlab-ci.yml (#173). Only
+# bites if the project requires a passing pipeline to merge (Settings >
+# Merge requests > "Pipelines must succeed"), which is the owner's setting;
+# without it this job is a warning, not a gate.
+# ---------------------------------------------------------------------------
+
+policy:promotion-hop:
+  stage: policy
+  image: alpine:3.22
+  needs: []
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "preview" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main")'
+  script:
+    - 'echo "MR !$CI_MERGE_REQUEST_IID: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME -> $CI_MERGE_REQUEST_TARGET_BRANCH_NAME"'
+    - |
+      case "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" in
+        main)
+          if [ "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" != "preview" ]; then
+            echo "main only accepts merge requests from preview (got '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME') -- promote dev -> preview first, then preview -> main."
+            exit 1
+          fi
+          ;;
+        preview)
+          if [ "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" != "dev" ]; then
+            echo "preview only accepts merge requests from dev (got '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME')."
+            exit 1
+          fi
+          ;;
+      esac
+
+# ---------------------------------------------------------------------------
+# TEST -- ported from .github/workflows/validate.yml's `fast` and `browser`
+# jobs (#173).
+# ---------------------------------------------------------------------------
+
+# GitLab's docker executor runs this image as root, unlike GitHub's runner
+# VM which runs the same steps as an unprivileged user. That would matter
+# for a permission-enforcement test that chmods a path unwritable and
+# expects the OS itself to refuse the write, since root bypasses Unix
+# permission bits (CAP_DAC_OVERRIDE) -- mikroview's test:go job has exactly
+# that problem and drops to a non-root user for it. Checked tests/ for the
+# same shape here: every chmod-based check in tests/unit/ (test_private_files.py,
+# test_secret_store.py, test_dispatch_spool.py, test_ftps_staging.py,
+# test_start_journal.py, test_mqtt_ingress_journal.py, test_dispatch_journal.py,
+# test_printer_registry*.py) backs klove's own require_private_file /
+# require_private_directory contract, which reads the mode bits with
+# stat.S_IMODE(...) & 0o077 and compares st_uid to os.geteuid() rather than
+# attempting a write and catching the OS's PermissionError. That check gives
+# the same answer whether the process runs as root or not, so test:fast
+# stays root and does not need test:go's non-root step.
+test:fast:
+  stage: test
+  # python:3.12-slim-bookworm, verified 2026-09-05
+  image: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+  <<: *gate
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files:
+        - requirements-dev.lock
+        - requirements-build.lock
+    paths:
+      - .cache/pip
+  script:
+    - pip install --require-hashes -r requirements-dev.lock
+    - pip install --require-hashes -r requirements-build.lock
+    - pip install --no-build-isolation --no-deps .
+    - sh scripts/test-fast.sh
+  artifacts:
+    paths:
+      - coverage.json
+    expire_in: 14 days
+
+# Microsoft's own Playwright image ships the exact browser build the
+# @playwright/test version in package-lock.json (1.62.1) expects, so
+# `npx playwright install --with-deps chromium` -- and the apt access it
+# needs -- is unnecessary here, unlike validate.yml's GitHub job. -noble
+# (Ubuntu 24.04) is used because Microsoft still publishes it for 1.62.1;
+# -jammy is the fallback if that ever stops being true.
+test:browser:
+  stage: test
+  # mcr.microsoft.com/playwright:v1.62.1-noble, verified 2026-09-05
+  image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+  needs: [test:fast]
+  <<: *gate
+  variables:
+    CI: "true"
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm
+  script:
+    - npm ci
+    - sh scripts/test-browser.sh
+
+# ---------------------------------------------------------------------------
+# INTEGRATION -- ported from validate.yml's `moonraker-sim` job (#173).
+#
+# The runner is a rootless-Docker docker executor with the runner host's own
+# Docker socket bound at /var/run/docker.sock inside every job -- there is no
+# Docker-in-Docker (owner decision on mikroview #942, 2026-09-05). That means
+# the daemon a job talks to is the runner host's, not this job container's:
+# a bind mount naming a path from the job's own checkout would be resolved by
+# the daemon against *its own* filesystem, not this container's, and either
+# find nothing (silently mounting an empty directory -- testing-and-ci skill,
+# "CI starts from an empty checkout") or the wrong thing entirely.
+#
+# tests/integration/moonraker-sim/compose.yml does not have that problem: its
+# only volumes (runtime-secrets, runtime-state, klove-state, test-state,
+# dispatch-state) are Docker-managed named volumes, never bind mounts of a
+# repo path, and each is scoped to the run's own compose project name
+# (klove-mr-$KLOVE_SIM_RUN_ID), so two pipelines sharing the one daemon do not
+# collide. The `docker compose ... --build` calls in moonraker-sim-up.sh
+# build from local contexts (`.` and `../../..`), but a build's context is
+# packaged into a tar and shipped over the API call itself -- the same reason
+# mikroview's test:container job's `docker build --tag "$APP" .` works over
+# this same bound socket -- so those paths are read by the CLI running in
+# this job container, not resolved by the remote daemon. This job is expected
+# to work over the bound socket.
+test:moonraker-sim:
+  stage: integration
+  # docker:28-cli, verified 2026-09-05
+  image: docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+  needs: [test:fast]
+  <<: *gate
+  timeout: 35m
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    CI: "true"
+    KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"
+    KLOVE_SIM_RUN_ID: ci-$CI_PIPELINE_ID-$CI_JOB_ID
+  before_script:
+    # docker:28-cli carries only the plain docker CLI; the compose plugin,
+    # buildx (compose's `--build` uses it) and git (moonraker-sim-up.sh
+    # reads $KLOVE_SIM_REVISION off `git rev-parse HEAD`) are all separate
+    # Alpine packages.
+    - apk add --no-cache docker-cli-compose docker-cli-buildx git >/dev/null
+  script:
+    - docker version --format 'client {{.Client.Version}} / daemon {{.Server.Version}}'
+    - sh scripts/test-moonraker-sim.sh
+
+# ---------------------------------------------------------------------------
+# SYNC -- GitHub is a mirror of dev, preview and main. After a push to any of
+# the three (a merge here lands as a push), mirror-to-github pushes that
+# branch to GitHub. It runs only once the owner has set MIRROR_TO_GITHUB=true
+# (gitlab-first-migration skill, step 4/5). Copied from mikroview's
+# .gitlab-ci.yml (#173) with the remote changed to this project's GitHub
+# repository.
+# ---------------------------------------------------------------------------
+
+sync:mirror-to-github:
+  stage: sync
+  # Plain alpine plus git, like policy:promotion-hop. alpine/git's entrypoint
+  # is git itself, so the runner's shell arrives as `git sh` and the job dies
+  # before its script.
+  image: alpine:3.22
+  # `needs: []`: the mirror reflects the branch, not the pipeline. The merge
+  # request already ran the gate before it merged; a flaky test on the
+  # post-merge run must not leave GitHub behind, silently.
+  needs: []
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $MIRROR_TO_GITHUB == "true" && ($CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "preview" || $CI_COMMIT_BRANCH == "main")'
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - apk add --no-cache git openssh-client curl jq >/dev/null
+    - test -n "$GITHUB_MIRROR_SSH_KEY" || { echo "GITHUB_MIRROR_SSH_KEY is not set -- is $CI_COMMIT_BRANCH protected?"; exit 1; }
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    # GitLab's variable editor trims the key's final newline, and OpenSSH
+    # refuses a key without one ("error in libcrypto"). Strip CRs, put the
+    # newline back, and prove the key loads before trying GitHub -- without
+    # printing any of it.
+    - tr -d '\r' < "$GITHUB_MIRROR_SSH_KEY" > ~/.ssh/mirror_key && chmod 600 ~/.ssh/mirror_key
+    - '[ -n "$(tail -c1 ~/.ssh/mirror_key)" ] && echo >> ~/.ssh/mirror_key || true'
+    - 'head -1 ~/.ssh/mirror_key | grep -q "PRIVATE KEY" || { echo "GITHUB_MIRROR_SSH_KEY does not begin with a PRIVATE KEY header -- was the public half pasted?"; exit 1; }'
+    - 'ssh-keygen -y -f ~/.ssh/mirror_key > /dev/null || { echo "GITHUB_MIRROR_SSH_KEY is not a readable private key ($(wc -l < ~/.ssh/mirror_key) lines) -- re-paste the whole file"; exit 1; }'
+    - curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com \(.)"' > ~/.ssh/known_hosts
+    - test -s ~/.ssh/known_hosts
+    - export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+    - git remote add github git@github.com:tomlawesome/klove.git 2>/dev/null || git remote set-url github git@github.com:tomlawesome/klove.git
+    # Never --force: if this is refused non-fast-forward, something wrote to
+    # GitHub's copy and the branch has forked. Reconcile by merge.
+    - git push github "HEAD:refs/heads/$CI_COMMIT_BRANCH"
