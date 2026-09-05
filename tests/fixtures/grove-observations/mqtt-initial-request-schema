@@ -1,0 +1,116 @@
+{
+  "profile_version": 1,
+  "transport": "mqtt-over-tls",
+  "observed": {
+    "initial_requests": [
+      {
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "command": "pushall",
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "pushing",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {
+                    "name": "command",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": false,
+        "payload_bytes": 35,
+        "puback_order": "after_next_initial_publish"
+      },
+      {
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "command": "get_version",
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "info",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {
+                    "name": "sequence_id",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  },
+                  {
+                    "name": "command",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 56,
+        "puback_order": "after_publish"
+      },
+      {
+        "topic": "device/{serial}/request",
+        "qos": 1,
+        "dup": false,
+        "retain": false,
+        "command": "extrusion_cali_get",
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {
+                    "name": "command",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  },
+                  {
+                    "name": "filament_id",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  },
+                  {
+                    "name": "nozzle_diameter",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  },
+                  {
+                    "name": "sequence_id",
+                    "present": true,
+                    "schema": {"type": "string"}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "generated_sequence_marker": true,
+        "payload_bytes": 109,
+        "puback_order": "after_publish"
+      }
+    ],
+    "first_puback_after_next_initial_publish": true
+  }
+}

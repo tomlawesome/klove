@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "fixture": "mqtt-initial-request-schema",
+  "upstream": {
+    "repository": "https://github.com/EdwardChamberlain/grove-control",
+    "commit": "cdf6b829ad5da200bd9eda5d3a4fcda5a7bba3e4"
+  },
+  "observation": {
+    "component": "Grove virtual-printer MQTT client",
+    "scenario": "Generated printer's first three QoS 1 request publishes in one bounded TLS MQTT session"
+  },
+  "capture": {
+    "harness_revision": "94df5f9685413c103fab5b65851a7dd7c48a223c",
+    "command": "scripts/capture-grove-mqtt-initial-requests.sh mqttfixture-20260826-05",
+    "tool_versions": {
+      "docker": "client/server 29.7.2",
+      "python": "3.13.15 stdlib bounded recorder",
+      "openssl": "OpenSSL 3.5.6",
+      "grove-observer-image": "grove-observer@sha256:283e1e0c5e7b9a349d813591997b0f407dc264bb1cdfb8f01c018b3a91a40bd5"
+    },
+    "captured_at_utc": "2026-08-26T08:00:41Z"
+  },
+  "generated_data": true,
+  "sanitization_rules": [
+    "retain exact MQTT request tokens, ordering, flags, byte counts, and structural member schemas only",
+    "replace the generated serial with the literal {serial} template and retain generated sequence presence as a boolean only",
+    "exclude payload values, credentials, packet identifiers, endpoint addresses, certificates, raw traces, and logs"
+  ],
+  "media_type": "application/json",
+  "byte_count": 3102,
+  "sha256": "sha256:817735d9797bc3c088d12a65eff72aefb8bc99f7708cdb692ff29d2b0c7ce499",
+  "review": {
+    "uses_generated_fake_credentials": true,
+    "contains_no_credentials": true,
+    "contains_no_personal_data": true,
+    "contains_no_source_excerpt": true,
+    "contains_no_authored_error_prose": true,
+    "contains_no_certificate_or_private_key": true,
+    "contains_no_copied_upstream_fixture": true,
+    "raw_trace_destroyed": true
+  },
+  "retained_values": [
+    {"locator": "transport", "classification": "required_protocol_token"},
+    {"locator": "observed.initial_requests[].topic", "classification": "required_protocol_token"},
+    {"locator": "observed.initial_requests[].command", "classification": "required_protocol_token"},
+    {"locator": "observed.initial_requests[].qos", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].dup", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].retain", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].members", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].generated_sequence_marker", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].payload_bytes", "classification": "externally_observed_fact"},
+    {"locator": "observed.initial_requests[].puback_order", "classification": "externally_observed_fact"},
+    {"locator": "observed.first_puback_after_next_initial_publish", "classification": "externally_observed_fact"}
+  ]
+}
