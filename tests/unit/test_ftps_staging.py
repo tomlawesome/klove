@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
@@ -33,17 +34,25 @@ def reservation(
     staging_id: str = STAGE_ID,
     printer_uuid: str = PRINTER_ID,
     client_path: str = CLIENT_PATH,
+    created_at_unix_ms: int = 1_000,
+    expires_at_unix_ms: int = 2_000,
 ) -> FtpsStageReservation:
     return FtpsStageReservation(
         staging_id=staging_id,
         printer_uuid=printer_uuid,
         client_path=client_path,
-        created_at_unix_ms=1_000,
-        expires_at_unix_ms=2_000,
+        created_at_unix_ms=created_at_unix_ms,
+        expires_at_unix_ms=expires_at_unix_ms,
     )
 
 
-def store(tmp_path: Path, *, limit: int = 512, capacity: int = 8) -> FtpsStagingStore:
+def store(
+    tmp_path: Path,
+    *,
+    limit: int = 512,
+    capacity: int = 8,
+    clock_ms: Callable[[], int] | None = None,
+) -> FtpsStagingStore:
     directory = tmp_path / "ftps-staging"
     directory.mkdir(mode=0o700)
     directory.chmod(0o700)
@@ -51,6 +60,7 @@ def store(tmp_path: Path, *, limit: int = 512, capacity: int = 8) -> FtpsStaging
         directory,
         limits=ArtifactLimits(max_archive_compressed_bytes=limit),
         capacity=capacity,
+        clock_ms=clock_ms or (lambda: 1_000),
     )
     value.initialize()
     return value
@@ -575,12 +585,27 @@ def test_concurrent_consume_has_one_winner(tmp_path: Path, monkeypatch: pytest.M
     thread = Thread(target=consume)
     thread.start()
     assert entered.wait(2)
-    with pytest.raises(FtpsStagingError):
-        value.consume(reservation())
+    contender_done = Event()
+
+    def contend() -> None:
+        try:
+            results.append(value.consume(reservation()))
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            contender_done.set()
+
+    contender = Thread(target=contend)
+    contender.start()
+    assert not contender_done.wait(0.1)
     release.set()
     thread.join(2)
+    contender.join(2)
     assert not thread.is_alive()
-    assert len(results) == 1 and not failures
+    assert not contender.is_alive()
+    assert len(results) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], FtpsStagingError)
 
 
 def test_only_consumed_exact_stage_can_be_removed_and_restart_resumes_marker(
@@ -687,6 +712,369 @@ def test_capacity_counts_complete_and_receiving_stages_without_eviction(tmp_path
     with pytest.raises(FtpsStagingError):
         value.begin(reservation(staging_id=SECOND_STAGE_ID))
     first.abort()
+
+
+def test_restart_reconcile_removes_only_an_exact_expired_unconsumed_stage_and_releases_capacity(
+    tmp_path: Path,
+) -> None:
+    now = 1_999
+    original = store(tmp_path, capacity=1, clock_ms=lambda: now)
+    original.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+
+    now = 2_000
+    restarted = FtpsStagingStore(
+        directory,
+        limits=ArtifactLimits(max_archive_compressed_bytes=512),
+        capacity=1,
+        clock_ms=lambda: now,
+    )
+    restarted.initialize()
+    restarted.reconcile()
+
+    assert not list(directory.iterdir())
+    with pytest.raises(FtpsStagingError):
+        restarted.inspect(reservation())
+    writer = restarted.begin(
+        reservation(staging_id=SECOND_STAGE_ID, created_at_unix_ms=2_000, expires_at_unix_ms=3_000)
+    )
+    writer.abort()
+
+
+def test_expiry_boundary_denies_admission_read_and_consume_without_state_transition(
+    tmp_path: Path,
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    artifact = value.stage(reservation(), [b"archive"])
+    writer = value.begin(reservation(staging_id=SECOND_STAGE_ID))
+    writer.write(b"archive")
+
+    now = 2_000
+    with pytest.raises(FtpsStagingError):
+        value.begin(reservation(staging_id=THIRD_STAGE_ID))
+    with pytest.raises(FtpsStagingError):
+        value.inspect(reservation())
+    with pytest.raises(FtpsStagingError):
+        list(value.read_chunks(reservation()))
+    with pytest.raises(FtpsStagingError):
+        value.consume(reservation())
+    with pytest.raises(FtpsStagingError):
+        writer.commit()
+
+    directory = tmp_path / "ftps-staging"
+    assert staging._read_receipt(directory / f"{STAGE_ID}.receipt") == artifact
+    assert not (directory / f"{SECOND_STAGE_ID}.source").exists()
+    assert not (directory / f"{SECOND_STAGE_ID}.receipt").exists()
+
+
+def test_expiry_reconcile_retains_consumed_and_transitional_evidence(tmp_path: Path) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    artifact = value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    staging._write_receipt(directory / f"{STAGE_ID}.updating", replace(artifact, consumed=True))
+
+    now = 2_000
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert {path.name for path in directory.iterdir()} == {
+        f"{STAGE_ID}.source",
+        f"{STAGE_ID}.receipt",
+        f"{STAGE_ID}.updating",
+    }
+
+    (directory / f"{STAGE_ID}.updating").unlink()
+    staging._write_receipt(directory / f"{STAGE_ID}.updating", replace(artifact, consumed=True))
+    os.replace(directory / f"{STAGE_ID}.updating", directory / f"{STAGE_ID}.receipt")
+    value.reconcile()
+    assert {path.name for path in directory.iterdir()} == {
+        f"{STAGE_ID}.source",
+        f"{STAGE_ID}.receipt",
+    }
+
+
+def test_expired_cleanup_failure_retains_exact_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    source = directory / f"{STAGE_ID}.source"
+    receipt = directory / f"{STAGE_ID}.receipt"
+    real_unlink = Path.unlink
+
+    def fail_source(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == source:
+            raise OSError
+        real_unlink(path, *args, **kwargs)
+
+    now = 2_000
+    monkeypatch.setattr(Path, "unlink", fail_source)
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert source.exists()
+    assert not receipt.exists()
+    assert (directory / f"{STAGE_ID}.expiring").exists()
+    monkeypatch.undo()
+    value.reconcile()
+    assert not list(directory.iterdir())
+
+
+def test_expiry_restart_completes_after_source_was_deleted_before_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 1_999
+    value = store(tmp_path, capacity=1, clock_ms=lambda: now)
+    value.stage(reservation(), [b"archive"])
+    directory = tmp_path / "ftps-staging"
+    source = directory / f"{STAGE_ID}.source"
+    expiring = directory / f"{STAGE_ID}.expiring"
+    real_unlink = Path.unlink
+
+    def delete_source_then_fail(path: Path, *args: Any, **kwargs: Any) -> None:
+        real_unlink(path, *args, **kwargs)
+        if path == source:
+            raise OSError
+
+    now = 2_000
+    monkeypatch.setattr(Path, "unlink", delete_source_then_fail)
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert not source.exists()
+    assert expiring.exists()
+
+    monkeypatch.undo()
+    restarted = FtpsStagingStore(
+        directory,
+        limits=ArtifactLimits(max_archive_compressed_bytes=512),
+        capacity=1,
+        clock_ms=lambda: 2_000,
+    )
+    restarted.initialize()
+    restarted.reconcile()
+    assert not list(directory.iterdir())
+    writer = restarted.begin(
+        reservation(staging_id=SECOND_STAGE_ID, created_at_unix_ms=2_000, expires_at_unix_ms=3_000)
+    )
+    writer.abort()
+
+
+def test_reader_checks_expiry_after_eof_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    value.stage(reservation(), [b"archive"])
+    reader = value.read_chunks(reservation(), chunk_bytes=7)
+    assert next(reader) == b"archive"
+    real_read = os.read
+
+    def expire_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal now
+        chunk = real_read(descriptor, size)
+        if not chunk:
+            now = 2_000
+        return chunk
+
+    monkeypatch.setattr(os, "read", expire_after_read)
+    with pytest.raises(FtpsStagingError):
+        next(reader)
+
+
+def test_clock_rollback_during_expiry_allows_serialized_consume_and_prevents_deletion(
+    tmp_path: Path,
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    value.stage(reservation(), [b"archive"])
+    entered = Event()
+    release = Event()
+    reconcile_failures: list[BaseException] = []
+    consume_results: list[StagedArtifact] = []
+    consume_failures: list[BaseException] = []
+    consume_done = Event()
+    real_actions = value._reconciliation_actions
+
+    def blocking_actions() -> list[tuple[str, staging._StagePaths, StagedArtifact | None]]:
+        actions = real_actions()
+        entered.set()
+        assert release.wait(2)
+        return actions
+
+    value._reconciliation_actions = blocking_actions  # type: ignore[method-assign]
+
+    def reconcile() -> None:
+        try:
+            value.reconcile()
+        except BaseException as exc:
+            reconcile_failures.append(exc)
+
+    def consume() -> None:
+        try:
+            consume_results.append(value.consume(reservation()))
+        except BaseException as exc:
+            consume_failures.append(exc)
+        finally:
+            consume_done.set()
+
+    now = 2_000
+    reconciliation = Thread(target=reconcile)
+    reconciliation.start()
+    assert entered.wait(2)
+    contender = Thread(target=consume)
+    contender.start()
+    assert not consume_done.wait(0.1)
+    now = 1_999
+    release.set()
+    reconciliation.join(2)
+    contender.join(2)
+
+    assert not reconciliation.is_alive()
+    assert not contender.is_alive()
+    assert len(reconcile_failures) == 1
+    assert isinstance(reconcile_failures[0], FtpsStagingError)
+    assert not consume_failures
+    assert len(consume_results) == 1
+    assert consume_results[0].consumed is True
+
+    value._reconciliation_actions = real_actions  # type: ignore[method-assign]
+    now = 2_000
+    value.reconcile()
+    assert value._inspect(reservation(), require_unexpired=False).consumed is True
+
+
+def test_expiry_immediate_revalidation_rejects_a_new_transition_marker(tmp_path: Path) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    artifact = value.stage(reservation(), [b"archive"])
+    paths = value._paths(reservation())
+    staging._write_receipt(paths.updating, replace(artifact, consumed=True))
+
+    now = 2_000
+    with pytest.raises(FtpsStagingError):
+        value._begin_expiry(paths, artifact)
+
+    assert paths.source.exists()
+    assert paths.receipt.exists()
+    assert paths.updating.exists()
+    assert not paths.expiring.exists()
+
+
+@pytest.mark.parametrize("source_present", [False, True])
+def test_reconcile_rejects_consumed_expiry_marker(tmp_path: Path, source_present: bool) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    artifact = value.stage(reservation(), [b"archive"])
+    paths = value._paths(reservation())
+    staging._write_receipt(paths.expiring, replace(artifact, consumed=True))
+    paths.receipt.unlink()
+    if not source_present:
+        paths.source.unlink()
+
+    now = 2_000
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+    assert paths.expiring.exists()
+
+
+@pytest.mark.parametrize("phase", ["begin", "source", "marker"])
+@pytest.mark.parametrize("consumed", [False, True])
+def test_expiry_helpers_reject_changed_expected_receipt(
+    tmp_path: Path, phase: str, consumed: bool
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    artifact = value.stage(reservation(), [b"archive"])
+    paths = value._paths(reservation())
+    if consumed:
+        changed = replace(artifact, consumed=True)
+        staging._write_receipt(paths.updating, changed)
+        os.replace(paths.updating, paths.receipt)
+        expected = changed
+    else:
+        expected = replace(artifact, archive_size_bytes=artifact.archive_size_bytes + 1)
+    if phase != "begin":
+        os.replace(paths.receipt, paths.expiring)
+    if phase == "marker":
+        paths.source.unlink()
+
+    now = 2_000
+    helper = {
+        "begin": value._begin_expiry,
+        "source": value._finish_expiring_source,
+        "marker": value._finish_expiring_marker,
+    }[phase]
+    with pytest.raises(FtpsStagingError):
+        helper(paths, expected)
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["reservation_source", "reservation_source_receipt", "removing_source", "removing_only"],
+)
+def test_expiry_reconcile_retains_every_expired_transitional_state(
+    tmp_path: Path, state: str
+) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    directory = tmp_path / "ftps-staging"
+    if state == "reservation_source":
+        staging._write_document(
+            directory / f"{STAGE_ID}.reservation", staging._reservation_document(reservation())
+        )
+        source = directory / f"{STAGE_ID}.source"
+        source.write_bytes(b"archive")
+        source.chmod(0o600)
+    else:
+        artifact = value.stage(reservation(), [b"archive"])
+        if state == "reservation_source_receipt":
+            staging._write_document(
+                directory / f"{STAGE_ID}.reservation", staging._reservation_document(reservation())
+            )
+        else:
+            value.consume(reservation())
+            os.replace(directory / f"{STAGE_ID}.receipt", directory / f"{STAGE_ID}.removing")
+            if state == "removing_only":
+                (directory / f"{STAGE_ID}.source").unlink()
+            assert artifact.consumed is False
+
+    now = 2_000
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_expiry_cleanup_rechecks_current_time_before_deletion(tmp_path: Path) -> None:
+    now = 1_999
+    value = store(tmp_path, clock_ms=lambda: now)
+    value.stage(reservation(), [b"archive"])
+    readings = iter((2_000, 1_999))
+    value._clock_ms = lambda: next(readings)
+
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    assert len(list((tmp_path / "ftps-staging").iterdir())) == 2
+
+
+def test_expiry_clock_and_default_clock_are_strictly_bounded(tmp_path: Path) -> None:
+    value = store(tmp_path, clock_ms=lambda: True)
+    with pytest.raises(FtpsStagingError):
+        value.reconcile()
+
+    default_root = tmp_path / "default"
+    default_root.mkdir()
+    current = store(default_root)
+    current._clock_ms = staging._unix_time_ms
+    assert type(current._now_unix_ms()) is int
+    current._clock_ms = lambda: 1_999
+    with pytest.raises(FtpsStagingError):
+        current._require_expired(reservation())
 
 
 @pytest.mark.parametrize(
@@ -1252,6 +1640,7 @@ def test_restart_replays_exact_original_receipt(tmp_path: Path) -> None:
         directory,
         limits=ArtifactLimits(max_archive_compressed_bytes=512),
         capacity=8,
+        clock_ms=lambda: 1_000,
     )
     restarted.initialize()
     restarted.reconcile()

@@ -7,8 +7,9 @@ import json
 import os
 import re
 import stat
+import time
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,7 +33,7 @@ _CLIENT_PATH: Final = re.compile(r"/[A-Za-z0-9][A-Za-z0-9._-]{0,246}\.3mf", re.A
 _RECEIPT_VERSION: Final = "2"
 _STAGE_ENTRY = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
-    r"\.(reservation|receiving|source|receipt|updating|removing)",
+    r"\.(reservation|receiving|source|receipt|updating|removing|expiring)",
     re.ASCII,
 )
 
@@ -184,19 +185,27 @@ class FtpsStagingWriter:
 class FtpsStagingStore:
     """Persist bounded stages under opaque generated identities."""
 
-    def __init__(self, directory: Path, *, limits: ArtifactLimits, capacity: int) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        limits: ArtifactLimits,
+        capacity: int,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
         if type(capacity) is not int or not 1 <= capacity <= 100_000:
             raise FtpsStagingError
         self._directory = directory
         self._limits = limits
         self._capacity = capacity
+        self._clock_ms = clock_ms or _unix_time_ms
         self._capacity_lock = Lock()
 
     def initialize(self) -> None:
         """Require the deployment-created owner-only staging directory."""
         self._require_directory()
 
-    def reconcile(self) -> None:
+    def reconcile(self) -> None:  # noqa: PLR0912 -- closed crash-recovery states are explicit.
         """Validate and recover only exact durable stages left by an interrupted process."""
         self._require_directory()
         with self._capacity_lock:
@@ -205,7 +214,13 @@ class FtpsStagingStore:
                 for action, paths, artifact in actions:
                     if action == "stable":
                         continue
-                    if action == "discard_reservation":
+                    if action == "begin_expiring":
+                        self._begin_expiry(paths, cast(StagedArtifact, artifact))
+                    elif action == "finish_expiring_source":
+                        self._finish_expiring_source(paths, cast(StagedArtifact, artifact))
+                    elif action == "finish_expiring_marker":
+                        self._finish_expiring_marker(paths, cast(StagedArtifact, artifact))
+                    elif action == "discard_reservation":
                         paths.reservation.unlink()
                     elif action == "discard_partial_receipt":
                         paths.receipt.unlink()
@@ -235,6 +250,7 @@ class FtpsStagingStore:
     def _reconciliation_actions(self) -> list[tuple[str, _StagePaths, StagedArtifact | None]]:
         stages: dict[str, set[str]] = defaultdict(set)
         try:
+            now_unix_ms = self._now_unix_ms()
             for path in self._directory.iterdir():
                 match = _STAGE_ENTRY.fullmatch(path.name)
                 if match is None:
@@ -242,14 +258,14 @@ class FtpsStagingStore:
                 _require_unlinked_private_file(path)
                 stages[match.group(1)].add(match.group(2))
             return [
-                self._reconciliation_action(stage_id, entries)
+                self._reconciliation_action(stage_id, entries, now_unix_ms)
                 for stage_id, entries in stages.items()
             ]
         except (OSError, PrivateFileError, ValueError, json.JSONDecodeError) as exc:
             raise FtpsStagingError from exc
 
-    def _reconciliation_action(
-        self, stage_id: str, entries: set[str]
+    def _reconciliation_action(  # noqa: PLR0912,PLR0915 -- recovery states are explicit.
+        self, stage_id: str, entries: set[str], now_unix_ms: int
     ) -> tuple[str, _StagePaths, StagedArtifact | None]:
         paths = self._paths_for_id(stage_id)
         state = frozenset(entries)
@@ -262,18 +278,37 @@ class FtpsStagingStore:
             action = "discard_incomplete"
         elif state == frozenset({"reservation", "source"}):
             reservation = _require_stage_reservation(paths.reservation, stage_id)
+            if _is_expired(reservation, now_unix_ms):
+                raise FtpsStagingError
             artifact = _artifact_from_source(paths.source, reservation, self._limits)
             action = "write_receipt"
         elif state == frozenset({"reservation", "source", "receipt"}):
-            action = self._reservation_source_receipt_action(paths, stage_id)
+            action = self._reservation_source_receipt_action(paths, stage_id, now_unix_ms)
         elif state == frozenset({"source", "receipt"}):
             artifact = _require_stage_receipt(paths.receipt, stage_id)
             _open_and_close_verified_source(paths.source, artifact)
-            action = "stable"
+            action = (
+                "begin_expiring"
+                if not artifact.consumed and _is_expired(artifact.reservation, now_unix_ms)
+                else "stable"
+            )
+        elif state == frozenset({"source", "expiring"}):
+            artifact = _require_stage_receipt(paths.expiring, stage_id)
+            if artifact.consumed:
+                raise FtpsStagingError
+            _open_and_close_verified_source(paths.source, artifact)
+            action = "finish_expiring_source"
+        elif state == frozenset({"expiring"}):
+            artifact = _require_stage_receipt(paths.expiring, stage_id)
+            if artifact.consumed:
+                raise FtpsStagingError
+            action = "finish_expiring_marker"
         elif state == frozenset({"source", "receipt", "updating"}):
             artifact = _require_stage_receipt(paths.receipt, stage_id)
             updating = _require_stage_receipt(paths.updating, stage_id)
             if artifact.consumed or updating != replace(artifact, consumed=True):
+                raise FtpsStagingError
+            if _is_expired(artifact.reservation, now_unix_ms):
                 raise FtpsStagingError
             _open_and_close_verified_source(paths.source, artifact)
             action = "finish_consuming"
@@ -281,19 +316,27 @@ class FtpsStagingStore:
             artifact = _require_stage_receipt(paths.removing, stage_id)
             if not artifact.consumed:
                 raise FtpsStagingError
+            if _is_expired(artifact.reservation, now_unix_ms):
+                raise FtpsStagingError
             _open_and_close_verified_source(paths.source, artifact)
             action = "finish_removing_source"
         elif state == frozenset({"removing"}):
             artifact = _require_stage_receipt(paths.removing, stage_id)
             if not artifact.consumed:
                 raise FtpsStagingError
+            if _is_expired(artifact.reservation, now_unix_ms):
+                raise FtpsStagingError
             action = "finish_removing_marker"
         else:
             raise FtpsStagingError
         return action, paths, artifact
 
-    def _reservation_source_receipt_action(self, paths: _StagePaths, stage_id: str) -> str:
+    def _reservation_source_receipt_action(
+        self, paths: _StagePaths, stage_id: str, now_unix_ms: int
+    ) -> str:
         reservation = _require_stage_reservation(paths.reservation, stage_id)
+        if _is_expired(reservation, now_unix_ms):
+            raise FtpsStagingError
         recovered = _artifact_from_source(paths.source, reservation, self._limits)
         try:
             artifact = _require_stage_receipt(paths.receipt, stage_id)
@@ -328,6 +371,7 @@ class FtpsStagingStore:
         self._require_directory()
         paths = self._paths(reservation)
         with self._capacity_lock:
+            self._require_unexpired(reservation)
             self._require_available_capacity()
             if any(os.path.lexists(path) for path in paths):
                 raise FtpsStagingError
@@ -359,15 +403,8 @@ class FtpsStagingStore:
         """Return an exact principal's receipt after re-verifying retained bytes."""
         _require_reservation(reservation)
         self._require_directory()
-        paths = self._paths(reservation)
         try:
-            _require_unlinked_private_file(paths.receipt)
-            artifact = _read_receipt(paths.receipt)
-            if artifact.reservation != reservation:
-                raise FtpsStagingError
-            descriptor = _open_verified_source(paths.source, artifact)
-            os.close(descriptor)
-            return artifact
+            return self._inspect(reservation, require_unexpired=True)
         except (OSError, PrivateFileError, ValueError, json.JSONDecodeError) as exc:
             raise FtpsStagingError from exc
 
@@ -377,6 +414,7 @@ class FtpsStagingStore:
         """Yield bounded immutable bytes only after complete exact-principal revalidation."""
         _require_reservation(reservation)
         self._require_directory()
+        self._require_unexpired(reservation)
         if type(chunk_bytes) is not int or not 1 <= chunk_bytes <= _CHUNK_BYTES:
             raise FtpsStagingError
         paths = self._paths(reservation)
@@ -387,7 +425,12 @@ class FtpsStagingStore:
                 raise FtpsStagingError
             descriptor = _open_verified_source(paths.source, artifact)
             try:
-                while chunk := os.read(descriptor, chunk_bytes):
+                while True:
+                    self._require_unexpired(reservation)
+                    chunk = os.read(descriptor, chunk_bytes)
+                    self._require_unexpired(reservation)
+                    if not chunk:
+                        break
                     yield chunk
             finally:
                 os.close(descriptor)
@@ -396,6 +439,10 @@ class FtpsStagingStore:
 
     def consume(self, reservation: FtpsStageReservation) -> StagedArtifact:
         """Atomically transition one exact complete stage to consumed at most once."""
+        with self._capacity_lock:
+            return self._consume(reservation)
+
+    def _consume(self, reservation: FtpsStageReservation) -> StagedArtifact:
         artifact = self.inspect(reservation)
         if artifact.consumed:
             raise FtpsStagingError
@@ -409,6 +456,7 @@ class FtpsStagingStore:
             artifact = self.inspect(reservation)
             if artifact.consumed:
                 raise FtpsStagingError
+            self._require_unexpired(reservation)
             os.replace(paths.updating, paths.receipt)
             update_created = False
             fsync_directory(self._directory)
@@ -433,7 +481,7 @@ class FtpsStagingStore:
                 if artifact.reservation != reservation or not artifact.consumed:
                     raise FtpsStagingError
             else:
-                artifact = self.inspect(reservation)
+                artifact = self._inspect(reservation, require_unexpired=False)
                 if not artifact.consumed:
                     raise FtpsStagingError
                 os.replace(paths.receipt, paths.removing)
@@ -450,6 +498,7 @@ class FtpsStagingStore:
         paths = self._paths(reservation)
         with self._capacity_lock:
             try:
+                self._require_unexpired(reservation)
                 _require_unlinked_private_file(paths.reservation)
                 if _read_reservation(paths.reservation) != reservation:
                     raise FtpsStagingError
@@ -457,6 +506,7 @@ class FtpsStagingStore:
                 os.link(paths.receiving, paths.source, follow_symlinks=False)
                 paths.receiving.unlink()
                 fsync_directory(self._directory)
+                self._require_unexpired(reservation)
                 existing = self._repeat_match(reservation, artifact, paths)
                 if existing is not None:
                     paths.source.unlink()
@@ -527,6 +577,75 @@ class FtpsStagingStore:
         except (OSError, PrivateFileError, ValueError) as exc:
             raise FtpsStagingError from exc
 
+    def _begin_expiry(self, paths: _StagePaths, expected: StagedArtifact) -> None:
+        self._require_exact_stage_state(paths, {"source", "receipt"})
+        artifact = _require_stage_receipt(paths.receipt, paths.receipt.stem)
+        if artifact != expected or artifact.consumed:
+            raise FtpsStagingError
+        _open_and_close_verified_source(paths.source, artifact)
+        self._require_expired(artifact.reservation)
+        os.replace(paths.receipt, paths.expiring)
+        fsync_directory(self._directory)
+        self._finish_expiring_source(paths, artifact)
+
+    def _finish_expiring_source(self, paths: _StagePaths, expected: StagedArtifact) -> None:
+        self._require_exact_stage_state(paths, {"source", "expiring"})
+        artifact = _require_stage_receipt(paths.expiring, paths.expiring.stem)
+        if artifact != expected or artifact.consumed:
+            raise FtpsStagingError
+        _open_and_close_verified_source(paths.source, artifact)
+        paths.source.unlink()
+        fsync_directory(self._directory)
+        self._finish_expiring_marker(paths, artifact)
+
+    def _finish_expiring_marker(self, paths: _StagePaths, expected: StagedArtifact) -> None:
+        self._require_exact_stage_state(paths, {"expiring"})
+        artifact = _require_stage_receipt(paths.expiring, paths.expiring.stem)
+        if artifact != expected or artifact.consumed:
+            raise FtpsStagingError
+        paths.expiring.unlink()
+        fsync_directory(self._directory)
+
+    def _require_exact_stage_state(self, paths: _StagePaths, expected: set[str]) -> None:
+        actual: set[str] = set()
+        for path in paths:
+            if not os.path.lexists(path):
+                continue
+            _require_unlinked_private_file(path)
+            actual.add(path.suffix.removeprefix("."))
+        if actual != expected:
+            raise FtpsStagingError
+
+    def _inspect(
+        self, reservation: FtpsStageReservation, *, require_unexpired: bool
+    ) -> StagedArtifact:
+        if require_unexpired:
+            self._require_unexpired(reservation)
+        paths = self._paths(reservation)
+        _require_unlinked_private_file(paths.receipt)
+        artifact = _read_receipt(paths.receipt)
+        if artifact.reservation != reservation:
+            raise FtpsStagingError
+        descriptor = _open_verified_source(paths.source, artifact)
+        os.close(descriptor)
+        if require_unexpired:
+            self._require_unexpired(reservation)
+        return artifact
+
+    def _now_unix_ms(self) -> int:
+        now_unix_ms = self._clock_ms()
+        if type(now_unix_ms) is not int or not 0 <= now_unix_ms <= _MAX_UNIX_MS:
+            raise FtpsStagingError
+        return now_unix_ms
+
+    def _require_unexpired(self, reservation: FtpsStageReservation) -> None:
+        if _is_expired(reservation, self._now_unix_ms()):
+            raise FtpsStagingError
+
+    def _require_expired(self, reservation: FtpsStageReservation) -> None:
+        if not _is_expired(reservation, self._now_unix_ms()):
+            raise FtpsStagingError
+
     def _require_directory(self) -> None:
         try:
             require_private_directory(self._directory)
@@ -548,6 +667,8 @@ class FtpsStagingStore:
                 frozenset({"source", "receipt", "updating"}),
                 frozenset({"source", "removing"}),
                 frozenset({"removing"}),
+                frozenset({"source", "expiring"}),
+                frozenset({"expiring"}),
             }
             if any(frozenset(entries) not in valid_states for entries in stages.values()):
                 raise FtpsStagingError
@@ -568,6 +689,7 @@ class FtpsStagingStore:
             receipt=base.with_suffix(".receipt"),
             updating=base.with_suffix(".updating"),
             removing=base.with_suffix(".removing"),
+            expiring=base.with_suffix(".expiring"),
         )
 
 
@@ -579,6 +701,7 @@ class _StagePaths:
     receipt: Path
     updating: Path
     removing: Path
+    expiring: Path
 
     def __iter__(self) -> Iterator[Path]:
         return iter(
@@ -589,6 +712,7 @@ class _StagePaths:
                 self.receipt,
                 self.updating,
                 self.removing,
+                self.expiring,
             )
         )
 
@@ -617,7 +741,13 @@ def _require_stage_receipt(path: Path, stage_id: str) -> StagedArtifact:
 def _stage_reservation(
     action: str, paths: _StagePaths, artifact: StagedArtifact | None
 ) -> FtpsStageReservation:
-    if action in {"stable", "write_receipt"}:
+    if action in {
+        "stable",
+        "begin_expiring",
+        "finish_expiring_source",
+        "finish_expiring_marker",
+        "write_receipt",
+    }:
         return cast(StagedArtifact, artifact).reservation
     if action in {
         "discard_reservation",
@@ -631,6 +761,14 @@ def _stage_reservation(
     if action in {"finish_removing_source", "finish_removing_marker"}:
         return _require_stage_receipt(paths.removing, paths.removing.stem).reservation
     raise FtpsStagingError
+
+
+def _unix_time_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+def _is_expired(reservation: FtpsStageReservation, now_unix_ms: int) -> bool:
+    return now_unix_ms >= reservation.expires_at_unix_ms
 
 
 def _require_canonical_uuid4(value: object) -> None:
