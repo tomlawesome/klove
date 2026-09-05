@@ -23,6 +23,13 @@
 # Nothing in this file sets it.
 # ============================================================
 
+# Runner lanes (#177): the shared host refuses untagged jobs, so every job
+# names one. `big` (8 cores / 18 GB) is the default for anything that
+# builds or tests; the policy checks and the mirror push are shell-and-curl
+# work and take `light` (2 cores / 2 GB, killed above that).
+default:
+  tags: [big]
+
 stages:
   - policy
   - test
@@ -50,6 +57,7 @@ stages:
 
 policy:promotion-hop:
   stage: policy
+  tags: [light]
   image: alpine:3.22
   needs: []
   rules:
@@ -94,6 +102,7 @@ policy:promotion-hop:
 
 verify:preview:
   stage: policy
+  tags: [light]
   image: alpine:3.22
   needs: []
   rules:
@@ -269,6 +278,7 @@ test:moonraker-sim:
 
 sync:mirror-to-github:
   stage: sync
+  tags: [light]
   # Plain alpine plus git, like policy:promotion-hop. alpine/git's entrypoint
   # is git itself, so the runner's shell arrives as `git sh` and the job dies
   # before its script.
