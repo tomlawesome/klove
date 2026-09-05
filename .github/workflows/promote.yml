@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       preview_digest:
-        description: Accepted preview digest beginning sha256:
+        description: "Accepted preview digest beginning sha256:"
         required: true
         type: string
 

@@ -1,93 +1,35 @@
+# GitHub is the mirror; the gate that judges a change runs on GitLab
+# (.gitlab-ci.yml, AGENTS.md "Where development happens"). What remains here
+# is only what needs GitHub itself -- the ghcr registry and the attestation
+# identity -- plus the FTPS container check until #180 ports it. The `fast`,
+# `browser` and `moonraker-sim` jobs were removed on 2026-09-05 (#173): the
+# same scripts run as test:fast, test:browser and test:moonraker-sim on
+# GitLab before any branch reaches this repository, so re-running them here
+# only queued behind GitHub's shared runners.
+#
+# `preview` arrives by the mirror push after a dev -> preview merge on
+# GitLab; no pull request is ever opened here, so there is no pull_request
+# trigger.
 name: Validate Klove
 
 on:
-  pull_request:
-    branches: [main, dev, preview]
   push:
     branches: [preview, "hotfix/**"]
   workflow_dispatch:
 
 concurrency:
-  group: klove-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: klove-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  fast:
-    name: Static, tests, and 100% safety coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            requirements-dev.lock
-            requirements-build.lock
-      - name: Install hash-pinned dependencies
-        run: |
-          python -m pip install --require-hashes -r requirements-dev.lock
-          python -m pip install --require-hashes -r requirements-build.lock
-          python -m pip install --no-build-isolation --no-deps .
-      - name: Run deterministic fast checks
-        run: sh scripts/test-fast.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: klove-coverage
-          path: coverage.json
-          retention-days: 14
-
-  moonraker-sim:
-    name: Native Moonraker integration
-    needs: fast
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    permissions:
-      contents: read
-    env:
-      CI: "true"
-      KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"
-      KLOVE_SIM_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Exercise real Klipper, Moonraker, and Klove contract
-        run: sh scripts/test-moonraker-sim.sh
-
-  browser:
-    name: Secure embedded-frame browser boundary
-    needs: fast
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      CI: "true"
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22.17.0"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Install lockfile-pinned browser test dependencies
-        run: npm ci
-      - name: Install Playwright's lockfile-pinned Chromium runtime
-        run: npx playwright install --with-deps chromium
-      - name: Exercise the secure parent/frame boundary
-        run: sh scripts/test-browser.sh
-
   ftps-container:
     name: Confined FTPS production container
     if: >-
       (github.event_name == 'push' && github.ref_name == 'preview') ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci: acceptance'))
-    needs: fast
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -105,9 +47,7 @@ jobs:
     name: Exact container contract
     if: >-
       (github.event_name == 'push' && github.ref_name == 'preview') ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci: acceptance'))
-    needs: [fast, browser, moonraker-sim]
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

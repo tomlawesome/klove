@@ -112,8 +112,48 @@ def test_grove_observation_manifest_gate_accepts_only_the_tracked_directory() ->
 
 
 def test_preview_publication_requires_native_moonraker_integration() -> None:
+    # The gate runs on GitLab (#173): `preview` advances only by a merge
+    # request whose pipeline passed ("Pipelines must succeed" is on), and
+    # the mirror then pushes the branch to GitHub, where exact-container
+    # builds, scans and publishes it. So the browser and Moonraker checks
+    # that publication depends on are asserted in .gitlab-ci.yml, and the
+    # GitHub workflow must not carry a second, weaker copy of them.
+    pipeline = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
+
+    def gitlab_job(name: str) -> str:
+        return pipeline.split(f"\n{name}:\n", 1)[1].split("\n\n", 1)[0]
+
+    gate = (
+        '    - if: $CI_PIPELINE_SOURCE == "merge_request_event"\n'
+        '    - if: \'$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "preview" '
+        '|| $CI_COMMIT_BRANCH == "main"\''
+    )
+    assert gate in pipeline.split("\n.gate: &gate\n", 1)[1].split("\n\n", 1)[0]
+    integration = gitlab_job("test:moonraker-sim")
+    assert "stage: integration" in integration
+    assert "needs: [test:fast]" in integration
+    assert "<<: *gate" in integration
+    assert "timeout: 35m" in integration
+    assert 'CI: "true"' in integration
+    assert 'KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"' in integration
+    assert "- sh scripts/test-moonraker-sim.sh" in integration
+    browser = gitlab_job("test:browser")
+    assert "needs: [test:fast]" in browser
+    assert "<<: *gate" in browser
+    assert 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"' in browser
+    assert "- npm ci" in browser
+    assert "- sh scripts/test-browser.sh" in browser
+    mirror = gitlab_job("sync:mirror-to-github")
+    assert '$MIRROR_TO_GITHUB == "true"' in mirror
+    assert "--force" not in mirror.replace("Never --force", "")
+
     workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
-    jobs = workflow.split("\njobs:\n", 1)[1]
+    triggers, jobs = workflow.split("\njobs:\n", 1)
+    assert "pull_request:" not in triggers
+    assert 'branches: [preview, "hotfix/**"]' in triggers
+    for removed in ("fast", "moonraker-sim", "browser", "verify-preview"):
+        assert re.search(rf"^  {re.escape(removed)}:\n", jobs, re.MULTILINE) is None, removed
+    assert "needs:" not in jobs
 
     def job(name: str) -> str:
         match = re.search(rf"^  {re.escape(name)}:\n", jobs, re.MULTILINE)
@@ -122,36 +162,19 @@ def test_preview_publication_requires_native_moonraker_integration() -> None:
         end = len(jobs) if following is None else match.end() + following.start()
         return jobs[match.start() : end]
 
-    integration = job("moonraker-sim")
-    assert "name: Native Moonraker integration" in integration
-    assert "needs: fast" in integration
-    assert "timeout-minutes: 35" in integration
-    assert "permissions:\n      contents: read" in integration
-    assert 'CI: "true"' in integration
-    assert 'KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"' in integration
-    assert "run: sh scripts/test-moonraker-sim.sh" in integration
-    browser = job("browser")
-    assert "name: Secure embedded-frame browser boundary" in browser
-    assert "needs: fast" in browser
-    assert "permissions:\n      contents: read" in browser
-    assert 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"' in browser
-    assert "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0" in browser
-    assert 'node-version: "22.17.0"' in browser
-    assert "cache: npm" in browser and "cache-dependency-path: package-lock.json" in browser
-    assert "run: npm ci" in browser
-    assert "run: npx playwright install --with-deps chromium" in browser
-    assert "run: sh scripts/test-browser.sh" in browser
     exact_container = job("exact-container")
-    assert "if: github.event_name == 'push' && github.ref_name == 'preview'" in exact_container
-    assert "needs: [fast, browser, moonraker-sim]" in exact_container
+    assert "(github.event_name == 'push' && github.ref_name == 'preview') ||" in exact_container
+    assert "github.event_name == 'workflow_dispatch'\n" in exact_container
+    assert (
+        exact_container.count("if: github.event_name == 'push' && github.ref_name == 'preview'")
+        == 4
+    )
     assert 'candidate="preview-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"' in exact_container
     assert 'docker push "${image}:${candidate}"' in exact_container
     assert 'imagetools create --tag "${image}:preview" "${image}@${digest}"' in exact_container
     # Promotion into main is a GitLab merge request (#173), so the published
     # preview digest is verified there, not in the GitHub workflow.
-    assert "verify-preview" not in jobs
-    pipeline = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    verify = pipeline.split("\nverify:preview:\n", 1)[1].split("\n\n", 1)[0]
+    verify = gitlab_job("verify:preview")
     assert (
         'if: \'$CI_PIPELINE_SOURCE == "merge_request_event" '
         '&& $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"\''
@@ -232,7 +255,8 @@ def test_ftps_container_fixture_is_private_bounded_and_opt_in() -> None:
     assert 'if [ "$actual_project" != "$project" ]' in script
     assert '[ "$actual_role" != "$role" ]' in script
     assert "github.ref_name == 'preview'" in workflow
-    assert "contains(github.event.pull_request.labels.*.name, 'ci: acceptance')" in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
+    assert "pull_request:" not in workflow
     assert "run: sh scripts/test-ftps-container.sh" in workflow
 
 
