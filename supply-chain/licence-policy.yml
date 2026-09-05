@@ -1,0 +1,38 @@
+# Licence allow-list for what Klove actually ships: the distributions
+# `requirements.lock` installs into the runtime image (Dockerfile's build
+# stage, `pip install --require-hashes --prefix=/install -r requirements.lock`)
+# plus Klove itself. `requirements-build.lock` is build-stage only and
+# `requirements-dev.lock` (and package.json's Playwright) never ship, so
+# neither is checked against this file.
+#
+# Read by scripts/licence_policy.py, invoked from the licence gate job in
+# .gitlab-ci.yml. Replaces .github/dependency-review-config.yml's licence
+# check: that action only ever compared a GitHub pull-request diff, and
+# stopped running when development moved to the GitLab merge-request flow
+# (#171) -- there are no GitHub pull requests here to diff (#172).
+#
+# `allow-licenses` is deliberately narrow: only the SPDX ids a distribution
+# `requirements.lock` installs today actually resolves to (see the licence
+# gate job's proof output for the current mapping). A licence is added here
+# only when a real shipped distribution needs it, reviewed at the time, never
+# to make one specific package pass in isolation. Dropped from GitHub's
+# original dependency-review-config.yml list because nothing shipped uses
+# them: BSD-2-Clause, ISC, MIT-0, MPL-2.0, Python-2.0.
+#
+# `allow-dependencies-licenses` is for an exact (name, version) exception --
+# `pkg:pypi/<name>@<version>` -- when a specific release's licence metadata is
+# known-good but unresolvable by scripts/licence_policy.py's rules (fails
+# closed rather than guessing). Each entry needs a comment: owner, reason, and
+# a review date to revisit it.
+#
+# A free-text `License` field naming a well-known licence (e.g. multidict
+# 6.7.1's "Apache License 2.0") is metadata drift, not a policy question, so
+# scripts/licence_policy.py normalises a small table of exact known spellings
+# instead of an exception per package version -- see that file's comment.
+allow-licenses:
+  - Apache-2.0
+  - BSD-3-Clause
+  - MIT
+  - PSF-2.0
+
+allow-dependencies-licenses: []

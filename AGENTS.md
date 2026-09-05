@@ -171,6 +171,10 @@ Install `requirements-dev.lock` with `--require-hashes`, then run
 `scripts/test-fast.ps1` on Windows or `scripts/test-fast.sh` elsewhere. Keep CI
 actions, base images, and scanner images pinned to reviewed immutable digests.
 
+Run `scripts/licence_policy.py --site <dir>` against a clean `requirements.lock`
+install to check every shipped dependency's licence against
+`supply-chain/licence-policy.yml`.
+
 Run `scripts/test-moonraker-sim.sh` after changing Moonraker protocol/control,
 print-start, preflight or reconciliation behavior, the integration fixture, its
 container pins, or restart/fault handling. Local execution requires rootless
