@@ -40,6 +40,14 @@ contains neither payload values nor packet identifiers, credentials, endpoint
 data, certificates, or raw trace material. This observation is not evidence
 that control is safe or authorised.
 
+The separate report observer retains only one bounded persistent-session chain:
+the generated `project_file` success acknowledgement, followed by
+`push_status` `PREPARE` and the first strict `push_status` `FINISH`. Each
+observed report in that chain is QoS 0, `dup=false`, and `retain=false`, and no
+two observed report bodies in the chain are byte-identical. It closes immediately
+after that first `FINISH`; it does not claim a quiet tail, any later report, or a
+lasting session-wide replay property.
+
 This is non-runtime evidence only. It grants no MQTT listener, request handler,
 credential lookup, control, upload, or print authority. Any runtime use needs a
 separate accepted decision, bounded implementation, and its own negative tests.

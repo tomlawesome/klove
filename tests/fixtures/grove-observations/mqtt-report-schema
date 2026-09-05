@@ -1,0 +1,656 @@
+{
+  "profile_version": 1,
+  "transport": "mqtt-over-tls",
+  "observed": {
+    "two_session_lifecycle": {
+      "probe_clean_disconnect": true,
+      "persistent_fresh_connection": true
+    },
+    "project_file_request": {
+      "topic": "device/{serial}/request",
+      "qos": 0,
+      "dup": false,
+      "retain": false,
+      "generated_sequence_marker": true
+    },
+    "project_file_result": {
+      "topic": "device/{serial}/report",
+      "qos": 0,
+      "dup": false,
+      "retain": false,
+      "members": {
+        "type": "object",
+        "members": [
+          {
+            "name": "print",
+            "present": true,
+            "schema": {
+              "type": "object",
+              "members": [
+                {
+                  "name": "command",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "sequence_id",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "param",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "subtask_name",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "gcode_state",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "gcode_file",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "gcode_file_prepare_percent",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "result",
+                  "present": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "name": "msg",
+                  "present": true,
+                  "schema": {
+                    "type": "integer"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "command": "project_file",
+      "state": "PREPARE",
+      "result": "SUCCESS",
+      "matches_generated_request_sequence": true
+    },
+    "non_idle_push_status": {
+      "shared_report": {
+        "topic": "device/{serial}/report",
+        "qos": 0,
+        "dup": false,
+        "retain": false,
+        "members": {
+          "type": "object",
+          "members": [
+            {
+              "name": "print",
+              "present": true,
+              "schema": {
+                "type": "object",
+                "members": [
+                  {
+                    "name": "sequence_id",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "command",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "msg",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "gcode_state",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "gcode_file",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "gcode_file_prepare_percent",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "subtask_name",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "mc_print_stage",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "mc_percent",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "mc_remaining_time",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "wifi_signal",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "print_error",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "print_type",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "bed_temper",
+                    "present": true,
+                    "schema": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "name": "bed_target_temper",
+                    "present": true,
+                    "schema": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "name": "nozzle_temper",
+                    "present": true,
+                    "schema": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "name": "nozzle_target_temper",
+                    "present": true,
+                    "schema": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "name": "chamber_temper",
+                    "present": true,
+                    "schema": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "name": "cooling_fan_speed",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "big_fan1_speed",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "big_fan2_speed",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "heatbreak_fan_speed",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "spd_lvl",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "spd_mag",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "stg",
+                    "present": true,
+                    "schema": {
+                      "type": "array",
+                      "items": []
+                    }
+                  },
+                  {
+                    "name": "stg_cur",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "layer_num",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "total_layer_num",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "home_flag",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "hw_switch_state",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "online",
+                    "present": true,
+                    "schema": {
+                      "type": "object",
+                      "members": [
+                        {
+                          "name": "ahb",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "rfid",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "version",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "ams_status",
+                    "present": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "name": "sdcard",
+                    "present": true,
+                    "schema": {
+                      "type": "boolean"
+                    }
+                  },
+                  {
+                    "name": "storage",
+                    "present": true,
+                    "schema": {
+                      "type": "object",
+                      "members": [
+                        {
+                          "name": "free",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        },
+                        {
+                          "name": "total",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "upgrade_state",
+                    "present": true,
+                    "schema": {
+                      "type": "object",
+                      "members": [
+                        {
+                          "name": "sequence_id",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        },
+                        {
+                          "name": "progress",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "status",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "consistency_request",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "dis_state",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        },
+                        {
+                          "name": "err_code",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        },
+                        {
+                          "name": "force_upgrade",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "message",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "module",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "new_version_state",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        },
+                        {
+                          "name": "new_ver_list",
+                          "present": true,
+                          "schema": {
+                            "type": "array",
+                            "items": []
+                          }
+                        },
+                        {
+                          "name": "ota_new_version_number",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "ahb_new_version_number",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "ipcam",
+                    "present": true,
+                    "schema": {
+                      "type": "object",
+                      "members": [
+                        {
+                          "name": "ipcam_dev",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "ipcam_record",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "timelapse",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "resolution",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "mode_bits",
+                          "present": true,
+                          "schema": {
+                            "type": "integer"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "xcam",
+                    "present": true,
+                    "schema": {
+                      "type": "object",
+                      "members": [
+                        {
+                          "name": "allow_skip_parts",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "buildplate_marker_detector",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "first_layer_inspector",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "halt_print_sensitivity",
+                          "present": true,
+                          "schema": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "name": "print_halt",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "printing_monitor",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        },
+                        {
+                          "name": "spaghetti_detector",
+                          "present": true,
+                          "schema": {
+                            "type": "boolean"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "lights_report",
+                    "present": true,
+                    "schema": {
+                      "type": "array",
+                      "items": [
+                        {
+                          "type": "object",
+                          "members": [
+                            {
+                              "name": "node",
+                              "present": true,
+                              "schema": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "name": "mode",
+                              "present": true,
+                              "schema": {
+                                "type": "string"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "nozzle_diameter",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "name": "nozzle_type",
+                    "present": true,
+                    "schema": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "command": "push_status"
+      },
+      "states": [
+        "PREPARE",
+        "FINISH"
+      ],
+      "finish_matches_shared_report": true
+    },
+    "bounded_ack_prepare_first_finish_qos0_dup_false_retain_false_no_byte_identical_replay": true
+  }
+}
