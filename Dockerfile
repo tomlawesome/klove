@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1b079b7e48dd435e458d AS build
+FROM python:3.12-alpine3.23@sha256:31a768b01976652c222e318fe5bd6e7c252f056cbf489c88fa256f1bf0af58e3 AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -10,7 +10,7 @@ RUN python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip install --require-hashes --prefix=/install -r requirements.lock \
     && python -m pip install --no-build-isolation --no-deps --prefix=/install .
 
-FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1b079b7e48dd435e458d
+FROM python:3.12-alpine3.23@sha256:31a768b01976652c222e318fe5bd6e7c252f056cbf489c88fa256f1bf0af58e3
 
 ARG VCS_REF=unknown
 ARG SOURCE_BRANCH=unknown
@@ -22,7 +22,8 @@ LABEL org.opencontainers.image.source="https://github.com/tomlawesome/klove" \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN addgroup --system --gid 10001 klove \
+RUN apk add --no-cache --upgrade sqlite-libs=3.53.4-r0 \
+    && addgroup --system --gid 10001 klove \
     && adduser --system --disabled-password --no-create-home --uid 10001 \
         --ingroup klove --shell /sbin/nologin klove \
     && install -d -o 10001 -g 10001 -m 0700 /var/lib/klove \
