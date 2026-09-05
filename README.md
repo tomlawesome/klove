@@ -124,7 +124,10 @@ contents.
 For containers, copy `compose.example.yml`, replace its image placeholder with
 an accepted immutable digest, mount configuration and secrets read-only, and
 retain the `klove-state` volume. Losing or rolling back that volume can remove
-an unresolved print-start fence.
+an unresolved print-start fence. The example gives Klove one static address on
+an internal RFC1918 bridge so Grove can reach implicit FTPS without publishing
+the control or passive ports on the host. Its namespaced low-port setting does
+not grant `NET_BIND_SERVICE`; all capabilities remain dropped.
 
 ## Development
 
@@ -147,6 +150,11 @@ production coordinator and upload/start lifecycle are covered by issue #12 —
 end-to-end dispatch and issue #76 — native dispatch proof; no generic G-code
 capability is exposed. See the
 [integration fixture](tests/integration/moonraker-sim/README.md).
+
+Run `scripts/test-ftps-container.sh` for the opt-in production-image FTPS
+confinement check. It generates disposable credentials and TLS material,
+proves the internal TLS 1.3 control/passive path, and removes only resources
+bound to its exact run identifier. It does not exercise Grove or a printer.
 
 That automated amd64 stack is not RatOS. RatOS host and physical-printer
 acceptance uses an exact verified RatOS v2.1.0 ARM disk image on supported

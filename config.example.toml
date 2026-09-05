@@ -1,5 +1,6 @@
 [api]
-listen_host = "127.0.0.1"
+# The example Compose file publishes this only on host loopback.
+listen_host = "0.0.0.0"
 listen_port = 8080
 token_file = "/run/secrets/klove_api_token"
 
@@ -29,6 +30,21 @@ journal_file = "/var/lib/klove/start-journal.sqlite3"
 request_timeout_seconds = 10.0
 confirmation_timeout_seconds = 10.0
 poll_interval_seconds = 0.1
+
+[grove_bridge]
+enabled = true
+# Bind only inside Compose's private RFC1918 network. The advertised address
+# must exactly match the static address assigned in compose.example.yml.
+listen_host = "0.0.0.0"
+mqtt_port = 8883
+ftps_control_port = 990
+ftps_passive_port_min = 50000
+ftps_passive_port_max = 50009
+ftps_advertised_ipv4 = "172.30.67.10"
+tls_certificate_file = "/run/secrets/klove_ftps_certificate.pem"
+tls_private_key_file = "/run/secrets/klove_ftps_private_key.pem"
+mqtt_journal_file = "/var/lib/klove/mqtt-ingress.sqlite3"
+staging_directory = "/var/lib/klove/ftps-staging"
 
 [artifacts]
 max_zip_entries = 512

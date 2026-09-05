@@ -7,14 +7,29 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
     tmpfs:
       - /tmp:size=16m,mode=1777
     ports:
       - "127.0.0.1:8080:8080"
+    expose:
+      - "990"
+      - "50000-50009"
     volumes:
       - ./config.toml:/etc/klove/config.toml:ro
       - ./secrets:/run/secrets:ro
       - klove-state:/var/lib/klove
+    networks:
+      klove-private:
+        ipv4_address: 172.30.67.10
 
 volumes:
   klove-state:
+
+networks:
+  klove-private:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.67.0/24
