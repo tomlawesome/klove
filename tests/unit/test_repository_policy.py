@@ -147,7 +147,20 @@ def test_preview_publication_requires_native_moonraker_integration() -> None:
     assert 'candidate="preview-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"' in exact_container
     assert 'docker push "${image}:${candidate}"' in exact_container
     assert 'imagetools create --tag "${image}:preview" "${image}@${digest}"' in exact_container
-    assert "needs: [fast, browser, moonraker-sim]" in job("verify-preview")
+    # Promotion into main is a GitLab merge request (#173), so the published
+    # preview digest is verified there, not in the GitHub workflow.
+    assert "verify-preview" not in jobs
+    pipeline = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    verify = pipeline.split("\nverify:preview:\n", 1)[1].split("\n\n", 1)[0]
+    assert (
+        'if: \'$CI_PIPELINE_SOURCE == "merge_request_event" '
+        '&& $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"\''
+    ) in verify
+    assert 'test "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" = preview' in verify
+    assert (
+        'gh attestation verify "oci://ghcr.io/tomlawesome/klove@$digest" --repo tomlawesome/klove'
+    ) in verify
+    assert '[ "$revision" != "$CI_COMMIT_SHA" ] || [ "$source_branch" != "preview" ]' in verify
 
 
 def test_container_and_compose_preserve_runtime_confinement() -> None:
