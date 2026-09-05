@@ -29,6 +29,7 @@
 # work and take `light` (2 cores / 2 GB, killed above that).
 default:
   tags: [big]
+  interruptible: true
 
 stages:
   - policy
@@ -148,7 +149,9 @@ verify:preview:
 test:fast:
   stage: test
   # python:3.12-slim-bookworm, verified 2026-09-05
-  image: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+  image:
+    name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+    pull_policy: if-not-present
   <<: *gate
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -178,7 +181,9 @@ test:fast:
 test:licence-policy:
   stage: test
   # python:3.12-slim-bookworm, verified 2026-09-05
-  image: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+  image:
+    name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+    pull_policy: if-not-present
   <<: *gate
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -204,7 +209,9 @@ test:licence-policy:
 test:browser:
   stage: test
   # mcr.microsoft.com/playwright:v1.62.1-noble, verified 2026-09-05
-  image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+  image:
+    name: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+    pull_policy: if-not-present
   needs: [test:fast]
   <<: *gate
   variables:
@@ -248,7 +255,9 @@ test:browser:
 test:moonraker-sim:
   stage: integration
   # docker:28-cli, verified 2026-09-05
-  image: docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+  image:
+    name: docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+    pull_policy: if-not-present
   needs: [test:fast]
   <<: *gate
   timeout: 35m
@@ -279,6 +288,9 @@ test:moonraker-sim:
 sync:mirror-to-github:
   stage: sync
   tags: [light]
+  # Pushes to the GitHub mirror; a cancelled run mid-push could leave GitHub
+  # part-updated, so this must run to completion.
+  interruptible: false
   # Plain alpine plus git, like policy:promotion-hop. alpine/git's entrypoint
   # is git itself, so the runner's shell arrives as `git sh` and the job dies
   # before its script.
