@@ -160,8 +160,17 @@ Git access from the agent host: SSH to the instance is unreachable, so the
     GIT_ASKPASS=gl-git-askpass GIT_TERMINAL_PROMPT=0 git push gitlab <branch>
 
 The helper reads `GLAB_CONFIG_DIR`, so each assistant pushes with its own
-credential (github-credentials skill). No other credential is specific to this
-project.
+credential (github-credentials skill).
+
+Mirror mechanics (#173, set up 2026-09-05): after a merge,
+`sync:mirror-to-github` in `.gitlab-ci.yml` pushes the branch to GitHub over
+SSH with the write-only deploy key `klove-gitlab-mirror`, which the three
+GitHub rulesets admit as a bypass actor; never push to `origin` or open a
+GitHub pull request into `dev`, `preview` or `main`, or the mirror forks. The
+CI/CD variables, all protected and owner-only, are `GITHUB_MIRROR_SSH_KEY`
+(file), `MIRROR_TO_GITHUB` and `GITHUB_READ_TOKEN` (read-only GitHub PAT for
+`verify:preview`'s attestation check). Runners: `big` by default, `light` for
+shell-only jobs (#177).
 
 ## Local checks
 
