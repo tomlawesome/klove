@@ -259,6 +259,9 @@ test:browser:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    # Temporary, to see the service daemon's own log in the job trace while the
+    # first runs on the docker runner are diagnosed (ai/agent-infra#31).
+    CI_DEBUG_SERVICES: "true"
 
 # ---------------------------------------------------------------------------
 # INTEGRATION -- ported from validate.yml's `moonraker-sim` job (#173).
