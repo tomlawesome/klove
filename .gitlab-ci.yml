@@ -243,25 +243,25 @@ test:browser:
 # pulled through the image cache (ai/agent-infra#14); `if-not-present` because
 # the digest cannot change. `alias: docker` because GitLab derives a service's
 # hostname from its image name, which through the cache is not "docker".
-# The command points the inner daemon at the same cache, so plain Docker Hub
+# The flags point the inner daemon at the same cache, so plain Docker Hub
 # names in compose.yml and Dockerfiles stay unchanged and pulls stay local.
+# The runner expands variables in a service's `name` but not in `command:` or
+# `entrypoint:`, so the flags go through `sh -c`, where the shell expands them;
+# a literal in `command:` made the daemon exit with "insecure registry … is not
+# valid" on the first run (ai/agent-infra#31).
 .dind_service:
   tags: [docker]
   services:
     - name: ${CI_IMAGE_CACHE_DOCKERHUB}/library/docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659
       alias: docker
       pull_policy: if-not-present
-      command:
-        - --registry-mirror=http://$CI_IMAGE_CACHE_DOCKERHUB
-        - --insecure-registry=$CI_IMAGE_CACHE_DOCKERHUB
-        - --insecure-registry=$CI_IMAGE_CACHE_GHCR
-        - --insecure-registry=$CI_IMAGE_CACHE_MCR
+      entrypoint:
+        - /bin/sh
+        - -c
+        - exec dockerd-entrypoint.sh --registry-mirror="http://$CI_IMAGE_CACHE_DOCKERHUB" --insecure-registry="$CI_IMAGE_CACHE_DOCKERHUB" --insecure-registry="$CI_IMAGE_CACHE_GHCR" --insecure-registry="$CI_IMAGE_CACHE_MCR"
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
-    # Temporary, to see the service daemon's own log in the job trace while the
-    # first runs on the docker runner are diagnosed (ai/agent-infra#31).
-    CI_DEBUG_SERVICES: "true"
 
 # ---------------------------------------------------------------------------
 # INTEGRATION -- ported from validate.yml's `moonraker-sim` job (#173).
