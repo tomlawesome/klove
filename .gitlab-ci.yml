@@ -27,6 +27,7 @@
 # names one. `big` (8 cores / 18 GB) is the default for anything that
 # builds or tests; the policy checks and the mirror push are shell-and-curl
 # work and take `light` (2 cores / 2 GB, killed above that).
+# Jobs that need a Docker daemon take `docker` through .dind_service (#192).
 default:
   tags: [big]
   interruptible: true
@@ -232,31 +233,53 @@ test:browser:
     - npm ci
     - sh scripts/test-browser.sh
 
+# Docker-in-Docker as a service, copied from ai/orbit's .dind_service
+# (ai/klove#192, ai/agent-infra#31). The shared `docker` runner is privileged
+# and has no Docker socket; a job that needs a daemon extends this and gets
+# its own, reached over tcp://docker:2375.
+#
+# Held at 29.6.2 as ai/orbit does (ai/orbit#827: 29.7.0 can skip a blob it
+# wrongly believes the registry already has on push). Pinned by digest and
+# pulled through the image cache (ai/agent-infra#14); `if-not-present` because
+# the digest cannot change. `alias: docker` because GitLab derives a service's
+# hostname from its image name, which through the cache is not "docker".
+# The command points the inner daemon at the same cache, so plain Docker Hub
+# names in compose.yml and Dockerfiles stay unchanged and pulls stay local.
+.dind_service:
+  tags: [docker]
+  services:
+    - name: ${CI_IMAGE_CACHE_DOCKERHUB}/library/docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659
+      alias: docker
+      pull_policy: if-not-present
+      command:
+        - --registry-mirror=http://$CI_IMAGE_CACHE_DOCKERHUB
+        - --insecure-registry=$CI_IMAGE_CACHE_DOCKERHUB
+        - --insecure-registry=$CI_IMAGE_CACHE_GHCR
+        - --insecure-registry=$CI_IMAGE_CACHE_MCR
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+
 # ---------------------------------------------------------------------------
 # INTEGRATION -- ported from validate.yml's `moonraker-sim` job (#173).
 #
-# The runner is a rootless-Docker docker executor with the runner host's own
-# Docker socket bound at /var/run/docker.sock inside every job -- there is no
-# Docker-in-Docker (owner decision on mikroview #942, 2026-09-05). That means
-# the daemon a job talks to is the runner host's, not this job container's:
-# a bind mount naming a path from the job's own checkout would be resolved by
-# the daemon against *its own* filesystem, not this container's, and either
-# find nothing (silently mounting an empty directory -- testing-and-ci skill,
-# "CI starts from an empty checkout") or the wrong thing entirely.
+# The job runs on the shared `docker` runner and gets a throwaway Docker-in-
+# Docker service of its own (.dind_service below), so the daemon it talks to
+# is that service's, not the runner host's: no Docker socket is bound into
+# the job (ai/klove#192, ai/agent-infra#31). The service dies with the job,
+# so its layer cache starts empty each run.
 #
-# tests/integration/moonraker-sim/compose.yml does not have that problem: its
-# only volumes (runtime-secrets, runtime-state, klove-state, test-state,
-# dispatch-state) are Docker-managed named volumes, never bind mounts of a
-# repo path, and each is scoped to the run's own compose project name
-# (klove-mr-$KLOVE_SIM_RUN_ID), so two pipelines sharing the one daemon do not
-# collide. The `docker compose ... --build` calls in moonraker-sim-up.sh
-# build from local contexts (`.` and `../../..`), but a build's context is
-# packaged into a tar and shipped over the API call itself -- the same reason
-# mikroview's test:container job's `docker build --tag "$APP" .` works over
-# this same bound socket -- so those paths are read by the CLI running in
-# this job container, not resolved by the remote daemon. This job is expected
-# to work over the bound socket.
+# tests/integration/moonraker-sim/compose.yml uses only Docker-managed named
+# volumes, never bind mounts of a repo path, each scoped to the run's own
+# compose project name (klove-mr-$KLOVE_SIM_RUN_ID). It publishes no ports
+# and reaches nothing on localhost from the job: every check runs inside the
+# compose network, so the service host `docker` needs no URL change. The
+# `docker compose ... --build` calls in moonraker-sim-up.sh build from local
+# contexts (`.` and `../../..`), but a build's context is packaged into a tar
+# and shipped over the API call itself, so those paths are read by the CLI
+# in this job container, not resolved by the daemon.
 test:moonraker-sim:
+  extends: .dind_service
   stage: integration
   # docker:28-cli, verified 2026-09-05
   image:
@@ -266,7 +289,6 @@ test:moonraker-sim:
   <<: *gate
   timeout: 35m
   variables:
-    DOCKER_HOST: unix:///var/run/docker.sock
     CI: "true"
     KLOVE_SIM_ALLOW_ROOTFUL_CI: "1"
     KLOVE_SIM_RUN_ID: ci-$CI_PIPELINE_ID-$CI_JOB_ID
@@ -276,6 +298,13 @@ test:moonraker-sim:
     # reads $KLOVE_SIM_REVISION off `git rev-parse HEAD`) are all separate
     # Alpine packages.
     - apk add --no-cache docker-cli-compose docker-cli-buildx git >/dev/null
+    # The dind service takes about 15 s to accept connections; wait for it.
+    - |
+      for _ in $(seq 1 60); do
+        docker info > /dev/null 2>&1 && break
+        sleep 1
+      done
+      docker info > /dev/null 2>&1 || { echo "the dind service daemon is not reachable at ${DOCKER_HOST}"; exit 1; }
   script:
     - docker version --format 'client {{.Client.Version}} / daemon {{.Server.Version}}'
     - sh scripts/test-moonraker-sim.sh
