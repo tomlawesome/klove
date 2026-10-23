@@ -8,7 +8,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        ca-certificates=20250419~deb12u1 \
+        ca-certificates=20250419~deb12u2 \
         gcc=4:12.2.0-3 \
         git=1:2.39.5-0+deb12u3 \
         libc6-dev=2.36-9+deb12u14 \
