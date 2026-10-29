@@ -127,6 +127,29 @@ verify:preview:
         exit 1
       fi
 
+# Flake log gate (ai/klove#194, ai/agent-infra#30): fails when docs/flakes.md
+# has a malformed sighting, or a flake with three sightings that has no issue
+# link or is not quarantined. The quarantine list is built from what really
+# skips the tests: scripts/quarantine.txt (pytest) and the @quarantine title
+# tag (Playwright). Shell and awk only, no Docker.
+flake-check:
+  stage: policy
+  tags: [light]
+  # python:3.12-slim-bookworm, verified 2026-09-05
+  image:
+    name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+    pull_policy: if-not-present
+  needs: []
+  <<: *gate
+  script:
+    - |
+      {
+        grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' scripts/quarantine.txt || true
+        { grep -rhoE "['\"][^'\"]*@quarantine[^'\"]*['\"]" tests || true; } \
+          | sed -e "s/^['\"]//" -e "s/['\"]\$//" -e 's/ *@quarantine *//'
+      } | sort -u > quarantine-list.txt
+    - sh scripts/ci/flake-check.sh --quarantined quarantine-list.txt docs/flakes.md
+
 # ---------------------------------------------------------------------------
 # TEST -- ported from .github/workflows/validate.yml's `fast` and `browser`
 # jobs (#173).

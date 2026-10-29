@@ -6,4 +6,6 @@ if [ ! -d node_modules/@playwright/test ]; then
   exit 1
 fi
 
-exec npx playwright test --config=playwright.config.mjs
+# A test whose title ends in @quarantine leaves the gate; the flake-check CI job
+# lists those titles from the sources, so the skip and the flake log cannot drift.
+exec npx playwright test --config=playwright.config.mjs --grep-invert @quarantine

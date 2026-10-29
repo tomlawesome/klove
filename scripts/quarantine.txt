@@ -1,0 +1,6 @@
+# Quarantined pytest tests, one node id per line (tests/unit/test_x.py::test_name).
+# scripts/test-fast.sh deselects exactly these, and the flake-check CI job reads
+# this same file as its --quarantined list, so the two cannot drift. Each node id
+# must appear in its docs/flakes.md heading. Playwright tests are quarantined by
+# ending the test title with @quarantine instead (scripts/test-browser.sh).
+# Run them apart with: python -m pytest <node ids>
