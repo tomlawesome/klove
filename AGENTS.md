@@ -160,7 +160,7 @@ Git access from the agent host: SSH to the instance is unreachable, so the
     GIT_ASKPASS=gl-git-askpass GIT_TERMINAL_PROMPT=0 git push gitlab <branch>
 
 The helper reads `GLAB_CONFIG_DIR`, so each assistant pushes with its own
-credential (github-credentials skill).
+credential (host-credentials skill).
 
 Mirror mechanics (#173, set up 2026-09-05): after a merge,
 `sync:mirror-to-github` in `.gitlab-ci.yml` pushes the branch to GitHub over
