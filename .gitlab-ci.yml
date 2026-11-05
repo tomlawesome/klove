@@ -23,6 +23,22 @@
 # Nothing in this file sets it.
 # ============================================================
 
+# Merge-to-dev fast checks only (ai/agent-infra#113, owner decision
+# 2026-11-05: "Secrets scanning and similar very fast checks should happen on
+# merge to dev. Five minutes. Max."). A push to dev runs flake-check, gitleaks
+# and sync:mirror-to-github; the merge request pipeline stays the full run.
+include:
+  - project: ai/agent-infra
+    ref: 1dca70057bd93f68ded22c6b159f315c987c1663  # dev-landing/v1
+    file: scripts/dev-landing/ci-template.yml
+
+# The snippet's rule only sets DEV_LANDING; the last rung keeps every other
+# pipeline source creating a pipeline exactly as before.
+workflow:
+  rules:
+    - !reference [.dev-landing, workflow_rules]
+    - when: always
+
 # Runner lanes (#177): the shared host refuses untagged jobs, so every job
 # names one. `big` (8 cores / 18 GB) is the default for anything that
 # builds or tests; the policy checks and the mirror push are shell-and-curl
@@ -44,6 +60,16 @@ stages:
 # jobs up by accident).
 .gate: &gate
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "preview" || $CI_COMMIT_BRANCH == "main"'
+
+# .gate minus the dev landing push: the slow jobs (tests, browser, simulator,
+# licence policy) do not run there. The fast checks use .gate as it is.
+.gate_slow: &gate_slow
+  rules:
+    - !reference [.dev-landing, job_rule]
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -135,6 +161,7 @@ verify:preview:
 flake-check:
   stage: policy
   tags: [light]
+  timeout: 5m  # runs on the dev landing push (ai/agent-infra#113)
   # python:3.12-slim-bookworm, verified 2026-09-05
   image:
     name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
@@ -149,6 +176,26 @@ flake-check:
           | sed -e "s/^['\"]//" -e "s/['\"]\$//" -e 's/ *@quarantine *//'
       } | sort -u > quarantine-list.txt
     - sh scripts/ci/flake-check.sh --quarantined quarantine-list.txt docs/flakes.md
+
+# Secret scan over the whole history (GIT_DEPTH 0, so .gitleaksignore
+# fingerprints, which pin commit:path:rule:line, match). --redact keeps a real
+# finding out of the job log. Runs on merge requests and on the push to dev
+# (via .dev-landing-check, 5 minute timeout). Image pinned by digest.
+gitleaks:
+  extends: .dev-landing-check
+  stage: policy
+  tags: [light]
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    entrypoint: [""]
+  needs: []
+  variables:
+    GIT_DEPTH: 0
+  rules:
+    - !reference [.dev-landing-check, rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - gitleaks detect --source . --redact --no-banner --exit-code 1
 
 # ---------------------------------------------------------------------------
 # TEST -- ported from .github/workflows/validate.yml's `fast` and `browser`
@@ -176,7 +223,7 @@ test:fast:
   image:
     name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
     pull_policy: if-not-present
-  <<: *gate
+  <<: *gate_slow
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   cache:
@@ -212,7 +259,7 @@ test:licence-policy:
   image:
     name: python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
     pull_policy: if-not-present
-  <<: *gate
+  <<: *gate_slow
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   cache:
@@ -241,7 +288,7 @@ test:browser:
     name: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
     pull_policy: if-not-present
   needs: [test:fast]
-  <<: *gate
+  <<: *gate_slow
   variables:
     CI: "true"
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
@@ -312,7 +359,7 @@ test:moonraker-sim:
     name: docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
     pull_policy: if-not-present
   needs: [test:fast]
-  <<: *gate
+  <<: *gate_slow
   timeout: 35m
   variables:
     CI: "true"

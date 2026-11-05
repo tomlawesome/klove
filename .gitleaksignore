@@ -1,0 +1,2 @@
+# Made-up access code in a unit test fixture, not a credential (ai/agent-infra#113).
+e991f864c5fb6d0a07c22b6aa1f08cd2b6bf33c9:tests/unit/test_compatibility_auth.py:generic-api-key:28
